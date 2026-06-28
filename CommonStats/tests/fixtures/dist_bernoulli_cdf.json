@@ -1,0 +1,74 @@
+[
+{
+"args": [
+-1.0
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.0
+],
+"expected": 0.6,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.6,
+"rel": 3.700743415417188e-17
+},
+"r": {
+"val": 0.6,
+"rel": 3.700743415417188e-17
+}
+}
+},
+{
+"args": [
+1.0
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": 1,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.0
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": 1,
+"rel": 0.0
+}
+}
+}
+]

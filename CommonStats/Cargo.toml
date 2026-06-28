@@ -1,0 +1,38 @@
+[package]
+name = "commonstats"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "WASM-first Rust statistics: descriptives, hypothesis tests, distributions, density estimation, transforms, and resampling — validated against SciPy/R."
+repository = "https://github.com/pawlenartowicz/faststats"
+homepage = "https://github.com/pawlenartowicz/faststats"
+documentation = "https://docs.rs/commonstats"
+readme = "README.md"
+authors = ["Paweł Lenartowicz"]
+keywords = ["statistics", "stats", "wasm", "distributions", "hypothesis-testing"]
+categories = ["mathematics", "science", "wasm"]
+
+[dependencies]
+libm = "0.2"      # erf/erfc/tgamma — pure-Rust, WASM-clean float math
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"  # read tests/fixtures/*.json oracle grids
+
+[features]
+default = []
+rng = []           # P2 — declared now so phase boundaries are clean feature seams
+resample = ["rng"] # P2
+dist = []          # P2/P3
+rand-interop = []  # P2
+
+[lib]
+name = "commonstats"
+
+# Mirrors the CI gate (`clippy --all-features -- -D warnings`) for local builds.
+# `unsafe_code`/`missing_docs` stay in lib.rs as the owning site. Pedantic is left
+# off: it fires ~340× on intentional numeric casts (`usize as f64`) and float
+# comparisons that are correct here.
+[lints.clippy]
+all = { level = "deny", priority = -1 }

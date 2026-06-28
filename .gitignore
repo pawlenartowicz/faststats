@@ -1,0 +1,10 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Backtraces emitted on panic
+rustc-ice-*.txt
+
+# OS / editor cruft
+.DS_Store
+*.swp

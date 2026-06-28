@@ -1,0 +1,740 @@
+[
+{
+"args": [
+0.0
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.025
+],
+"expected": 0.9986482252179599,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.9986482252179599,
+"rel": 2.5115759295961103e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.05
+],
+"expected": 0.9927607517594458,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.9927607517594458,
+"rel": 8.274998466570681e-18
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.07500000000000001
+],
+"expected": 0.9811295997867144,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.9811295997867144,
+"rel": 2.74295127033276e-18
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.1
+],
+"expected": 0.9633877421776318,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.9633877421776318,
+"rel": 8.806889819671468e-18
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.125
+],
+"expected": 0.939600531510796,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.939600531510796,
+"rel": 3.714830759857681e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.15000000000000002
+],
+"expected": 0.9101030261948281,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.9101030261948281,
+"rel": 3.841891225029994e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.17500000000000002
+],
+"expected": 0.8754072419657133,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.8754072419657133,
+"rel": 4.21446228751593e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.2
+],
+"expected": 0.8361409386088154,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.8361409386088154,
+"rel": 5.984382149372349e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.225
+],
+"expected": 0.7930038199042031,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.7930038199042031,
+"rel": 5.490199007118705e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.25
+],
+"expected": 0.746734619140625,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.746734619140625,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.275
+],
+"expected": 0.6980855969737544,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.6980855969737544,
+"rel": 1.839940713905292e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.30000000000000004
+],
+"expected": 0.6478024140932327,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.6478024140932327,
+"rel": 2.9664912303185953e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.325
+],
+"expected": 0.5966080936540366,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.5966080936540366,
+"rel": 6.534241822356495e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.35000000000000003
+],
+"expected": 0.545190216250407,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.545190216250407,
+"rel": 4.8699118620838244e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.375
+],
+"expected": 0.49419074936796015,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.49419074936796015,
+"rel": 1.6094976981165148e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.4
+],
+"expected": 0.4441980784488056,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.4441980784488056,
+"rel": 1.0851153620578699e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.42500000000000004
+],
+"expected": 0.3957409165250833,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.3957409165250833,
+"rel": 6.958239171575487e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.45
+],
+"expected": 0.3492838449985084,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.3492838449985084,
+"rel": 7.026784021604696e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.47500000000000003
+],
+"expected": 0.30522429180110755,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.30522429180110755,
+"rel": 5.2071851450729115e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.5
+],
+"expected": 0.263890792241348,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.263890792241348,
+"rel": 1.894482979666128e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.525
+],
+"expected": 0.22554240693403843,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.22554240693403843,
+"rel": 8.608438294393958e-18
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.55
+],
+"expected": 0.19036919331115204,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.19036919331115204,
+"rel": 3.954924651726486e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.5750000000000001
+],
+"expected": 0.15849364429262178,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.15849364429262178,
+"rel": 1.9785565068531515e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.6000000000000001
+],
+"expected": 0.12997302110796577,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.12997302110796577,
+"rel": 4.777687786850338e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.625
+],
+"expected": 0.1048025179383933,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.1048025179383933,
+"rel": 1.3828072584752399e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.65
+],
+"expected": 0.08291920465985567,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.08291920465985567,
+"rel": 6.586181642694332e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.675
+],
+"expected": 0.06420670099075367,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.06420670099075367,
+"rel": 2.028387649735016e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.7000000000000001
+],
+"expected": 0.04850054113637379,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.04850054113637379,
+"rel": 7.381673839849485e-18
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.7250000000000001
+],
+"expected": 0.035594192838356895,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.035594192838356895,
+"rel": 8.858166950429536e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.75
+],
+"expected": 0.02524569877997845,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.02524569877997845,
+"rel": 3.6564728312276776e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.775
+],
+"expected": 0.01718491171839152,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.01718491171839152,
+"rel": 1.2572312809707181e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.8
+],
+"expected": 0.011121297630492995,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.011121297630492995,
+"rel": 3.5235242970540924e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.8250000000000001
+],
+"expected": 0.006752283661314625,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.006752283661314625,
+"rel": 5.767038561371272e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.8500000000000001
+],
+"expected": 0.00377212982508073,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.00377212982508073,
+"rel": 2.495752691193562e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.875
+],
+"expected": 0.0018813052868335957,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0018813052868335957,
+"rel": 2.3726972356302064e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9
+],
+"expected": 0.000796351692989932,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.000796351692989932,
+"rel": 6.711213780963206e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.925
+],
+"expected": 0.00026021745972182363,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.00026021745972182363,
+"rel": 3.1085928561838256e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9500000000000001
+],
+"expected": 5.304819911012889e-05,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 5.304819911012889e-05,
+"rel": 6.066216212592069e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9750000000000001
+],
+"expected": 3.4195895954221603e-06,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 3.4195895954221603e-06,
+"rel": 3.393540385864743e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+1.0
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+}
+]

@@ -1,0 +1,722 @@
+[
+{
+"args": [
+-2.0
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-1.8461538461538463
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-1.6923076923076923
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-1.5384615384615383
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-1.3846153846153846
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-1.2307692307692308
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-1.0769230769230769
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-0.9230769230769229
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-0.7692307692307692
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-0.6153846153846154
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-0.46153846153846145
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-0.3076923076923075
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+-0.15384615384615374
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.0
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.1538461538461542
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.30769230769230793
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.4615384615384617
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.6153846153846154
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.7692307692307692
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+0.9230769230769234
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+1.076923076923077
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+1.2307692307692308
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+1.384615384615385
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+1.5384615384615388
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+1.6923076923076925
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+1.8461538461538463
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.0
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.153846153846154
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.3076923076923084
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.4615384615384617
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.615384615384616
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.769230769230769
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+2.9230769230769234
+],
+"expected": 0.25,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.25,
+"rel": 0.0
+},
+"r": {
+"val": 0.25,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+3.0769230769230775
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+3.230769230769231
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+3.384615384615385
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+3.5384615384615383
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+3.6923076923076925
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+3.8461538461538467
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+},
+{
+"args": [
+4.0
+],
+"expected": 0.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.0,
+"rel": 0.0
+},
+"r": {
+"val": 0,
+"rel": 0.0
+}
+}
+}
+]

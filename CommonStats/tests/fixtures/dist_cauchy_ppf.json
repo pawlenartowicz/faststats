@@ -1,0 +1,344 @@
+[
+{
+"args": [
+1e-09
+],
+"expected": -636619771.3675812,
+"tier": "tail",
+"band": 1e-15,
+"xcheck": {
+"scipy": {
+"val": -636619771.3675814,
+"rel": 1.0392581472072199e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+1e-07
+],
+"expected": -6366196.723675604,
+"tier": "tail",
+"band": 1e-15,
+"xcheck": {
+"scipy": {
+"val": -6366196.723675604,
+"rel": 4.727967644941379e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+1e-06
+],
+"expected": -636618.772365487,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": -636618.772365487,
+"rel": 4.549315527169796e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.001
+],
+"expected": -635.6176779711009,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": -635.6176779711009,
+"rel": 5.875656909719943e-18
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.01
+],
+"expected": -62.64103190754791,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": -62.64103190754791,
+"rel": 3.943109450404355e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.05
+],
+"expected": -11.627503029350086,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": -11.627503029350088,
+"rel": 1.8320228124297168e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.1
+],
+"expected": -5.155367074350506,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": -5.155367074350508,
+"rel": 3.036685725318396e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.25
+],
+"expected": -1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": -1.0000000000000004,
+"rel": 4.440892098500626e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.4
+],
+"expected": 0.3501606075341875,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.3501606075341873,
+"rel": 5.249883658941476e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.5
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 6.223015277861142e-61
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.6
+],
+"expected": 1.6498393924658126,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.6498393924658128,
+"rel": 1.78715909535722e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.75
+],
+"expected": 3.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 3.0000000000000004,
+"rel": 1.4802973661668753e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9
+],
+"expected": 7.155367074350508,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 7.155367074350509,
+"rel": 8.768658802698986e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.95
+],
+"expected": 13.627503029350075,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 13.627503029350075,
+"rel": 2.8263787122571236e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.99
+],
+"expected": 64.64103190754786,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 64.64103190754786,
+"rel": 6.307588851027022e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999
+],
+"expected": 637.6176779711003,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 637.6176779711003,
+"rel": 3.134701546058537e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999999
+],
+"expected": 636620.7723471805,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 636620.7723471805,
+"rel": 2.0860684073335568e-18
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9999999
+],
+"expected": 6366198.72702649,
+"tier": "tail",
+"band": 1e-15,
+"xcheck": {
+"scipy": {
+"val": 6366198.72702649,
+"rel": 2.6733793206432715e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999999999
+],
+"expected": 636619791.3724186,
+"tier": "tail",
+"band": 1e-15,
+"xcheck": {
+"scipy": {
+"val": 636619791.3724186,
+"rel": 3.375643505423508e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+}
+]

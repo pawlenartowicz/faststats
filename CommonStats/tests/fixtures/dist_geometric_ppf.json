@@ -1,0 +1,290 @@
+[
+{
+"args": [
+1e-06
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.001
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.01
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.05
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.1
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.25
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.4
+],
+"expected": 1.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.5
+],
+"expected": 2.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 2.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.6
+],
+"expected": 2.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 2.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.75
+],
+"expected": 3.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 3.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9
+],
+"expected": 5.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 5.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.95
+],
+"expected": 6.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 6.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.99
+],
+"expected": 10.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 10.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999
+],
+"expected": 14.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 14.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999
+],
+"expected": 14.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 14.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999999
+],
+"expected": 28.0,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 28.0,
+"rel": 0.0
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+}
+]
