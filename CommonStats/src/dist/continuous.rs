@@ -2,8 +2,10 @@
 //!
 //! Quantile strategy for t, χ², F, and Gamma: Cornish–Fisher or Wilson–Hilferty
 //! seed (Abramowitz & Stegun §26.7; Wilson & Hilferty 1931) followed by Newton
-//! iteration on the respective CDF. Any change to the Newton tolerance or seed
-//! formula touches all four distributions — keep them consistent.
+//! iteration on the CDF (`quantile`) or on the SF (`isf`, and t's `quantile` for
+//! its own tail), so each tail's residual is formed from its small mass. Any
+//! change to the Newton tolerance or seed formula touches all four
+//! distributions — keep them consistent.
 
 #[cfg(feature = "rng")]
 use crate::dist::Sampler;
@@ -102,6 +104,13 @@ impl ContinuousCdf for Normal {
         }
         Ok(self.mean + self.sd * norm_quantile(p))
     }
+    /// Symmetry: `isf(q) = μ − σ·Φ⁻¹(q)`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        Ok(self.mean - self.sd * norm_quantile(q))
+    }
 }
 
 #[cfg(all(feature = "dist", feature = "rng"))]
@@ -192,10 +201,16 @@ impl ContinuousCdf for StudentT {
         if !x.is_finite() {
             return if x > 0.0 { 1.0 } else { 0.0 };
         }
-        let df = self.df;
-        let z = df / (df + x * x);
-        let half = 0.5 * crate::special::betai(0.5 * df, 0.5, z);
+        let half = self.tail_half(x);
         if x >= 0.0 { 1.0 - half } else { half }
+    }
+    /// Mirror of `cdf`: the small tail is returned directly, never as `1 − cdf`.
+    fn sf(&self, x: f64) -> f64 {
+        if !x.is_finite() {
+            return if x > 0.0 { 0.0 } else { 1.0 };
+        }
+        let half = self.tail_half(x);
+        if x >= 0.0 { half } else { 1.0 - half }
     }
     fn quantile(&self, p: f64) -> Result<f64, StatError> {
         if !(0.0..=1.0).contains(&p) {
@@ -207,48 +222,85 @@ impl ContinuousCdf for StudentT {
         if p == 1.0 {
             return Ok(f64::INFINITY);
         }
-        if p == 0.5 {
-            return Ok(0.0);
+        // `p < 0.5`, not `<=`: at the median `-solve_tail(0.5)` would be `-0.0`.
+        Ok(if p < 0.5 {
+            -self.solve_tail(p)
+        } else {
+            self.solve_tail(1.0 - p)
+        })
+    }
+    /// Symmetry: `isf(q) = −quantile(q)`, solved on the tail mass `q` directly.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        if q == 1.0 {
+            return Ok(f64::NEG_INFINITY);
+        }
+        Ok(if q <= 0.5 {
+            self.solve_tail(q)
+        } else {
+            -self.solve_tail(1.0 - q)
+        })
+    }
+}
+
+impl StudentT {
+    /// Mass beyond `|x|` on one side: `½·I_{df/(df+x²)}(df/2, ½)`. This is the
+    /// small quantity in both tails; `cdf`/`sf` complement it only on the side
+    /// where the result is near 1.
+    fn tail_half(&self, x: f64) -> f64 {
+        let df = self.df;
+        0.5 * crate::special::betai(0.5 * df, 0.5, df / (df + x * x))
+    }
+
+    /// `x ≥ 0` with upper-tail mass `t ∈ (0, 0.5]`: `P(X > x) = t`. Both
+    /// `quantile` and `isf` map their argument onto this by symmetry, so the
+    /// Newton residual `sf(x) − t` is formed from the small tail mass and never
+    /// from `1 − cdf` — the sole reason the deep tails hold ~1e-15.
+    fn solve_tail(&self, t: f64) -> f64 {
+        if t == 0.5 {
+            return 0.0;
         }
         let df = self.df;
-        let upper = p > 0.5;
-        let q = if upper { p } else { 1.0 - p };
         // Initial guess (Cornish–Fisher expansion, Abramowitz & Stegun §26.7), then Newton.
         let mut x = if df > 200.0 {
-            let z = norm_quantile(q);
+            let z = -norm_quantile(t);
             let z2 = z * z;
             z + (z * (z2 + 1.0)) / (4.0 * df)
                 + (z * (5.0 * z2 * z2 + 16.0 * z2 + 3.0)) / (96.0 * df * df)
         } else if (df - 1.0).abs() < 1e-9 {
-            (libm::tan(core::f64::consts::PI * (q - 0.5))).abs()
+            1.0 / libm::tan(core::f64::consts::PI * t)
         } else if (df - 2.0).abs() < 1e-9 {
-            let alpha = 4.0 * q * (1.0 - q);
-            libm::sqrt(2.0 / alpha - 2.0) * if q > 0.5 { 1.0 } else { -1.0 }
+            let alpha = 4.0 * t * (1.0 - t);
+            libm::sqrt(2.0 / alpha - 2.0)
         } else {
-            norm_quantile(q)
+            -norm_quantile(t)
         };
         if df > 1.0e5 {
-            return Ok(if upper { x } else { -x });
+            return x;
         }
         let log_norm_const = crate::special::lgamma(0.5 * (df + 1.0))
             - crate::special::lgamma(0.5 * df)
             - 0.5 * libm::log(df * core::f64::consts::PI);
         for _ in 0..80 {
-            // cdf via the same betai form as above, inlined for the (possibly
-            // negative) seed x.
-            let cdf = {
-                let z = df / (df + x * x);
-                let half = 0.5 * crate::special::betai(0.5 * df, 0.5, z);
-                if x >= 0.0 { 1.0 - half } else { half }
-            };
+            // Valid for x ≥ 0; a negative Newton overshoot is clamped below.
+            let sf = self.tail_half(x);
             let pdf_log = log_norm_const - 0.5 * (df + 1.0) * libm::log(1.0 + x * x / df);
             let pdf = libm::exp(pdf_log);
             if pdf <= 0.0 || !pdf.is_finite() {
                 break;
             }
-            let new_x = x - (cdf - q) / pdf;
+            // d sf/dx = −pdf.
+            let mut new_x = x + (sf - t) / pdf;
             if !new_x.is_finite() {
                 break;
+            }
+            if new_x < 0.0 {
+                new_x = 0.5 * x;
             }
             let rel_change = (new_x - x).abs() / (1.0 + x.abs());
             x = new_x;
@@ -256,7 +308,7 @@ impl ContinuousCdf for StudentT {
                 break;
             }
         }
-        Ok(if upper { x } else { -x })
+        x
     }
 }
 
@@ -360,17 +412,62 @@ impl ContinuousCdf for ChiSquared {
         if p == 1.0 {
             return Ok(f64::INFINITY);
         }
+        Ok(self.solve_smaller_tail(p, false))
+    }
+    /// Newton on `sf(x) − q` (`gammq`) for `q ≤ 0.5`; see `solve_smaller_tail`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        if q == 1.0 {
+            return Ok(0.0);
+        }
+        Ok(self.solve_smaller_tail(q, true))
+    }
+}
+
+impl ChiSquared {
+    /// Route `quantile`/`isf` to `solve` on whichever tail mass is ≤ 0.5.
+    /// `1 − t` is exact in f64 for `t ∈ [0.5, 1]` (Sterbenz), so flipping the
+    /// tail costs nothing, while a Newton residual formed on the near-1 mass
+    /// would keep only ~8 digits. Mirrors the same fn on the other two Newton
+    /// dists — change together.
+    fn solve_smaller_tail(&self, t: f64, upper: bool) -> f64 {
+        if t > 0.5 {
+            self.solve(1.0 - t, !upper)
+        } else {
+            self.solve(t, upper)
+        }
+    }
+    /// Root of `cdf(x) = target` (`upper = false`) or `sf(x) = target`
+    /// (`upper = true`), `target ∈ (0, 1)`. One loop for `quantile` and `isf`:
+    /// the residual uses `gammp` or `gammq` respectively, so each tail is
+    /// evaluated on its own small mass. Mirrors `Gamma::solve` — change together.
+    fn solve(&self, target: f64, upper: bool) -> f64 {
         let k = self.k;
-        // Wilson–Hilferty seed (Wilson & Hilferty 1931, PNAS 17:684).
-        let z = norm_quantile(p);
+        // Wilson–Hilferty seed (Wilson & Hilferty 1931, PNAS 17:684); the upper
+        // tail seeds from the mirrored normal quantile.
+        let z = if upper {
+            -norm_quantile(target)
+        } else {
+            norm_quantile(target)
+        };
         let h = 2.0 / (9.0 * k);
         let wh_base = 1.0 - h + z * libm::sqrt(h);
         let mut x = k * (wh_base * wh_base * wh_base);
         if !x.is_finite() || x <= 0.0 {
-            // WH fails for very small p. Fall back to the Taylor approximation:
-            // χ²(k) = Gamma(k/2, 1/2); P(α,βx) ≈ (βx)^α/(α·Γ(α)) → p.
+            // WH fails for very small p. Fall back to the leading term of the
+            // series: χ²(k) = Gamma(k/2, 1/2); P(α,βx) ≈ (βx)^α/Γ(α+1) → p.
+            // Γ(α+1), not Γ(α): with Γ(α) the seed is off by α^{-1/α} (4× at
+            // α = ½) and Newton then stops on a step that is tiny in absolute
+            // terms but not relative to x.
             let a = 0.5 * k;
-            let log_x = (libm::log(p) + crate::special::lgamma(a) - a * libm::log(0.5_f64)) / a;
+            let p = if upper { 1.0 - target } else { target };
+            let log_x =
+                (libm::log(p) + crate::special::lgamma(a + 1.0) - a * libm::log(0.5_f64)) / a;
             x = libm::exp(log_x).max(1e-300);
             if !x.is_finite() || x <= 0.0 {
                 x = k.max(1e-6);
@@ -378,7 +475,6 @@ impl ContinuousCdf for ChiSquared {
         }
         let a = 0.5 * k;
         for _ in 0..80 {
-            let cdf = crate::special::gammp(a, 0.5 * x);
             let ln_pdf = (a - 1.0) * libm::log(0.5 * x)
                 - 0.5 * x
                 - core::f64::consts::LN_2
@@ -387,7 +483,13 @@ impl ContinuousCdf for ChiSquared {
             if !pdf.is_finite() || pdf <= 0.0 {
                 break;
             }
-            let mut new_x = x - (cdf - p) / pdf;
+            // d cdf/dx = pdf, d sf/dx = −pdf.
+            let step = if upper {
+                (crate::special::gammq(a, 0.5 * x) - target) / pdf
+            } else {
+                -(crate::special::gammp(a, 0.5 * x) - target) / pdf
+            };
+            let mut new_x = x + step;
             if !new_x.is_finite() || new_x <= 0.0 {
                 new_x = 0.5 * x;
             }
@@ -397,7 +499,7 @@ impl ContinuousCdf for ChiSquared {
                 break;
             }
         }
-        Ok(x)
+        x
     }
 }
 
@@ -413,7 +515,8 @@ impl Sampler for ChiSquared {
 ///
 /// Convention: `dfn` numerator df, `dfd` denominator df (both `> 0`). Mean
 /// defined for `dfd>2`, variance `dfd>4`. CDF
-/// `1 − I_{dfd/(dfd+dfn·x)}(dfd/2, dfn/2)`; sf is the un-complemented `betai`.
+/// `I_{dfn·x/(dfd+dfn·x)}(dfn/2, dfd/2)`; sf `I_{dfd/(dfd+dfn·x)}(dfd/2, dfn/2)` —
+/// both un-complemented `betai`.
 /// Quantile = Wilson–Hilferty seed + Newton.
 /// Matches `scipy.stats.f(dfn, dfd)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -495,8 +598,15 @@ impl ContinuousCdf for FisherF {
         if !x.is_finite() {
             return 1.0;
         }
-        let z = self.dfd / (self.dfd + self.dfn * x);
-        1.0 - crate::special::betai(0.5 * self.dfd, 0.5 * self.dfn, z)
+        // Swap identity `I_z(b,a) = 1 − I_{1−z}(a,b)`: the un-complemented form
+        // keeps the small lower tail instead of `1 − (1 − small)`.
+        let nx = self.dfn * x;
+        if nx.is_infinite() {
+            // Finite x with dfn·x overflowed: z would be ∞/∞ = NaN.
+            return 1.0;
+        }
+        let z = nx / (self.dfd + nx);
+        crate::special::betai(0.5 * self.dfn, 0.5 * self.dfd, z)
     }
     fn sf(&self, x: f64) -> f64 {
         if x <= 0.0 {
@@ -518,19 +628,63 @@ impl ContinuousCdf for FisherF {
         if p == 1.0 {
             return Ok(f64::INFINITY);
         }
+        Ok(self.solve_smaller_tail(p, false))
+    }
+    /// Newton on `sf(x) − q` (un-complemented `betai`) for `q ≤ 0.5`; see
+    /// `solve_smaller_tail`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        if q == 1.0 {
+            return Ok(0.0);
+        }
+        Ok(self.solve_smaller_tail(q, true))
+    }
+}
+
+impl FisherF {
+    /// Route `quantile`/`isf` to `solve` on whichever tail mass is ≤ 0.5.
+    /// `1 − t` is exact in f64 for `t ∈ [0.5, 1]` (Sterbenz), so flipping the
+    /// tail costs nothing, while a Newton residual formed on the near-1 mass
+    /// would keep only ~8 digits. Mirrors the same fn on the other two Newton
+    /// dists — change together.
+    fn solve_smaller_tail(&self, t: f64, upper: bool) -> f64 {
+        if t > 0.5 {
+            self.solve(1.0 - t, !upper)
+        } else {
+            self.solve(t, upper)
+        }
+    }
+    /// Root of `cdf(x) = target` (`upper = false`) or `sf(x) = target`
+    /// (`upper = true`), `target ∈ (0, 1)`. Same split as `ChiSquared::solve`:
+    /// each tail's residual is evaluated on its own small mass.
+    fn solve(&self, target: f64, upper: bool) -> f64 {
         let dfn = self.dfn;
-        let z = norm_quantile(p);
+        let z = if upper {
+            -norm_quantile(target)
+        } else {
+            norm_quantile(target)
+        };
         let h = 2.0 / (9.0 * dfn);
         let wh_base = 1.0 - h + z * libm::sqrt(h);
         let chi_seed = dfn * (wh_base * wh_base * wh_base);
         let mut x = (chi_seed / dfn).max(1e-6);
         for _ in 0..80 {
-            let cdf = self.cdf(x);
             let pdf = self.density(x);
             if !pdf.is_finite() || pdf <= 0.0 {
                 break;
             }
-            let mut new_x = x - (cdf - p) / pdf;
+            // d cdf/dx = pdf, d sf/dx = −pdf.
+            let step = if upper {
+                (self.sf(x) - target) / pdf
+            } else {
+                -(self.cdf(x) - target) / pdf
+            };
+            let mut new_x = x + step;
             if !new_x.is_finite() || new_x <= 0.0 {
                 new_x = 0.5 * x;
             }
@@ -540,7 +694,7 @@ impl ContinuousCdf for FisherF {
                 break;
             }
         }
-        Ok(x)
+        x
     }
 }
 
@@ -640,6 +794,13 @@ impl ContinuousCdf for Uniform {
             return Err(StatError::ProbabilityOutOfRange(p));
         }
         Ok(self.a + p * (self.b - self.a))
+    }
+    /// Closed form `b − q·(b − a)`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        Ok(self.b - q * (self.b - self.a))
     }
 }
 
@@ -748,6 +909,16 @@ impl ContinuousCdf for Exponential {
         }
         Ok(-libm::log(1.0 - p) / self.rate)
     }
+    /// Closed form `−ln q / rate`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        Ok(-libm::log(q) / self.rate)
+    }
 }
 
 #[cfg(all(feature = "dist", feature = "rng"))]
@@ -841,6 +1012,11 @@ impl ContinuousCdf for Cauchy {
             libm::cos(pi_q) / libm::sin(pi_q)
         };
         Ok(self.loc + self.scale * cot)
+    }
+    /// Symmetry: `isf(q) = 2·loc − quantile(q)`; `quantile` is already
+    /// cancellation-free in both tails.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        Ok(2.0 * self.loc - self.quantile(q)?)
     }
 }
 
@@ -960,6 +1136,16 @@ impl ContinuousCdf for Weibull {
         }
         Ok(self.scale * libm::pow(-libm::log(1.0 - p), 1.0 / self.shape))
     }
+    /// Closed form `scale·(−ln q)^{1/shape}`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        Ok(self.scale * libm::pow(-libm::log(q), 1.0 / self.shape))
+    }
 }
 
 #[cfg(all(feature = "dist", feature = "rng"))]
@@ -1070,6 +1256,19 @@ impl ContinuousCdf for LogNormal {
         }
         Ok(libm::exp(self.z().quantile(p)?))
     }
+    /// `exp` of the underlying normal's `isf`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        if q == 1.0 {
+            return Ok(0.0);
+        }
+        Ok(libm::exp(self.z().isf(q)?))
+    }
 }
 
 #[cfg(all(feature = "dist", feature = "rng"))]
@@ -1170,31 +1369,77 @@ impl ContinuousCdf for Gamma {
         if p == 1.0 {
             return Ok(f64::INFINITY);
         }
+        Ok(self.solve_smaller_tail(p, false))
+    }
+    /// Newton on `sf(x) − q` (`gammq`) for `q ≤ 0.5`; see `solve_smaller_tail`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(f64::INFINITY);
+        }
+        if q == 1.0 {
+            return Ok(0.0);
+        }
+        Ok(self.solve_smaller_tail(q, true))
+    }
+}
+
+impl Gamma {
+    /// Route `quantile`/`isf` to `solve` on whichever tail mass is ≤ 0.5.
+    /// `1 − t` is exact in f64 for `t ∈ [0.5, 1]` (Sterbenz), so flipping the
+    /// tail costs nothing, while a Newton residual formed on the near-1 mass
+    /// would keep only ~8 digits. Mirrors the same fn on the other two Newton
+    /// dists — change together.
+    fn solve_smaller_tail(&self, t: f64, upper: bool) -> f64 {
+        if t > 0.5 {
+            self.solve(1.0 - t, !upper)
+        } else {
+            self.solve(t, upper)
+        }
+    }
+    /// Root of `cdf(x) = target` (`upper = false`) or `sf(x) = target`
+    /// (`upper = true`), `target ∈ (0, 1)`. Mirrors `ChiSquared::solve` (see
+    /// there) — change together.
+    fn solve(&self, target: f64, upper: bool) -> f64 {
         let a = self.shape;
         // Seed: χ²(2α) Wilson–Hilferty (Wilson & Hilferty 1931, PNAS 17:684), then x = chi2/(2β). (chi2 has df k=2α.)
         let k = 2.0 * a;
-        let z = norm_quantile(p);
+        let z = if upper {
+            -norm_quantile(target)
+        } else {
+            norm_quantile(target)
+        };
         let h = 2.0 / (9.0 * k);
         let wh_base = 1.0 - h + z * libm::sqrt(h);
         let chi = k * (wh_base * wh_base * wh_base);
         let mut x = chi / (2.0 * self.rate);
         if !x.is_finite() || x <= 0.0 {
             // WH fails for very small p (chi becomes negative). Fall back to
-            // the first-order approximation P(α,βx) ≈ (βx)^α/(α·Γ(α)) → p.
-            let log_x = (libm::log(p) + crate::special::lgamma(a) - a * libm::log(self.rate)) / a;
+            // the leading series term P(α,βx) ≈ (βx)^α/Γ(α+1) → p; Γ(α+1), not
+            // Γ(α) — see `ChiSquared::solve`.
+            let p = if upper { 1.0 - target } else { target };
+            let log_x =
+                (libm::log(p) + crate::special::lgamma(a + 1.0) - a * libm::log(self.rate)) / a;
             x = libm::exp(log_x).max(1e-300);
             if !x.is_finite() || x <= 0.0 {
                 x = (a / self.rate).max(1e-6);
             }
         }
         for _ in 0..80 {
-            let cdf = crate::special::gammp(a, self.rate * x);
             let ln_pdf = gamma_log_density(a, self.rate, x);
             let pdf = libm::exp(ln_pdf);
             if !pdf.is_finite() || pdf <= 0.0 {
                 break;
             }
-            let mut new_x = x - (cdf - p) / pdf;
+            // d cdf/dx = pdf, d sf/dx = −pdf.
+            let step = if upper {
+                (crate::special::gammq(a, self.rate * x) - target) / pdf
+            } else {
+                -(crate::special::gammp(a, self.rate * x) - target) / pdf
+            };
+            let mut new_x = x + step;
             if !new_x.is_finite() || new_x <= 0.0 {
                 new_x = 0.5 * x;
             }
@@ -1204,7 +1449,7 @@ impl ContinuousCdf for Gamma {
                 break;
             }
         }
-        Ok(x)
+        x
     }
 }
 
@@ -1303,6 +1548,26 @@ impl ContinuousCdf for Beta {
             return Ok(1.0);
         }
         Ok(crate::special::inv_beta_reg(self.alpha, self.beta, p))
+    }
+    /// Swap symmetry `I_x(α,β) = 1 − I_{1−x}(β,α)`: `isf(q) = 1 − I⁻¹_q(β,α)`
+    /// for `q ≤ 0.5`, where `I⁻¹_q(β,α) ≥ 0.5` so the final `1 − ·` is exact
+    /// (Sterbenz). For `q > 0.5` the result sits near 0, so invert on the lower
+    /// tail `1 − q` directly (exact in f64 for `q ∈ [0.5, 1]`).
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        if q == 0.0 {
+            return Ok(1.0);
+        }
+        if q == 1.0 {
+            return Ok(0.0);
+        }
+        Ok(if q > 0.5 {
+            crate::special::inv_beta_reg(self.alpha, self.beta, 1.0 - q)
+        } else {
+            1.0 - crate::special::inv_beta_reg(self.beta, self.alpha, q)
+        })
     }
 }
 

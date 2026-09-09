@@ -1,4 +1,25 @@
 //! Adjacency over the nodes of a masked volume or a caller-built graph.
+//!
+//! Holds the voxel connectivity choice ([`Conn`]: 6, 18 or 26 neighbours) and
+//! [`Domain`], the graph the TFCE operators sweep. A domain is backed by one of
+//! two representations, and which one a caller picked stays observable. A
+//! *lattice* ([`Domain::from_volume`], [`Domain::from_mask`]) keeps `dims`, the
+//! connectivity and the in-mask voxel indices, and derives each neighbour row
+//! from voxel coordinates on demand — no per-node neighbour list is stored, and
+//! the sweep runs in voxel-index space. A *CSR* domain ([`Domain::from_csr`])
+//! keeps the caller's `(offsets, neighbours)` arrays as given, which is how a
+//! surface mesh or a scipy sparse matrix gets in. Both answer
+//! [`Domain::neighbours_into`], [`Domain::to_csr`], [`Domain::n_nodes`] and
+//! [`Domain::n_edges`] with the same graph, but `==` compares representations,
+//! so a lattice never equals the CSR domain built from its own `to_csr`.
+//!
+//! The module's tests have no external oracle: lattice rows are checked against
+//! a transcription of the plain `dx, dy, dz` triple loop
+//! (`lattice_rows_match_transcribed_dxdydz_scan`), and the CSR round trip is
+//! checked over every masked-volume fixture in `tests/fixtures/tfce_*.json`
+//! (`tests/tfce_oracle.rs::from_csr_round_trips_every_fixture`). The node order
+//! itself is what the MNE goldens are generated in, so it is validated wherever
+//! the TFCE fixtures are.
 
 use alloc::vec::Vec;
 
@@ -143,6 +164,21 @@ impl Domain {
     /// ([`NeuroError::MismatchedLengths`] otherwise). A grid of more than
     /// `u32::MAX` voxels returns [`NeuroError::TooManyNodes`] (checked before
     /// the mask length), which bounds the in-mask node count as well.
+    ///
+    /// ```
+    /// use neurostats::{Conn, Domain};
+    /// // 2×2×2 grid, the four voxels with z = 0 in-mask. Row-major scan, so
+    /// // the mask entries are (x, y, z) = (0,0,0), (0,0,1), (0,1,0), …
+    /// let mask = [true, false, true, false, true, false, true, false];
+    /// let dom = Domain::from_mask(&mask, [2, 2, 2], Conn::Face).unwrap();
+    /// assert_eq!(dom.n_nodes(), 4);
+    /// // Node 0 is voxel (0,0,0); its in-mask face neighbours are (0,1,0) and
+    /// // (1,0,0) — nodes 1 and 2. (0,0,1) is out of mask, so no edge to it.
+    /// let mut nb = Vec::new();
+    /// dom.neighbours_into(0, &mut nb);
+    /// nb.sort_unstable();
+    /// assert_eq!(nb, [1, 2]);
+    /// ```
     pub fn from_mask(mask: &[bool], dims: [usize; 3], conn: Conn) -> Result<Self, NeuroError> {
         let [nx, ny, nz] = dims;
         // A lattice node stores its voxel index as a u32, so the grid must fit
@@ -182,6 +218,19 @@ impl Domain {
     /// neighbours are `neighbours[offsets[i]..offsets[i+1]]` in the order given.
     ///
     /// Errors: [`NeuroError::InvalidAdjacency`].
+    ///
+    /// ```
+    /// use neurostats::Domain;
+    /// // Path graph 0 — 1 — 2, given as both directions of each edge.
+    /// let offsets = vec![0, 1, 3, 4];
+    /// let neighbours = vec![1, 0, 2, 1];
+    /// let dom = Domain::from_csr(offsets, neighbours).unwrap();
+    /// assert_eq!(dom.n_nodes(), 3);
+    /// assert_eq!(dom.n_edges(), 4); // directed count: each edge twice
+    /// let mut nb = Vec::new();
+    /// dom.neighbours_into(1, &mut nb);
+    /// assert_eq!(nb, [0, 2]);
+    /// ```
     pub fn from_csr(offsets: Vec<u32>, neighbours: Vec<u32>) -> Result<Self, NeuroError> {
         let Some((&last, _)) = offsets.split_last() else {
             return Err(NeuroError::InvalidAdjacency);
@@ -392,7 +441,7 @@ mod tests {
         assert_eq!(n, alloc::vec![0, 3, 5]);
     }
 
-    /// Gate 3: `neighbours_into` on a lattice reproduces, row for row, the
+    /// `neighbours_into` on a lattice reproduces, row for row, the
     /// `dx, dy, dz` scan the CSR constructor used to run. Transcribed here so
     /// the check is against the old code, not against `to_csr`, which shares
     /// the new decoding.

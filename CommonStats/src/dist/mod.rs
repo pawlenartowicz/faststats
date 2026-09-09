@@ -98,9 +98,12 @@ pub trait DiscreteMass: Distribution {
 
 /// Continuous CDF + quantile.
 ///
-/// `sf` defaults to `1 − cdf` but MUST be overridden where cancellation bites
-/// near `p ≈ 1`. `quantile` is required and returns `Err(ProbabilityOutOfRange)`
-/// for `p ∉ [0,1]`; every impl supplies a closed form or a ported special-function
+/// `sf` defaults to `1 − cdf` and `isf` to `quantile(1 − q)`, but both MUST be
+/// overridden where cancellation bites near `p ≈ 1`: `1 − q` in f64 keeps only
+/// ~7 digits of a `q = 1e-9` upper-tail request, so an un-overridden `isf`
+/// cannot be more accurate than that regardless of the quantile algorithm.
+/// `quantile` is required and returns `Err(ProbabilityOutOfRange)` for
+/// `p ∉ [0,1]`; every impl supplies a closed form or a ported special-function
 /// inverse.
 pub trait ContinuousCdf: Distribution {
     /// Cumulative probability `P(X ≤ x)`.
@@ -114,6 +117,21 @@ pub trait ContinuousCdf: Distribution {
     /// # Errors
     /// `ProbabilityOutOfRange(p)` when `p ∉ [0, 1]`.
     fn quantile(&self, p: f64) -> Result<f64, StatError>;
+    /// Inverse survival function: smallest `x` with `sf(x) ≤ q`, i.e. the
+    /// upper-tail critical value for tail mass `q`. Matches
+    /// `scipy.stats.<dist>.isf(q)` (`tests/fixtures/dist_*_isf.json`).
+    ///
+    /// Override with complement arithmetic (symmetry, `−ln q`, Newton on `sf`)
+    /// so that `q` is never formed as `1 − q`.
+    ///
+    /// # Errors
+    /// `ProbabilityOutOfRange(q)` when `q ∉ [0, 1]`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(StatError::ProbabilityOutOfRange(q));
+        }
+        self.quantile(1.0_f64 - q)
+    }
 }
 
 /// Discrete CDF + quantile.

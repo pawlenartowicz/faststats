@@ -7,6 +7,23 @@
 //! rules), and [`tfce()`] sweeps the bands once with an incremental
 //! union-find (the product path). Both take the same [`TfceParams`] and agree
 //! within `1e-12` relative on every fixture in `tests/fixtures/tfce_*.json`.
+//!
+//! Which of the two the caller gets is not observable in the numbers beyond
+//! that tolerance, but the band rule is: a stepped weighting evaluates the
+//! `arange(start, max(stat), step)` grid, so `step` changes the answer, while
+//! [`Weighting::Exact`] integrates over the distinct `stat` values and ignores
+//! `step` entirely. [`tfce_bands`] exposes the band list directly for callers
+//! that want neither grid.
+//!
+//! The module's oracle is MNE-Python 1.12.1
+//! (`mne.stats.cluster_level._find_clusters`, `tail=1`), frozen into
+//! `tests/fixtures/tfce_*.json` as `expected_mne` by
+//! `scripts/gen_tfce_golden.py` and checked by
+//! `tests/tfce_oracle.rs::g2_naive_matches_mne` and
+//! `::g3_union_find_matches_mne`. The same fixtures carry an independent NumPy
+//! transcription of the stepped Smith–Nichols sum (`expected_smith_nichols`),
+//! which is a cross-check on this crate's own definition rather than a second
+//! tool's answer.
 
 use alloc::vec::Vec;
 
@@ -19,13 +36,20 @@ use crate::error::NeuroError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Weighting {
     /// Smith & Nichols (2009) stepped integral: `w_i = h_i^h · step`. The rule
-    /// FSL `fslmaths -tfce`, PALM, and the SPM TFCE toolbox implement. No local
-    /// oracle yet — checked against an independent NumPy transcription only.
+    /// FSL `fslmaths -tfce`, PALM, and the SPM TFCE toolbox implement. No
+    /// external oracle: no fixture is generated from FSL or PALM. Checked
+    /// against a NumPy transcription of the same sum
+    /// (`expected_smith_nichols` in `tests/fixtures/tfce_*.json`, written by
+    /// `scripts/gen_tfce_golden.py`; `tests/tfce_oracle.rs::g4_naive_matches_numpy_smith_nichols`),
+    /// which restates this crate's definition rather than a second tool's.
     SmithNichols,
     /// MNE-Python (`mne.stats.cluster_level._find_clusters`, ≤ 1.12.1):
     /// `w_0 = |h_0|^h`, `w_i = |h_i − h_{i−1}|^h` for `i ≥ 1` — the band
     /// *height* raised to `h`, with no `· step` factor and no threshold value.
-    /// Matches `tests/fixtures/tfce_*.json` `expected_mne`.
+    /// Matches MNE 1.12.1 `_find_clusters` (`tail=1`) to `rel 1e-12` on every
+    /// `expected_mne` map in `tests/fixtures/tfce_*.json`
+    /// (`tests/tfce_oracle.rs::g2_naive_matches_mne`,
+    /// `::g3_union_find_matches_mne`).
     MneStep,
     /// Closed-form Smith–Nichols integral `∫_{h0}^{stat[v]} e_v(h)^E · h^H dh`
     /// with `h0 = start` — no threshold grid, no `step` (still validated,
@@ -33,11 +57,14 @@ pub enum Weighting {
     /// distinct `stat` values, so each run of constant component size `s` over
     /// `[a, b)` contributes `s^E · (b^{H+1} − a^{H+1}) / (H+1)`. The
     /// recommended choice for new analyses (`start = 0`); `SmithNichols` /
-    /// `MneStep` exist for parity with FSL/PALM and MNE pipelines. Same quantity
-    /// as Gaser's SPM TFCE toolbox (`tfce_maxtree`) and eTFCE. Requires
+    /// `MneStep` exist for parity with FSL/PALM and MNE pipelines. Requires
     /// `h > −1` and `start ≥ 0` ([`NeuroError::InvalidParams`]). Nodes with
-    /// `stat ≤ start` get 0. No external oracle: validated union-find vs naive
-    /// (`rel 1e-12`) and as the `step → 0` limit of `SmithNichols`.
+    /// `stat ≤ start` get 0. No external oracle: no reference tool emits this
+    /// quantity in a form that can be frozen here. Validated union-find against
+    /// naive to `rel 1e-12`
+    /// (`tests/perm_oracle.rs::g10_exact_union_find_matches_naive`) and as the
+    /// `step → 0` limit of `SmithNichols`
+    /// (`::g11_exact_is_limit_of_smith_nichols`).
     Exact,
 }
 
@@ -755,11 +782,31 @@ fn resolve(uf: &mut Forest, v: usize) -> f64 {
 ///
 /// Oracle: with `thresholds = arange(start, max(stat), step)`, the matching
 /// `Weighting` weights, and `strict = true` this is bit-identical to
-/// [`tfce()`] (unit gate G5, every fixture); under `strict = false` and an
-/// irregular grid it agrees with [`tfce_bands_naive`] to `rel 1e-12` (G6).
+/// [`tfce()`] on every fixture
+/// (`g5_bands_of_arange_grid_equals_tfce_bitwise`, this module's tests); under
+/// `strict = false` and an irregular grid it agrees with [`tfce_bands_naive`]
+/// to `rel 1e-12` (`tests/tfce_oracle.rs::g6_bands_union_find_matches_naive`).
 ///
-/// Errors: [`NeuroError::InvalidBands`], [`NeuroError::InvalidParams`] (`e`
-/// non-finite), [`NeuroError::MismatchedLengths`], [`NeuroError::NonFiniteStat`].
+/// Errors: [`NeuroError::InvalidBands`] if `thresholds` and `weights` differ
+/// in length, hold a non-finite value, or `thresholds` is not strictly
+/// increasing; [`NeuroError::InvalidParams`] if `e` is non-finite;
+/// [`NeuroError::MismatchedLengths`] if `stat.len() != domain.n_nodes()`;
+/// [`NeuroError::NonFiniteStat`] on any NaN or ±∞ in `stat`.
+///
+/// ```
+/// use neurostats::{Conn, Domain, tfce_bands};
+/// let dom = Domain::from_volume([2, 2, 1], Conn::Face);
+/// // Nodes 0 and 1 are face neighbours; 2 and 3 sit below both thresholds.
+/// let stat = [3.0, 2.0, 0.0, 0.0];
+/// let thresholds = [1.0, 2.5];
+/// let weights = [1.0, 4.0];
+/// let enh = tfce_bands(&dom, &stat, &thresholds, &weights, 1.0, true).unwrap();
+/// // Node 0: band 0 (component {0, 1}, extent 2) + band 1 (alone, extent 1).
+/// assert_eq!(enh[0], 1.0 * 2.0 + 4.0 * 1.0);
+/// // Node 1 clears band 0 only; nodes 2 and 3 clear neither.
+/// assert_eq!(enh[1], 2.0);
+/// assert_eq!(enh[2], 0.0);
+/// ```
 pub fn tfce_bands(
     domain: &Domain,
     stat: &[f64],
@@ -814,7 +861,8 @@ pub fn tfce_bands_into(
 }
 
 /// [`tfce_bands`] by naive per-band re-clustering — the readable oracle for
-/// G6. Same conventions and errors; `O(V · n_bands)`.
+/// `tests/tfce_oracle.rs::g6_bands_union_find_matches_naive`. Same quantity,
+/// conventions and errors as [`tfce_bands`]; `O(V · n_bands)`.
 pub fn tfce_bands_naive(
     domain: &Domain,
     stat: &[f64],

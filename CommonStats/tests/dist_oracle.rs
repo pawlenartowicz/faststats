@@ -52,6 +52,7 @@ fn normal_oracle() {
     check_grid("dist_normal_cdf", VAL, |a| n.cdf(a[0]));
     check_grid("dist_normal_sf", VAL, |a| n.sf(a[0]));
     check_grid("dist_normal_ppf", INV, |a| n.quantile(a[0]).unwrap());
+    check_grid("dist_normal_isf", INV, |a| n.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -61,6 +62,7 @@ fn studentt_oracle() {
     check_grid("dist_studentt_cdf", VAL, |a| t.cdf(a[0]));
     check_grid("dist_studentt_sf", VAL, |a| t.sf(a[0]));
     check_grid("dist_studentt_ppf", INV, |a| t.quantile(a[0]).unwrap());
+    check_grid("dist_studentt_isf", INV, |a| t.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -70,6 +72,7 @@ fn chisquared_oracle() {
     check_grid("dist_chisquared_cdf", VAL, |a| c.cdf(a[0]));
     check_grid("dist_chisquared_sf", VAL, |a| c.sf(a[0]));
     check_grid("dist_chisquared_ppf", INV, |a| c.quantile(a[0]).unwrap());
+    check_grid("dist_chisquared_isf", INV, |a| c.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -79,6 +82,7 @@ fn fisherf_oracle() {
     check_grid("dist_fisherf_cdf", VAL, |a| f.cdf(a[0]));
     check_grid("dist_fisherf_sf", VAL, |a| f.sf(a[0]));
     check_grid("dist_fisherf_ppf", INV, |a| f.quantile(a[0]).unwrap());
+    check_grid("dist_fisherf_isf", INV, |a| f.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -88,6 +92,7 @@ fn uniform_dist_oracle() {
     check_grid("dist_uniform_cdf", VAL, |a| u.cdf(a[0]));
     check_grid("dist_uniform_sf", VAL, |a| u.sf(a[0]));
     check_grid("dist_uniform_ppf", INV, |a| u.quantile(a[0]).unwrap());
+    check_grid("dist_uniform_isf", INV, |a| u.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -97,6 +102,7 @@ fn exponential_oracle() {
     check_grid("dist_exponential_cdf", VAL, |a| e.cdf(a[0]));
     check_grid("dist_exponential_sf", VAL, |a| e.sf(a[0]));
     check_grid("dist_exponential_ppf", INV, |a| e.quantile(a[0]).unwrap());
+    check_grid("dist_exponential_isf", INV, |a| e.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -106,6 +112,7 @@ fn cauchy_oracle() {
     check_grid("dist_cauchy_cdf", VAL, |a| c.cdf(a[0]));
     check_grid("dist_cauchy_sf", VAL, |a| c.sf(a[0]));
     check_grid("dist_cauchy_ppf", INV, |a| c.quantile(a[0]).unwrap());
+    check_grid("dist_cauchy_isf", INV, |a| c.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -115,6 +122,7 @@ fn weibull_oracle() {
     check_grid("dist_weibull_cdf", VAL, |a| w.cdf(a[0]));
     check_grid("dist_weibull_sf", VAL, |a| w.sf(a[0]));
     check_grid("dist_weibull_ppf", INV, |a| w.quantile(a[0]).unwrap());
+    check_grid("dist_weibull_isf", INV, |a| w.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -124,6 +132,7 @@ fn lognormal_oracle() {
     check_grid("dist_lognormal_cdf", VAL, |a| l.cdf(a[0]));
     check_grid("dist_lognormal_sf", VAL, |a| l.sf(a[0]));
     check_grid("dist_lognormal_ppf", INV, |a| l.quantile(a[0]).unwrap());
+    check_grid("dist_lognormal_isf", INV, |a| l.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -133,6 +142,7 @@ fn gamma_oracle() {
     check_grid("dist_gamma_cdf", VAL, |a| g.cdf(a[0]));
     check_grid("dist_gamma_sf", VAL, |a| g.sf(a[0]));
     check_grid("dist_gamma_ppf", INV, |a| g.quantile(a[0]).unwrap());
+    check_grid("dist_gamma_isf", INV, |a| g.isf(a[0]).unwrap());
 }
 
 #[test]
@@ -142,6 +152,42 @@ fn beta_oracle() {
     check_grid("dist_beta_cdf", VAL, |a| b.cdf(a[0]));
     check_grid("dist_beta_sf", VAL, |a| b.sf(a[0]));
     check_grid("dist_beta_ppf", INV, |a| b.quantile(a[0]).unwrap());
+    check_grid("dist_beta_isf", INV, |a| b.isf(a[0]).unwrap());
+}
+
+#[test]
+fn small_shape_deep_lower_tail_quantile() {
+    // Closed form for shape ½: P(½, y) = erf(√y), so χ²(1).quantile(p) =
+    // 2·erf⁻¹(p)² = π p²/2 · (1 + O(p²)); the O(p²) term is below f64 resolution
+    // for p ≤ 1e-8. Gamma(½, rate ½) is the same distribution. Exercises the
+    // small-p seed of the Newton solvers, which the fixtures (k=5, shape=3.5)
+    // never reach.
+    let c = ChiSquared::new(1.0).unwrap();
+    let g = Gamma::new(0.5, 0.5).unwrap();
+    for p in [1e-8, 1e-12] {
+        let truth = core::f64::consts::FRAC_PI_2 * p * p;
+        for (name, got) in [
+            ("chi2", c.quantile(p).unwrap()),
+            ("gamma", g.quantile(p).unwrap()),
+        ] {
+            let rel = ((got - truth) / truth).abs();
+            assert!(
+                rel < 1e-13,
+                "{name}.quantile({p:e}) = {got:e}, want {truth:e} (rel {rel:e})"
+            );
+        }
+    }
+    // Shape 0.1: no closed form; require cdf(quantile(p)) to round-trip.
+    let c = ChiSquared::new(0.2).unwrap();
+    for p in [1e-6, 1e-12] {
+        let x = c.quantile(p).unwrap();
+        let rel = ((c.cdf(x) - p) / p).abs();
+        assert!(
+            rel < 1e-13,
+            "chi2(0.2): cdf(quantile({p:e})) = {:e} (rel {rel:e})",
+            c.cdf(x)
+        );
+    }
 }
 
 // ---- discrete oracle grids ---------------------------------------------------
@@ -207,8 +253,8 @@ fn hypergeometric_oracle() {
 
 /// Band calibration (spec §5). Run with `cargo test -- --ignored --nocapture`;
 /// the printed values (lightly padded) are curated by a human into the generator's
-/// TAIL_BANDS ledger. Tests never write fixtures. Only continuous ppf fixtures
-/// carry tail rows.
+/// TAIL_BANDS ledger. Tests never write fixtures. Only continuous ppf/isf
+/// fixtures carry tail rows.
 #[test]
 #[ignore]
 fn measure_tail_bands() {
@@ -225,54 +271,67 @@ fn measure_tail_bands() {
     let b = Beta::new(2.5, 4.0).unwrap();
     let bands = [
         (
-            "dist_normal_ppf",
+            "normal",
             measure_band("dist_normal_ppf", |a| n.quantile(a[0]).unwrap()),
+            measure_band("dist_normal_isf", |a| n.isf(a[0]).unwrap()),
         ),
         (
-            "dist_studentt_ppf",
+            "studentt",
             measure_band("dist_studentt_ppf", |a| t.quantile(a[0]).unwrap()),
+            measure_band("dist_studentt_isf", |a| t.isf(a[0]).unwrap()),
         ),
         (
-            "dist_chisquared_ppf",
+            "chisquared",
             measure_band("dist_chisquared_ppf", |a| c.quantile(a[0]).unwrap()),
+            measure_band("dist_chisquared_isf", |a| c.isf(a[0]).unwrap()),
         ),
         (
-            "dist_fisherf_ppf",
+            "fisherf",
             measure_band("dist_fisherf_ppf", |a| f.quantile(a[0]).unwrap()),
+            measure_band("dist_fisherf_isf", |a| f.isf(a[0]).unwrap()),
         ),
         (
-            "dist_uniform_ppf",
+            "uniform",
             measure_band("dist_uniform_ppf", |a| u.quantile(a[0]).unwrap()),
+            measure_band("dist_uniform_isf", |a| u.isf(a[0]).unwrap()),
         ),
         (
-            "dist_exponential_ppf",
+            "exponential",
             measure_band("dist_exponential_ppf", |a| e.quantile(a[0]).unwrap()),
+            measure_band("dist_exponential_isf", |a| e.isf(a[0]).unwrap()),
         ),
         (
-            "dist_cauchy_ppf",
+            "cauchy",
             measure_band("dist_cauchy_ppf", |a| ca.quantile(a[0]).unwrap()),
+            measure_band("dist_cauchy_isf", |a| ca.isf(a[0]).unwrap()),
         ),
         (
-            "dist_weibull_ppf",
+            "weibull",
             measure_band("dist_weibull_ppf", |a| w.quantile(a[0]).unwrap()),
+            measure_band("dist_weibull_isf", |a| w.isf(a[0]).unwrap()),
         ),
         (
-            "dist_lognormal_ppf",
+            "lognormal",
             measure_band("dist_lognormal_ppf", |a| l.quantile(a[0]).unwrap()),
+            measure_band("dist_lognormal_isf", |a| l.isf(a[0]).unwrap()),
         ),
         (
-            "dist_gamma_ppf",
+            "gamma",
             measure_band("dist_gamma_ppf", |a| g.quantile(a[0]).unwrap()),
+            measure_band("dist_gamma_isf", |a| g.isf(a[0]).unwrap()),
         ),
         (
-            "dist_beta_ppf",
+            "beta",
             measure_band("dist_beta_ppf", |a| b.quantile(a[0]).unwrap()),
+            measure_band("dist_beta_isf", |a| b.isf(a[0]).unwrap()),
         ),
     ];
-    for (name, val) in bands {
-        match val {
-            Some(b) => println!("TAIL BAND  {name:>24} → {b:e}"),
-            None => println!("TAIL BAND  {name:>24} → (no tail rows)"),
+    for (dist, ppf, isf) in bands {
+        for (kind, val) in [("ppf", ppf), ("isf", isf)] {
+            match val {
+                Some(b) => println!("TAIL BAND  dist_{dist}_{kind:<3} → {b:e}"),
+                None => println!("TAIL BAND  dist_{dist}_{kind:<3} → (no tail rows)"),
+            }
         }
     }
 }
@@ -300,6 +359,13 @@ fn studentt_basic() {
     assert_eq!(t.quantile(0.5).unwrap(), 0.0);
     // scipy: t.ppf(0.975, 5) = 2.5705818366147395
     assert!((t.quantile(0.975).unwrap() - 2.570_581_836_614_74).abs() < 1e-9);
+    // Deep upper tail via the direct betai form (mpmath, df=7, x=50); the
+    // default `1 − cdf` would carry ~1e-6 relative error here.
+    let t7 = StudentT::new(7.0).unwrap();
+    let sf = t7.sf(50.0);
+    assert!(((sf - 1.675_626_297_775_02e-10) / 1.675_626_297_775_02e-10).abs() < 1e-12);
+    assert!((t7.sf(-50.0) - (1.0 - 1.675_626_297_775_02e-10)).abs() < 1e-15);
+    assert_eq!(t7.sf(f64::INFINITY), 0.0);
     assert_eq!(t.mean(), Some(0.0)); // df>1
     assert_eq!(StudentT::new(1.0).unwrap().mean(), None); // df=1 undefined
     assert_eq!(t.variance(), Some(5.0 / 3.0)); // df/(df-2)

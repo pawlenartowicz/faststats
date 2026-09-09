@@ -14,7 +14,7 @@ crates:
 |---------------|------------------|-----------------------------------------------------------------------------------|----------|
 | `commonstats` | [`CommonStats/`](CommonStats/) | Common statistics: descriptives, hypothesis tests, distributions, density estimation, transforms, resampling. | `0.1.0`  |
 | RobustStats   | `RobustStats/`   | Understandable robust alternatives to popular tests (Brunner–Munzel, energy/kernel, robust regression). | planned  |
-| `neurostats`  | [`NeuroStats/`](NeuroStats/) | Neuroimaging statistics, `no_std`: masked-volume adjacency graph + TFCE enhancement validated against MNE-Python. LGPL-3.0-or-later. | L1 (unreleased) |
+| `neurostats`  | [`NeuroStats/`](NeuroStats/) | Neuroimaging statistics, `no_std`: masked-volume adjacency graph, TFCE enhancement, and one-sample sign-flip permutation inference. LGPL-3.0-or-later. | 0.1.0 (unreleased) |
 
 ## commonstats
 
@@ -45,14 +45,28 @@ Planned. Robust, interpretable alternatives to the classical tests, sharing
 
 ## neurostats
 
-`#![no_std]` + `alloc`, one dependency (`libm`). `Domain` builds a CSR adjacency
-graph over the in-mask voxels of a 3-D volume (6/18/26 connectivity); `tfce`
-computes threshold-free cluster enhancement over a statistic map on that graph
-with one incremental union-find sweep, and `tfce_naive` is the readable
-re-clustering oracle. Band weighting is an explicit parameter
-(`Weighting::SmithNichols` for FSL/PALM/SPM, `Weighting::MneStep` for
-MNE-Python) because the tools disagree. Frozen MNE 1.12.1 goldens in
-`NeuroStats/tests/fixtures/`. See [`NeuroStats/README.md`](NeuroStats/README.md).
+`#![no_std]` + `alloc`, one dependency (`libm`). Three layers, each usable on
+its own: `Domain` builds an adjacency graph over the in-mask voxels of a 3-D
+volume or a caller-built neighbour list (L0); `tfce` computes threshold-free
+cluster enhancement over a statistic map on that graph with one incremental
+union-find sweep, with `tfce_naive` as the readable re-clustering oracle (L1);
+and `tfce_one_sample` runs one-sample sign-flip permutation inference end to
+end, with `tfce_one_sample_threads` spreading the same draws over a rayon
+pool (L2). Band weighting is an explicit parameter (`Weighting::SmithNichols`
+for FSL/PALM/SPM, `Weighting::MneStep` for MNE-Python) because the tools
+disagree. Frozen MNE 1.12.1 goldens in `NeuroStats/tests/fixtures/`. See
+[`NeuroStats/README.md`](NeuroStats/README.md) and the full crate guide,
+[`Documentation/NeuroStats/rust/README.md`](Documentation/NeuroStats/rust/README.md).
+
+## Documentation
+
+- [`Documentation/CommonStats/rust/README.md`](Documentation/CommonStats/rust/README.md) — commonstats crate guide (modules, features, conventions policy, oracle harness, CI gates)
+- [`Documentation/CommonStats/python/README.md`](Documentation/CommonStats/python/README.md) — faststats.common Python binding status
+- [`Documentation/NeuroStats/rust/README.md`](Documentation/NeuroStats/rust/README.md) — neurostats crate guide (L0–L2 API detail)
+- [`Documentation/NeuroStats/python/api.md`](Documentation/NeuroStats/python/api.md) — faststats.neuro Python API
+- [`Documentation/NeuroStats/python/nilearn_compatibility.md`](Documentation/NeuroStats/python/nilearn_compatibility.md) — faststats.neuro vs nilearn compatibility notes
+- [`Documentation/RobustStats/README.md`](Documentation/RobustStats/README.md) — RobustStats status
+- [`Documentation/GLMM/README.md`](Documentation/GLMM/README.md) — GLMM pointer to its own repository
 
 ## WASM-first
 

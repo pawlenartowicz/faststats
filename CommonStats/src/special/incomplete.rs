@@ -2,17 +2,19 @@
 //! complement of `gammp`. All log-gamma routes through the crate's `lgamma`/`lbeta`.
 use crate::special::{lbeta, lgamma};
 
-/// Regularized lower incomplete gamma P(a,x), for a > 0 and x ≥ 0; range [0, 1].
-/// (NR §6.2: series for x < a+1, Lentz continued fraction otherwise; ~1e-14.)
-/// Matches `scipy.special.gammainc` (`tests/fixtures/gammp.json`).
-pub fn gammp(a: f64, x: f64) -> f64 {
-    if x <= 0.0 || a <= 0.0 {
-        return 0.0;
-    }
+/// NR §6.2 kernel shared by [`gammp`] and [`gammq`]: `(value, is_upper)` where
+/// the series branch (`x < a+1`) yields `P(a,x)` and the Lentz continued
+/// fraction (`x ≥ a+1`) yields `Q(a,x)`. Each caller complements at most once,
+/// so the tail that is naturally small is never formed as `1 − (1 − small)`.
+fn gamma_pq(a: f64, x: f64) -> (f64, bool) {
     const MAXIT: usize = 200;
     const EPS: f64 = 3e-15;
     const FPMIN: f64 = 1.0e-300;
 
+    if x.is_infinite() {
+        // Q(a, ∞) = 0; the prefactor `−x + a·ln x` would be `−∞ + ∞` = NaN.
+        return (0.0, true);
+    }
     if x < a + 1.0 {
         // Series: P(a, x) = e^{-x} x^a / Γ(a+1) · Σ_{n≥0} x^n / (a+1)_n.
         let mut ap = a;
@@ -23,12 +25,12 @@ pub fn gammp(a: f64, x: f64) -> f64 {
             term *= x / ap;
             sum += term;
             if term.abs() < sum.abs() * EPS {
-                return sum * libm::exp(-x + a * libm::log(x) - lgamma(a));
+                break;
             }
         }
-        sum * libm::exp(-x + a * libm::log(x) - lgamma(a))
+        (sum * libm::exp(-x + a * libm::log(x) - lgamma(a)), false)
     } else {
-        // Continued fraction for Q(a, x) (upper); P = 1 - Q.
+        // Continued fraction for Q(a, x) (upper).
         let mut b = x + 1.0 - a;
         let mut c = 1.0 / FPMIN;
         let mut d = 1.0 / b;
@@ -48,19 +50,39 @@ pub fn gammp(a: f64, x: f64) -> f64 {
             let del = d * c;
             h *= del;
             if (del - 1.0).abs() < EPS {
-                let q = libm::exp(-x + a * libm::log(x) - lgamma(a)) * h;
-                return 1.0 - q;
+                break;
             }
         }
-        let q = libm::exp(-x + a * libm::log(x) - lgamma(a)) * h;
-        1.0 - q
+        (libm::exp(-x + a * libm::log(x) - lgamma(a)) * h, true)
+    }
+}
+
+/// Regularized lower incomplete gamma P(a,x), for a > 0 and x ≥ 0; range [0, 1].
+/// (NR §6.2: series for x < a+1, Lentz continued fraction otherwise; ~1e-14.)
+/// Matches `scipy.special.gammainc` (`tests/fixtures/gammp.json`).
+pub fn gammp(a: f64, x: f64) -> f64 {
+    if x <= 0.0 || a <= 0.0 {
+        return 0.0;
+    }
+    match gamma_pq(a, x) {
+        (q, true) => 1.0 - q,
+        (p, false) => p,
     }
 }
 
 /// Regularized upper incomplete gamma Q(a,x) = 1 − P(a,x), for a > 0 and x ≥ 0.
-/// Used by χ² p-values. Matches `scipy.special.gammaincc` (`tests/fixtures/gammq.json`).
+/// Evaluated directly by the continued fraction for `x ≥ a+1`, so the deep
+/// upper tail keeps full relative precision (χ² / Gamma `sf` and `isf` rely on
+/// this). Used by χ² p-values. Matches `scipy.special.gammaincc`
+/// (`tests/fixtures/gammq.json`).
 pub fn gammq(a: f64, x: f64) -> f64 {
-    1.0 - gammp(a, x)
+    if x <= 0.0 || a <= 0.0 {
+        return 1.0;
+    }
+    match gamma_pq(a, x) {
+        (q, true) => q,
+        (p, false) => 1.0 - p,
+    }
 }
 
 /// Regularized incomplete beta I_x(a,b), for a,b > 0 and x ∈ [0,1]; range [0, 1].

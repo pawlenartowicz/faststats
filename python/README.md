@@ -12,6 +12,13 @@ nilearn compatibility shim is fuzz-tested against nilearn's own `calculate_tfce`
 pip install faststats
 ```
 
+## Documentation
+
+- [`faststats.neuro` API guide](../Documentation/NeuroStats/python/api.md) — every
+  function, parameter, default, and return field.
+- [Using faststats TFCE in a nilearn pipeline](../Documentation/NeuroStats/python/nilearn_compatibility.md) —
+  the drop-in nilearn shim in detail, including known deviations.
+
 ## Quick start
 
 Enhance a single statistic image, keeping its 3-D shape with zeros outside the mask:
@@ -58,6 +65,19 @@ The wrapper runs the whole nilearn call under joblib's `parallel_config(backend=
 so `n_jobs` means threads, not processes. The shim needs `nilearn` and `scipy` installed;
 they are not wheel dependencies, so either `pip install faststats[test]` or install them
 yourself.
+
+### Known deviations from nilearn
+
+- NaN voxels score 0 instead of nilearn's foreground treatment.
+- A one-sided regressor whose grid maximum is `<= 0` returns zeros instead of
+  clustering the negative grid.
+- A map containing `+inf` or `-inf` raises `ValueError` instead of producing an
+  all-`inf` map.
+- Float32 input can disagree with nilearn's grid membership at a threshold, because
+  nilearn builds its grid in the input dtype; float64 input matches to `rtol=1e-12`.
+
+See [the nilearn compatibility guide](../Documentation/NeuroStats/python/nilearn_compatibility.md)
+for the reasoning and the tests behind each of these.
 
 ## Conventions
 

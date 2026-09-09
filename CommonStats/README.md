@@ -90,7 +90,8 @@ htest::ci_correlation(a: &[f64], b: &[f64], level: f64) -> Result<Ci> // Pearson
 
 All items in this section live in the `commonstats::dist` module (not the crate
 root). Each constructor returns `Result<Self>`. All implement `.cdf(x)`, `.sf(x)`,
-`.quantile(p) -> Result<_>`, the moment accessors (`.mean()`, `.variance()`,
+`.quantile(p) -> Result<_>` (continuous also `.isf(q) -> Result<f64>`, the
+upper-tail critical value solved on `q` directly), the moment accessors (`.mean()`, `.variance()`,
 `.std_dev()`, `.skewness()`, `.kurtosis()`, `.entropy()`), plus `.density(x)` /
 `.log_density(x)` (continuous) or `.mass(k)` / `.log_mass(k)` (discrete).
 

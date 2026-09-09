@@ -53,16 +53,31 @@ TAIL_BANDS = {
     # & cauchy & beta measure ≈0 (closed-form / atan inverse — exact to ~1 ulp); a
     # 1e-15 floor keeps the slack·band assertion meaningful without demanding bit-exactness.
     "dist_normal_ppf":      5.3e-11,  # 4.60e-11
-    "dist_studentt_ppf":    7.3e-9,   # 6.31e-9
-    "dist_chisquared_ppf":  1.5e-9,   # 1.29e-9
-    "dist_fisherf_ppf":     1.7e-9,   # 1.49e-9
+    "dist_studentt_ppf":    1.0e-15,  # 1.78e-16 (Newton on the tail mass, both tails)
+    "dist_chisquared_ppf":  1.3e-15,  # 1.07e-15 (Newton on the smaller tail mass)
+    "dist_fisherf_ppf":     2.3e-15,  # 1.96e-15
     "dist_uniform_ppf":     1.0e-15,  # measured 0 (linear closed form)
     "dist_exponential_ppf": 3.3e-8,   # 2.83e-8
     "dist_cauchy_ppf":      1.0e-15,  # 1.87e-16
     "dist_weibull_ppf":     1.7e-8,   # 1.41e-8
     "dist_lognormal_ppf":   2.5e-10,  # 2.16e-10
-    "dist_gamma_ppf":       8.6e-10,  # 7.48e-10
+    "dist_gamma_ppf":       1.1e-15,  # 9.61e-16
     "dist_beta_ppf":        1.5e-15,  # 9.42e-16
+    # isf tail bands. Newton/closed-form dists sit at ~1e-15 in both tails (each
+    # residual is formed on the smaller tail mass, never on `1 − near-1`); truth is
+    # taken at the exact f64 argument, so the argument itself is not a limit.
+    # normal/lognormal are bounded by erfc_inv at the mirror q = 1−1e-9 rows.
+    "dist_normal_isf":      5.8e-11,  # 5.00e-11
+    "dist_studentt_isf":    1.0e-15,  # 1.78e-16
+    "dist_chisquared_isf":  1.3e-15,  # 1.07e-15
+    "dist_fisherf_isf":     1.5e-15,  # 1.25e-15
+    "dist_uniform_isf":     1.0e-15,  # 1.11e-16
+    "dist_exponential_isf": 1.0e-15,  # 1.99e-16
+    "dist_cauchy_isf":      1.0e-15,  # 1.87e-16
+    "dist_weibull_isf":     1.0e-15,  # 2.86e-16
+    "dist_lognormal_isf":   2.5e-10,  # 2.16e-10
+    "dist_gamma_isf":       1.0e-15,  # 8.57e-16
+    "dist_beta_isf":        1.4e-15,  # 1.19e-15
 }
 
 # --- mpmath truth helpers (delimited section; split to oracle_mp.py if it grows) ---
@@ -530,9 +545,11 @@ def gen_dist():
     quantities = []
 
     def add_cont(name, params, mp_pdf, mp_cdf, mp_ppf, sp, xs, r_d, r_p):
-        """Append the 4 continuous quantities for one dist. `params` is prepended
-        to each row's [x] (or [p]) to build the R call. sf uses r_func=None (R's
-        survival via lower.tail=FALSE is skipped — mpmath+scipy gate it)."""
+        """Append the 5 continuous quantities for one dist. `params` is prepended
+        to each row's [x] (or [p]) to build the R call. sf/isf use r_func=None (R's
+        survival via lower.tail=FALSE is skipped — mpmath+scipy gate them). isf
+        truth is ppf(1 − q) with `1 − q` formed at mpmath precision, so the
+        upper-tail rows carry the full truth the f64 argument `1 − q` could not."""
         rmap = lambda a, params=params: [a[0], *params]
         quantities.extend([
             Quantity(f"dist_{name}_pdf", "value", [(x,) for x in xs],
@@ -543,6 +560,8 @@ def gen_dist():
                      lambda x, c=mp_cdf: 1 - c(x), sp.sf, None),
             Quantity(f"dist_{name}_ppf", "quantile", [(p,) for p in PPF_PROBS],
                      mp_ppf, sp.ppf, None, prob=(0, 0.0, 1.0)),
+            Quantity(f"dist_{name}_isf", "quantile", [(q,) for q in PPF_PROBS],
+                     lambda q, f=mp_ppf: f(1 - mp.mpf(q)), sp.isf, None, prob=(0, 0.0, 1.0)),
         ])
 
     def add_disc(name, mp_pmf, mp_cdf, mp_ppf, sp, ks, r_d, r_p, r_argmap):

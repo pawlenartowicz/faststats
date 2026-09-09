@@ -1,4 +1,21 @@
 //! One-sample t-map under sign flips from sufficient statistics.
+//!
+//! Holds [`OneSampleT`], which splits the one-sample t into the part that a
+//! sign flip cannot change and the part it can. Flipping subject `i` negates
+//! `x_iv` but not `x_iv²`, so `Q[v] = Σ_i x_iv²` is computed once at
+//! construction and only `S[v] = Σ_i s_i · x_iv` is recomputed per
+//! realization; the t-map follows from `(Q, S, n)` in closed form. That is the
+//! whole reason the permutation loop is affordable: each draw costs one pass
+//! over the data instead of the two a mean/variance formulation needs, and it
+//! allocates nothing.
+//!
+//! The t itself is `ddof = 1` and unsmoothed, which is
+//! `mne.stats.ttest_1samp_no_p(X, sigma=0)`. The tests here are hand-computed
+//! cases; the numerical check against a two-pass mean/variance over random
+//! sign patterns lives in
+//! `tests/perm_oracle.rs::g8_sufficient_stat_t_matches_direct`, and the
+//! comparison against MNE's own t comes through the permutation fixtures
+//! (`t_obs` in `tests/fixtures/perm_*.json`).
 
 use alloc::vec::Vec;
 
@@ -11,7 +28,8 @@ use crate::error::NeuroError;
 /// Convention: `t = mean / sqrt(var / n)` with `var` the `ddof = 1` sample
 /// variance, `mean = S/n`, `var = (Q − S²/n) / (n − 1)`; no hat/variance
 /// smoothing. Matches `mne.stats.ttest_1samp_no_p(X, sigma=0)` to rounding
-/// (`tests/perm_oracle.rs` G8: `rel 1e-12` against a two-pass mean/var).
+/// (`tests/perm_oracle.rs::g8_sufficient_stat_t_matches_direct`: `rel 1e-12`
+/// against a two-pass mean/var).
 /// Degenerate node (variance below `4ε·Q`, ε = f64 epsilon: the rounding
 /// floor of `Q − S²/n`, whose two terms each carry up to `n·ε` relative error
 /// from `n` accumulations — covers both all-equal and all-zero): `t = 0` where

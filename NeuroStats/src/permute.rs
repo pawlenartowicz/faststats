@@ -7,6 +7,24 @@
 //! [`NullPartial`] finalizes bit-identically to one serial pass. Under the
 //! `parallel` feature (on by default) `tfce_one_sample_threads` performs that
 //! split over a rayon pool; without it the caller owns any threading.
+//!
+//! Concretely: [`run_range`] takes a `Range<u64>` of draw ids and rebuilds each
+//! draw's signs from `(seed, draw_id)` alone, so no two ranges share state;
+//! [`NullPartial`] merges by concatenating per-draw maxima and adding per-node
+//! counts, both order-free; and [`finalize`] sorts the merged maxima before
+//! reading p-values off them, so the answer cannot depend on which range
+//! finished first. [`tfce_one_sample`] is those three steps run serially.
+//!
+//! The module's oracle is MNE-Python 1.12.1
+//! `permutation_cluster_1samp_test(..., threshold=dict(...), tail=1)`, frozen
+//! into `tests/fixtures/perm_*.json` by `scripts/gen_perm_golden.py`. The two
+//! exact-enumeration fixtures are RNG-independent and are compared map for map
+//! (`tests/perm_oracle.rs::g5_exact_enumeration_matches_mne`); the Monte Carlo
+//! fixture is compared statistically
+//! (`::g6_monte_carlo_matches_mne_statistically`). Split/merge determinism has
+//! no external oracle — it is checked against the serial run
+//! (`::g7_split_merge_is_deterministic`,
+//! `::g12_threaded_driver_matches_serial_bitwise`).
 
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -249,7 +267,10 @@ pub fn run_range(
 }
 
 /// Observed maps and permutation p-maps. `B` = number of realizations,
-/// identity included.
+/// identity included. Both p-maps are **one-sided, positive tail**: only large
+/// positive TFCE values count as evidence, and a negative effect is tested by
+/// negating `x` and running again. Both count with `≥` and both include the
+/// identity realization, so every p is at least `1/B` and never 0.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TfceInference {
     /// Observed one-sample t per node (see [`OneSampleT`]).
@@ -259,10 +280,14 @@ pub struct TfceInference {
     /// FWE-corrected p per node: `#{b : max_b ≥ tfce_obs(v)} / B` over the
     /// max-TFCE null (`≥`, identity included, so `p ≥ 1/B`). Matches MNE
     /// `permutation_cluster_1samp_test(..., threshold=dict(...), tail=1)`
-    /// `cluster_pv` (`tests/perm_oracle.rs` G5, exact enumeration).
+    /// `cluster_pv` (`tests/perm_oracle.rs::g5_exact_enumeration_matches_mne`,
+    /// exact enumeration).
     pub p_fwe: Vec<f64>,
-    /// Uncorrected p per node: `#{b : tfce_b(v) ≥ tfce_obs(v)} / B`
-    /// (FSL `randomise` `_tfce_p` semantics; MNE emits no such map).
+    /// Uncorrected p per node: `#{b : tfce_b(v) ≥ tfce_obs(v)} / B` — the
+    /// node's own null, not the max null, so it carries no multiplicity
+    /// correction. Positive tail, identity included, `p ≥ 1/B`. FSL
+    /// `randomise` `_tfce_p` semantics; MNE emits no such map, so no fixture
+    /// validates it against an external tool.
     pub p_unc: Vec<f64>,
     /// The FWE null: per-draw map maxima, sorted ascending, `len == B`.
     pub null_max: Vec<f64>,
@@ -312,11 +337,13 @@ pub fn finalize(
 /// `commonstats::gen_sign_flips(n, draw_id, seed)`), reproducible from `seed`
 /// and independent of how `0..B` is split. Matches MNE 1.12.1
 /// `permutation_cluster_1samp_test(X, threshold=dict(start, step, e_power,
-/// h_power), tail=1, adjacency)` under `Weighting::MneStep` (G5: exact
+/// h_power), tail=1, adjacency)` under `Weighting::MneStep`
+/// (`tests/perm_oracle.rs::g5_exact_enumeration_matches_mne`: exact
 /// enumeration, `null_max` set-equal within `rel 1e-12` once MNE's
 /// enumeration is corrected — it counts the identity twice and skips the
 /// full-negation pattern — and `|p_fwe − p_mne| ≤ 1/B`;
-/// G6: Monte Carlo within a 4σ band).
+/// `::g6_monte_carlo_matches_mne_statistically`: Monte Carlo within a 4σ
+/// band).
 ///
 /// `x`: subject-major, `len == n · domain.n_nodes()`. `n ≥ 2`. `params`: see
 /// [`TfceParams`]; `Weighting::Exact`, `start = 0` recommended. `seed`: any
@@ -387,6 +414,11 @@ fn chunk_ranges(b: u64, threads: usize) -> Vec<Range<u64>> {
 /// and rayon's global pool have no effect here and two concurrent callers do
 /// not fight over one setting. Arguments, conventions and errors are
 /// [`tfce_one_sample`]'s.
+///
+/// The bit-identity claim is checked on every permutation fixture and thread
+/// count by `tests/perm_oracle.rs::g12_threaded_driver_matches_serial_bitwise`;
+/// `::g7_split_merge_is_deterministic` checks the same for hand-made splits
+/// merged through [`NullPartial`].
 ///
 /// ```
 /// use neurostats::{Conn, Domain, TfceParams, Weighting, tfce_one_sample, tfce_one_sample_threads};
@@ -532,7 +564,7 @@ mod tests {
         assert_eq!(r.p_fwe[2], 1.0);
     }
 
-    // Gate 2: the split covers 0..b exactly once, in near-equal contiguous
+    // The split covers 0..b exactly once, in near-equal contiguous
     // pieces, with the count the driver promises.
     #[cfg(feature = "parallel")]
     #[test]
