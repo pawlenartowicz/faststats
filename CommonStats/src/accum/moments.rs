@@ -3,15 +3,21 @@
 use super::simple::Sum;
 use super::{Accumulator, Mergeable};
 use crate::error::StatError;
-use crate::nan::{clean, NanPolicy};
+use crate::nan::{NanPolicy, clean};
+use alloc::vec::Vec;
 
 /// Welford running mean. An accumulator-family primitive: batch `mean` currently
 /// reads off Variance's two-pass path, so nothing consumes `Mean` directly yet.
 #[derive(Clone, Default)]
-pub struct Mean { pub(crate) n: u64, pub(crate) mean: f64 }
+pub struct Mean {
+    pub(crate) n: u64,
+    pub(crate) mean: f64,
+}
 impl Mergeable for Mean {
     fn merge(&mut self, o: &Self) {
-        if o.n == 0 { return; }
+        if o.n == 0 {
+            return;
+        }
         let n = self.n + o.n;
         let delta = o.mean - self.mean;
         // Chan's parallel mean update; see Variance::merge for the moment algebra.
@@ -20,47 +26,89 @@ impl Mergeable for Mean {
     }
 }
 impl Accumulator for Mean {
-    type Item = f64; type Output = f64;
-    fn empty() -> Self { Self::default() }
+    type Item = f64;
+    type Output = f64;
+    fn empty() -> Self {
+        Self::default()
+    }
     fn update(&mut self, x: f64) {
         self.n += 1;
         self.mean += (x - self.mean) / (self.n as f64);
     }
-    fn finalize(&self) -> f64 { self.mean }
+    fn finalize(&self) -> f64 {
+        self.mean
+    }
 }
 
 /// Carries (n, mean, M2). M2 = Σ(xᵢ - mean)². Chan's parallel formula for merge.
 #[derive(Clone, Default)]
-pub struct Variance { pub(crate) n: u64, pub(crate) mean: f64, pub(crate) m2: f64 }
+pub struct Variance {
+    pub(crate) n: u64,
+    pub(crate) mean: f64,
+    pub(crate) m2: f64,
+}
 impl Variance {
     /// Number of observations folded in.
-    pub fn count(&self) -> u64 { self.n }
+    pub fn count(&self) -> u64 {
+        self.n
+    }
     /// Running arithmetic mean.
-    pub fn mean(&self) -> f64 { self.mean }
+    pub fn mean(&self) -> f64 {
+        self.mean
+    }
     /// Population variance (ddof = 0). NaN when n = 0.
-    pub fn var_pop(&self) -> f64 { if self.n == 0 { f64::NAN } else { self.m2 / self.n as f64 } }
+    pub fn var_pop(&self) -> f64 {
+        if self.n == 0 {
+            f64::NAN
+        } else {
+            self.m2 / self.n as f64
+        }
+    }
     /// Sample variance (ddof = 1, Bessel-corrected). NaN when n < 2.
-    pub fn var_sample(&self) -> f64 { if self.n < 2 { f64::NAN } else { self.m2 / (self.n - 1) as f64 } }
+    pub fn var_sample(&self) -> f64 {
+        if self.n < 2 {
+            f64::NAN
+        } else {
+            self.m2 / (self.n - 1) as f64
+        }
+    }
     /// Sample standard deviation (√ of the ddof = 1 variance).
-    pub fn sd_sample(&self) -> f64 { self.var_sample().sqrt() }
+    pub fn sd_sample(&self) -> f64 {
+        libm::sqrt(self.var_sample())
+    }
     /// Two-pass batch override: more accurate than single-pass Welford when the
     /// whole vector is in hand. Skips NaN.
     pub fn from_slice_two_pass(xs: &[f64]) -> Self {
         let kept: Vec<f64> = xs.iter().copied().filter(|x| !x.is_nan()).collect();
         let n = kept.len() as u64;
-        if n == 0 { return Self::default(); }
+        if n == 0 {
+            return Self::default();
+        }
         let mut sx = Sum::empty();
-        for &x in &kept { sx.update(x); }
+        for &x in &kept {
+            sx.update(x);
+        }
         let mean = sx.finalize() / n as f64;
         let mut s2 = Sum::empty();
-        for &x in &kept { s2.update((x - mean) * (x - mean)); }
-        Self { n, mean, m2: s2.finalize() }
+        for &x in &kept {
+            s2.update((x - mean) * (x - mean));
+        }
+        Self {
+            n,
+            mean,
+            m2: s2.finalize(),
+        }
     }
 }
 impl Mergeable for Variance {
     fn merge(&mut self, o: &Self) {
-        if o.n == 0 { return; }
-        if self.n == 0 { *self = o.clone(); return; }
+        if o.n == 0 {
+            return;
+        }
+        if self.n == 0 {
+            *self = o.clone();
+            return;
+        }
         let (na, nb) = (self.n as f64, o.n as f64);
         let n = na + nb;
         let delta = o.mean - self.mean;
@@ -71,22 +119,32 @@ impl Mergeable for Variance {
     }
 }
 impl Accumulator for Variance {
-    type Item = f64; type Output = f64;
-    fn empty() -> Self { Self::default() }
+    type Item = f64;
+    type Output = f64;
+    fn empty() -> Self {
+        Self::default()
+    }
     fn update(&mut self, x: f64) {
         self.n += 1;
         let delta = x - self.mean;
         self.mean += delta / self.n as f64;
         self.m2 += delta * (x - self.mean);
     }
-    fn finalize(&self) -> f64 { self.var_sample() }
+    fn finalize(&self) -> f64 {
+        self.var_sample()
+    }
 }
 
 /// Validated sample-variance accumulator: omit NaN, require n ≥ 2, two-pass. One
 /// source of truth for the test/CI callers (ttest, effect, ci, anova).
 pub(crate) fn checked_variance(xs: &[f64]) -> Result<Variance, StatError> {
     let v = clean(xs, NanPolicy::Omit)?;
-    if v.len() < 2 { return Err(StatError::TooFewObservations { needed: 2, got: v.len() }); }
+    if v.len() < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: v.len(),
+        });
+    }
     Ok(Variance::from_slice_two_pass(&v))
 }
 
@@ -99,19 +157,35 @@ pub(crate) fn pooled_var(sa: &Variance, sb: &Variance) -> f64 {
 
 /// Central moments to 4th order. Terriberry's parallel merge formulas.
 #[derive(Clone, Default)]
-pub struct Moments { pub(crate) n: u64, mean: f64, m2: f64, m3: f64, m4: f64 }
+pub struct Moments {
+    pub(crate) n: u64,
+    mean: f64,
+    m2: f64,
+    m3: f64,
+    m4: f64,
+}
 impl Moments {
     /// Number of observations folded in.
-    pub fn count(&self) -> u64 { self.n }
+    pub fn count(&self) -> u64 {
+        self.n
+    }
     /// Running arithmetic mean.
-    pub fn mean(&self) -> f64 { self.mean }
+    pub fn mean(&self) -> f64 {
+        self.mean
+    }
     /// Sample variance (ddof = 1). NaN when n < 2.
-    pub fn var_sample(&self) -> f64 { if self.n < 2 { f64::NAN } else { self.m2 / (self.n - 1) as f64 } }
+    pub fn var_sample(&self) -> f64 {
+        if self.n < 2 {
+            f64::NAN
+        } else {
+            self.m2 / (self.n - 1) as f64
+        }
+    }
     /// Sample skewness, Fisher–Pearson population form g1 = √n·M3 / M2^{3/2} (no
     /// bias correction). Matches `scipy.stats.skew` (default `bias=True`).
     pub fn skewness(&self) -> f64 {
         let n = self.n as f64;
-        (n).sqrt() * self.m3 / self.m2.powf(1.5)
+        libm::sqrt(n) * self.m3 / libm::pow(self.m2, 1.5)
     }
     /// Excess kurtosis, population form g2 = n·M4/M2² − 3 (no bias correction).
     /// Matches `scipy.stats.kurtosis` (default `bias=True`, Fisher).
@@ -122,29 +196,44 @@ impl Moments {
 }
 impl Mergeable for Moments {
     fn merge(&mut self, o: &Self) {
-        if o.n == 0 { return; }
-        if self.n == 0 { *self = o.clone(); return; }
+        if o.n == 0 {
+            return;
+        }
+        if self.n == 0 {
+            *self = o.clone();
+            return;
+        }
         let (na, nb) = (self.n as f64, o.n as f64);
         let n = na + nb;
         let d = o.mean - self.mean;
         // Terriberry's parallel extension of Chan to the 3rd/4th central moments;
         // δ = meanB − meanA, combining (n, mean, M2, M3, M4) pairwise.
-        let d2 = d * d; let d3 = d2 * d; let d4 = d2 * d2;
+        let d2 = d * d;
+        let d3 = d2 * d;
+        let d4 = d2 * d2;
         let m2 = self.m2 + o.m2 + d2 * na * nb / n;
-        let m3 = self.m3 + o.m3
+        let m3 = self.m3
+            + o.m3
             + d3 * na * nb * (na - nb) / (n * n)
             + 3.0 * d * (na * o.m2 - nb * self.m2) / n;
-        let m4 = self.m4 + o.m4
+        let m4 = self.m4
+            + o.m4
             + d4 * na * nb * (na * na - na * nb + nb * nb) / (n * n * n)
             + 6.0 * d2 * (na * na * o.m2 + nb * nb * self.m2) / (n * n)
             + 4.0 * d * (na * o.m3 - nb * self.m3) / n;
         self.mean += d * nb / n;
-        self.m2 = m2; self.m3 = m3; self.m4 = m4; self.n += o.n;
+        self.m2 = m2;
+        self.m3 = m3;
+        self.m4 = m4;
+        self.n += o.n;
     }
 }
 impl Accumulator for Moments {
-    type Item = f64; type Output = f64;
-    fn empty() -> Self { Self::default() }
+    type Item = f64;
+    type Output = f64;
+    fn empty() -> Self {
+        Self::default()
+    }
     fn update(&mut self, x: f64) {
         let n1 = self.n as f64;
         self.n += 1;
@@ -154,29 +243,53 @@ impl Accumulator for Moments {
         let delta_n2 = delta_n * delta_n;
         let term1 = delta * delta_n * n1;
         self.mean += delta_n;
-        self.m4 += term1 * delta_n2 * (n * n - 3.0 * n + 3.0)
-            + 6.0 * delta_n2 * self.m2 - 4.0 * delta_n * self.m3;
+        self.m4 += term1 * delta_n2 * (n * n - 3.0 * n + 3.0) + 6.0 * delta_n2 * self.m2
+            - 4.0 * delta_n * self.m3;
         self.m3 += term1 * delta_n * (n - 2.0) - 3.0 * delta_n * self.m2;
         self.m2 += term1;
     }
-    fn finalize(&self) -> f64 { self.kurtosis_excess() }
+    fn finalize(&self) -> f64 {
+        self.kurtosis_excess()
+    }
 }
 
 /// Co-moment for covariance / Pearson. Carries per-axis M2 plus the cross term.
 #[derive(Clone, Default)]
-pub struct CoMoment { n: u64, mean_x: f64, mean_y: f64, c2: f64, m2x: f64, m2y: f64 }
+pub struct CoMoment {
+    n: u64,
+    mean_x: f64,
+    mean_y: f64,
+    c2: f64,
+    m2x: f64,
+    m2y: f64,
+}
 impl CoMoment {
     /// Number of paired observations folded in.
-    pub fn count(&self) -> u64 { self.n }
+    pub fn count(&self) -> u64 {
+        self.n
+    }
     /// Sample covariance (ddof = 1). NaN when n < 2.
-    pub fn covariance_sample(&self) -> f64 { if self.n < 2 { f64::NAN } else { self.c2 / (self.n - 1) as f64 } }
+    pub fn covariance_sample(&self) -> f64 {
+        if self.n < 2 {
+            f64::NAN
+        } else {
+            self.c2 / (self.n - 1) as f64
+        }
+    }
     /// Pearson product-moment correlation r = C2 / √(M2x·M2y).
-    pub fn pearson(&self) -> f64 { self.c2 / (self.m2x * self.m2y).sqrt() }
+    pub fn pearson(&self) -> f64 {
+        self.c2 / libm::sqrt(self.m2x * self.m2y)
+    }
 }
 impl Mergeable for CoMoment {
     fn merge(&mut self, o: &Self) {
-        if o.n == 0 { return; }
-        if self.n == 0 { *self = o.clone(); return; }
+        if o.n == 0 {
+            return;
+        }
+        if self.n == 0 {
+            *self = o.clone();
+            return;
+        }
         let (na, nb) = (self.n as f64, o.n as f64);
         let n = na + nb;
         let dx = o.mean_x - self.mean_x;
@@ -192,8 +305,11 @@ impl Mergeable for CoMoment {
     }
 }
 impl Accumulator for CoMoment {
-    type Item = (f64, f64); type Output = f64;
-    fn empty() -> Self { Self::default() }
+    type Item = (f64, f64);
+    type Output = f64;
+    fn empty() -> Self {
+        Self::default()
+    }
     fn update(&mut self, (x, y): (f64, f64)) {
         self.n += 1;
         let n = self.n as f64;
@@ -205,17 +321,26 @@ impl Accumulator for CoMoment {
         self.m2x += dx * (x - self.mean_x);
         self.m2y += dy * (y - self.mean_y);
     }
-    fn finalize(&self) -> f64 { self.pearson() }
+    fn finalize(&self) -> f64 {
+        self.pearson()
+    }
 }
 
 /// Fold paired `a`, `b` into a [`CoMoment`], dropping any pair with a NaN in
 /// either coordinate (the Omit policy on pairs). Errors on length mismatch.
 /// Callers apply their own minimum-count requirement to the result.
 pub(crate) fn comoment_pairs(a: &[f64], b: &[f64]) -> Result<CoMoment, StatError> {
-    if a.len() != b.len() { return Err(StatError::MismatchedLengths { a: a.len(), b: b.len() }); }
+    if a.len() != b.len() {
+        return Err(StatError::MismatchedLengths {
+            a: a.len(),
+            b: b.len(),
+        });
+    }
     let mut c = CoMoment::empty();
     for (&x, &y) in a.iter().zip(b) {
-        if !x.is_nan() && !y.is_nan() { c.update((x, y)); }
+        if !x.is_nan() && !y.is_nan() {
+            c.update((x, y));
+        }
     }
     Ok(c)
 }
@@ -233,15 +358,15 @@ mod tests {
     #[test]
     fn variance_sample_matches_known() {
         // var([2,4,4,4,5,5,7,9]) sample = 32/7, pop = 4.0
-        let v: Variance = from_slice(&[2.,4.,4.,4.,5.,5.,7.,9.]);
+        let v: Variance = from_slice(&[2., 4., 4., 4., 5., 5., 7., 9.]);
         assert!((v.var_pop() - 4.0).abs() < 1e-13);
-        assert!((v.var_sample() - 32.0/7.0).abs() < 1e-13);
+        assert!((v.var_sample() - 32.0 / 7.0).abs() < 1e-13);
     }
     #[test]
     fn variance_merge_equals_single() {
-        let whole: Variance = from_slice(&[2.,4.,4.,4.,5.,5.,7.,9.]);
-        let mut a: Variance = from_slice(&[2.,4.,4.,4.]);
-        let b: Variance = from_slice(&[5.,5.,7.,9.]);
+        let whole: Variance = from_slice(&[2., 4., 4., 4., 5., 5., 7., 9.]);
+        let mut a: Variance = from_slice(&[2., 4., 4., 4.]);
+        let b: Variance = from_slice(&[5., 5., 7., 9.]);
         a.merge(&b);
         assert!((a.var_sample() - whole.var_sample()).abs() < 1e-12);
         assert_eq!(a.count(), 8);
@@ -263,19 +388,23 @@ mod more_tests {
 
     #[test]
     fn skew_kurtosis_known() {
-        let m: Moments = from_slice(&[1.,2.,3.,4.,5.]);
+        let m: Moments = from_slice(&[1., 2., 3., 4., 5.]);
         assert!(m.skewness().abs() < 1e-12);
         assert!((m.kurtosis_excess() - (-1.3)).abs() < 1e-9); // SciPy kurtosis([1..5])=-1.3
         // Non-symmetric g1 distinguishes the Fisher–Pearson population form (g1) from
         // the bias-adjusted G1: scipy.stats.skew([2,4,4,4,5,5,7,9], bias=True) = 0.65625.
         let asy: Moments = from_slice(&[2., 4., 4., 4., 5., 5., 7., 9.]);
-        assert!((asy.skewness() - 0.65625).abs() < 1e-12, "skew {}", asy.skewness());
+        assert!(
+            (asy.skewness() - 0.65625).abs() < 1e-12,
+            "skew {}",
+            asy.skewness()
+        );
     }
     #[test]
     fn moments_merge_equals_single() {
-        let whole: Moments = from_slice(&[1.,2.,3.,4.,5.,6.,7.,8.]);
-        let mut a: Moments = from_slice(&[1.,2.,3.,4.]);
-        let b: Moments = from_slice(&[5.,6.,7.,8.]);
+        let whole: Moments = from_slice(&[1., 2., 3., 4., 5., 6., 7., 8.]);
+        let mut a: Moments = from_slice(&[1., 2., 3., 4.]);
+        let b: Moments = from_slice(&[5., 6., 7., 8.]);
         a.merge(&b);
         assert!((a.kurtosis_excess() - whole.kurtosis_excess()).abs() < 1e-10);
         assert!((a.skewness() - whole.skewness()).abs() < 1e-10);
@@ -283,19 +412,27 @@ mod more_tests {
     #[test]
     fn pearson_perfect_correlation() {
         let mut c = CoMoment::empty();
-        for (x, y) in [(1.,2.), (2.,4.), (3.,6.), (4.,8.)] { c.update((x, y)); }
+        for (x, y) in [(1., 2.), (2., 4.), (3., 6.), (4., 8.)] {
+            c.update((x, y));
+        }
         assert!((c.pearson() - 1.0).abs() < 1e-13);
-        assert!((c.covariance_sample() - 10.0/3.0).abs() < 1e-12);
+        assert!((c.covariance_sample() - 10.0 / 3.0).abs() < 1e-12);
     }
     #[test]
     fn comoment_merge_equals_single() {
-        let pairs = [(1.,2.),(2.,1.),(3.,5.),(4.,4.),(5.,9.),(6.,7.)];
+        let pairs = [(1., 2.), (2., 1.), (3., 5.), (4., 4.), (5., 9.), (6., 7.)];
         let mut whole = CoMoment::empty();
-        for &p in &pairs { whole.update(p); }
+        for &p in &pairs {
+            whole.update(p);
+        }
         let mut a = CoMoment::empty();
-        for &p in &pairs[..3] { a.update(p); }
+        for &p in &pairs[..3] {
+            a.update(p);
+        }
         let mut b = CoMoment::empty();
-        for &p in &pairs[3..] { b.update(p); }
+        for &p in &pairs[3..] {
+            b.update(p);
+        }
         a.merge(&b);
         assert!((a.pearson() - whole.pearson()).abs() < 1e-12);
     }

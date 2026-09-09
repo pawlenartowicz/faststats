@@ -4,17 +4,23 @@
 
 /// Error function erf(x), defined on all reals, range (−1, 1). libm::erf is
 /// Boost-derived, ~1e-15. Matches `scipy.special.erf` (`tests/fixtures/erf.json`).
-pub fn erf(x: f64) -> f64 { libm::erf(x) }
+pub fn erf(x: f64) -> f64 {
+    libm::erf(x)
+}
 
 /// Complementary error function erfc(x) = 1 − erf(x), all reals → (0, 2).
 /// Computed directly (not as 1 − erf) to keep accuracy in the right tail.
 /// Matches `scipy.special.erfc` (`tests/fixtures/erfc.json`).
-pub fn erfc(x: f64) -> f64 { libm::erfc(x) }
+pub fn erfc(x: f64) -> f64 {
+    libm::erfc(x)
+}
 
 /// Gamma function Γ(x) via libm::tgamma. Defined on the reals except the
 /// non-positive integers (poles). Matches `scipy.special.gamma`
 /// (`tests/fixtures/gamma.json`).
-pub fn gamma(x: f64) -> f64 { libm::tgamma(x) }
+pub fn gamma(x: f64) -> f64 {
+    libm::tgamma(x)
+}
 
 /// Natural log of the gamma function, ln Γ(x), used where Γ would overflow.
 ///
@@ -38,7 +44,8 @@ pub fn lgamma(mut x: f64) -> f64 {
         1.505_632_735_149_311_6e-7,
     ];
     if x < 0.5 {
-        return (std::f64::consts::PI / (std::f64::consts::PI * x).sin()).ln() - lgamma(1.0 - x);
+        return libm::log(core::f64::consts::PI / libm::sin(core::f64::consts::PI * x))
+            - lgamma(1.0 - x);
     }
     x -= 1.0;
     let mut a = P[0];
@@ -46,13 +53,17 @@ pub fn lgamma(mut x: f64) -> f64 {
     for (i, &pi) in P.iter().enumerate().skip(1) {
         a += pi / (x + i as f64);
     }
-    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
+    0.5 * libm::log(2.0 * core::f64::consts::PI) + (x + 0.5) * libm::log(t) - t + libm::log(a)
 }
 
 /// Beta function B(a,b) = Γ(a)Γ(b)/Γ(a+b), via the stable log form exp(lbeta).
 /// Defined for a, b > 0. See [`lbeta`] for the validated log form.
-pub fn beta(a: f64, b: f64) -> f64 { lbeta(a, b).exp() }
+pub fn beta(a: f64, b: f64) -> f64 {
+    libm::exp(lbeta(a, b))
+}
 
 /// Log-beta ln B(a,b) = lgamma(a) + lgamma(b) − lgamma(a+b). Defined for a, b > 0.
 /// Matches `scipy.special.betaln` (`tests/fixtures/lbeta.json`).
-pub fn lbeta(a: f64, b: f64) -> f64 { lgamma(a) + lgamma(b) - lgamma(a + b) }
+pub fn lbeta(a: f64, b: f64) -> f64 {
+    lgamma(a) + lgamma(b) - lgamma(a + b)
+}

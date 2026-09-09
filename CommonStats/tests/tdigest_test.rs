@@ -3,7 +3,7 @@
 //! computation on deterministic, rng-free data. The bound is the k1 rank error
 //! `3/(4δ)` = 0.75% at δ = 100.
 
-use commonstats::accum::{quantile_edges, Mergeable, TDigest};
+use commonstats::accum::{Mergeable, TDigest, quantile_edges};
 
 /// Deterministic data, no `rng` feature: an in-test LCG over [0, 1)·scale.
 /// (Glibc-style constants; purely to get spread-out, reproducible values.)
@@ -11,7 +11,9 @@ fn lcg_sample(n: usize, seed: u64) -> Vec<f64> {
     let mut s = seed;
     (0..n)
         .map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 11) as f64 / (1u64 << 53) as f64) * 1000.0
         })
         .collect()

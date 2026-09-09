@@ -1,4 +1,9 @@
-//! digamma (ψ) and logsumexp.
+//! Digamma (ψ) and numerically-stable log-sum-exp.
+//!
+//! Accuracy target: ~1e-12 relative error for `digamma`. The asymptotic series
+//! threshold is 10 (not 6): at x ≈ 6 the first omitted term is ~2e-9, breaking
+//! the 1e-12 target; the recurrence to x ≥ 10 shrinks it below 1e-12. See
+//! [`digamma`] for the derivation.
 
 /// Digamma ψ(x) for x > 0, via recurrence ψ(x) = ψ(x+1) − 1/x up to x ≥ 10, then
 /// the asymptotic series (Abramowitz & Stegun 6.3.18)
@@ -9,18 +14,22 @@
 /// (`tests/fixtures/digamma.json`).
 pub fn digamma(mut x: f64) -> f64 {
     let mut result = 0.0;
-    while x < 10.0 { result -= 1.0 / x; x += 1.0; }
+    while x < 10.0 {
+        result -= 1.0 / x;
+        x += 1.0;
+    }
     let inv = 1.0 / x;
     let inv2 = inv * inv;
-    result + x.ln() - 0.5 * inv
-        - inv2 * (1.0 / 12.0 - inv2 * (1.0 / 120.0 - inv2 / 252.0))
+    result + libm::log(x) - 0.5 * inv - inv2 * (1.0 / 12.0 - inv2 * (1.0 / 120.0 - inv2 / 252.0))
 }
 
 /// Numerically stable log(Σ exp(xᵢ)) over `xs`. Empty slice → −∞ (log of an
 /// empty sum); a NaN in `xs` propagates to the result.
 pub fn logsumexp(xs: &[f64]) -> f64 {
     let m = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if m == f64::NEG_INFINITY { return f64::NEG_INFINITY; }
-    let sum: f64 = xs.iter().map(|&x| (x - m).exp()).sum();
-    m + sum.ln()
+    if m == f64::NEG_INFINITY {
+        return f64::NEG_INFINITY;
+    }
+    let sum: f64 = xs.iter().map(|&x| libm::exp(x - m)).sum();
+    m + libm::log(sum)
 }

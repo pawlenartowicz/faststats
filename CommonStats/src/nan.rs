@@ -7,6 +7,7 @@
 //! opt-in — any NaN turns the whole result into an error instead of silently
 //! dropping data.
 use crate::error::StatError;
+use alloc::vec::Vec;
 
 /// Missing-data policy, decided once and applied uniformly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -38,7 +39,11 @@ pub fn clean(xs: &[f64], policy: NanPolicy) -> Result<Vec<f64>, StatError> {
         }
         NanPolicy::Omit => {
             let kept: Vec<f64> = xs.iter().copied().filter(|x| !x.is_nan()).collect();
-            if kept.is_empty() { Err(StatError::AllNaN) } else { Ok(kept) }
+            if kept.is_empty() {
+                Err(StatError::AllNaN)
+            } else {
+                Ok(kept)
+            }
         }
     }
 }
@@ -47,6 +52,7 @@ pub fn clean(xs: &[f64], policy: NanPolicy) -> Result<Vec<f64>, StatError> {
 mod tests {
     use super::*;
     use crate::error::StatError;
+    use std::vec;
     #[test]
     fn omit_drops_nan_and_reports_effective_n() {
         let v = clean(&[1.0, f64::NAN, 3.0], NanPolicy::Omit).unwrap();
@@ -62,7 +68,13 @@ mod tests {
     }
     #[test]
     fn propagate_poisons_on_any_nan() {
-        assert_eq!(clean(&[1.0, f64::NAN], NanPolicy::Propagate), Err(StatError::AllNaN));
-        assert_eq!(clean(&[1.0, 2.0], NanPolicy::Propagate).unwrap(), vec![1.0, 2.0]);
+        assert_eq!(
+            clean(&[1.0, f64::NAN], NanPolicy::Propagate),
+            Err(StatError::AllNaN)
+        );
+        assert_eq!(
+            clean(&[1.0, 2.0], NanPolicy::Propagate).unwrap(),
+            vec![1.0, 2.0]
+        );
     }
 }

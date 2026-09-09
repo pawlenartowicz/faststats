@@ -1,0 +1,50 @@
+[package]
+name = "neurostats"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"  # edition 2024 floor, matches commonstats
+license = "LGPL-3.0-or-later"
+description = "no_std, WASM-ready neuroimaging statistics: TFCE enhancement over masked-volume adjacency graphs, validated against MNE-Python."
+repository = "https://github.com/pawlenartowicz/faststats"
+homepage = "https://github.com/pawlenartowicz/faststats"
+documentation = "https://docs.rs/neurostats"
+readme = "README.md"
+authors = ["Paweł Lenartowicz"]
+keywords = ["statistics", "neuroimaging", "tfce", "permutation", "wasm"]
+categories = ["mathematics", "science", "no-std", "wasm"]
+
+[dependencies]
+libm = "0.2"      # powf under no_std — pure-Rust, WASM-clean
+# Sign-flip generation + Mergeable
+commonstats = { path = "../CommonStats", version = "0.2", features = ["resample"], optional = true }
+rayon = { version = "1.12", optional = true }   # thread pool for `tfce_one_sample_threads`
+
+[features]
+default = ["std", "parallel"]
+# `permute` needs commonstats (sign-flip RNG, Mergeable) and `std::thread`;
+# the TFCE core needs neither, so it stays buildable for `no_std`/wasm.
+std = ["dep:commonstats"]
+# rayon-backed splitting of the draw loop. Opt out with
+# `default-features = false` — a negative feature would not work, since cargo
+# features are additive and unify across the whole dependency graph.
+parallel = ["std", "dep:rayon"]
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"  # read tests/fixtures/*.json MNE goldens
+
+[lib]
+name = "neurostats"
+
+[[bench]]
+name = "tfce_bench"
+harness = false   # plain std::time::Instant timing — no criterion dependency
+
+[[bench]]
+name = "perm_bench"
+harness = false   # plain std::time::Instant timing — no criterion dependency
+
+# Mirrors the CI gate (`clippy --all-features -- -D warnings`) for local builds.
+# `unsafe_code`/`missing_docs` stay in lib.rs as the owning site.
+[lints.clippy]
+all = { level = "deny", priority = -1 }

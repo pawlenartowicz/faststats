@@ -1,5 +1,5 @@
 #!/usr/bin/env Rscript
-# Layer-2 cross-check engine (see docs/CommonStats accuracy-validation spec §2).
+# Layer-2 cross-check engine: the scipy+R recompute leg of the three-source gate.
 # Reads a job manifest written by gen_oracle.py, computes each quantity once with
 # base R `stats`, writes the values back as JSON. One batch invocation per run —
 # never called per value, and never a test-time dependency.
@@ -11,7 +11,7 @@
 #
 # Convention note: every `func` here must mirror the matched parameterization in
 # gen_oracle.py's identity map. erf/erfc/erfinv/erfcinv have no base-R primitive,
-# so they go through the pnorm/qnorm identities (spec §4 R-availability rule):
+# so they go through the pnorm/qnorm identities (R-availability rule):
 #   erf(x)    = 2*pnorm(x*sqrt2) - 1        erfinv(p)  = qnorm((p+1)/2)/sqrt2
 #   erfc(x)   = 2*pnorm(-x*sqrt2)           erfcinv(p) = qnorm(1 - p/2)/sqrt2
 
@@ -27,6 +27,8 @@ dispatch <- function(func, a) {
     "lgamma"     = lgamma(a[1]),
     "digamma"    = digamma(a[1]),
     "lbeta"      = lbeta(a[1], a[2]),
+    # logsumexp: stable log-sum-exp over all args (no separate base R fn; manual stable).
+    "logsumexp"  = { m <- max(a); if (!is.finite(m)) NA_real_ else m + log(sum(exp(a - m))) },
     # gammp/gammq are the regularized lower/upper incomplete gamma P(a,x)/Q(a,x);
     # pgamma(x, shape=a, rate=1) == P(a,x).
     "gammp"      = pgamma(a[2], shape = a[1]),
@@ -69,6 +71,16 @@ dispatch <- function(func, a) {
     "pnbinom"  = pnbinom(a[1], size = a[2], prob = a[3]),
     "dhyper"   = dhyper(a[1], m = a[2], n = a[3], k = a[4]),
     "phyper"   = phyper(a[1], m = a[2], n = a[3], k = a[4]),
+
+    # --- descriptives area. Each unary function receives the data vector as all args.
+    # Binary functions (cov/pearson) receive [n, x1…xn, y1…yn] and split at index n.
+    # R has no built-in skewness/kurtosis; those two are scipy-only (R n/a).
+    "desc_mean"    = mean(a),
+    "desc_var"     = var(a),     # sample, ddof=1
+    "desc_sd"      = sd(a),      # sample, ddof=1
+    "desc_median"  = median(a),
+    "desc_cov"     = { n <- as.integer(a[1]); cov(a[2:(n+1)], a[(n+2):(2*n+1)]) },
+    "desc_pearson" = { n <- as.integer(a[1]); cor(a[2:(n+1)], a[(n+2):(2*n+1)]) },
 
     # --- transform area (Phase 4 three-source migration) ---
     # qnorm: standard-normal quantile function (for normal_scores cross-check).

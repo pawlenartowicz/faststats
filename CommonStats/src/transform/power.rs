@@ -4,7 +4,8 @@
 //! forward-compatible if added later). NaN inputs are omitted via `nan::clean`.
 
 use crate::error::StatError;
-use crate::nan::{clean, NanPolicy};
+use crate::nan::{NanPolicy, clean};
+use alloc::vec::Vec;
 
 /// Box–Cox (1964) power transform for positive data.
 ///
@@ -37,7 +38,6 @@ use crate::nan::{clean, NanPolicy};
 /// ```
 pub fn box_cox(v: &[f64], lambda: f64) -> Result<Vec<f64>, StatError> {
     let data = clean(v, NanPolicy::Omit)?;
-    // Validate domain before producing any output — fail-fast on first violation.
     if data.iter().any(|&x| x <= 0.0) {
         return Err(StatError::DomainError(
             "box_cox requires x > 0 for all inputs",
@@ -89,10 +89,7 @@ pub fn box_cox(v: &[f64], lambda: f64) -> Result<Vec<f64>, StatError> {
 /// ```
 pub fn yeo_johnson(v: &[f64], lambda: f64) -> Result<Vec<f64>, StatError> {
     let data = clean(v, NanPolicy::Omit)?;
-    Ok(data
-        .iter()
-        .map(|&x| yj_scalar(x, lambda))
-        .collect())
+    Ok(data.iter().map(|&x| yj_scalar(x, lambda)).collect())
 }
 
 /// Scalar Yeo–Johnson transform — four branches.

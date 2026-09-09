@@ -7,7 +7,7 @@ Areas: special htest dist density transform. mpmath/scipy/numpy/Rscript are
 *generation-time* tools only — never crate or CI dependencies (CI runs only
 `cargo test` against the committed fixtures).
 
-Two validation axes (see the CommonStats accuracy-validation spec):
+Two validation axes:
   Layer 1 — Truth: mpmath at high precision is the `expected` value.
   Layer 2 — Cross-validation (one-shot, at generation): scipy AND R recompute
             each bulk quantity; `mpmath ≈ scipy ≈ R` is asserted (`rel 1e-9`) and
@@ -26,7 +26,7 @@ from scipy import special as sp
 from scipy import stats as st
 import mpmath as mp
 
-mp.mp.dps = 60  # 60 decimal digits — Layer-1 truth precision (spec §1)
+mp.mp.dps = 60  # 60 decimal digits — Layer-1 truth precision
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures")
 os.makedirs(OUT, exist_ok=True)
@@ -38,9 +38,9 @@ RSCRIPT = os.path.join(os.path.dirname(__file__), "gen_oracle.R")
 # ===========================================================================
 CONV_REL = 1e-9    # Layer-2 convention tolerance — trips on order-1 definition bugs
 CONV_ABS = 1e-12   # abs floor so near-zero truths don't blow up the rel check
-TAIL_LO, TAIL_HI = 1e-6, 1.0 - 1e-6  # bulk band for a probability arg (spec §3)
+TAIL_LO, TAIL_HI = 1e-6, 1.0 - 1e-6  # bulk band for a probability arg
 
-# Reviewed tail-band ledger (spec §5). One value per fixture, stamped onto its tail
+# Reviewed tail-band ledger. One value per fixture, stamped onto its tail
 # rows; the Rust harness asserts each tail row within TAIL_SLACK(=4)× this. Sourced
 # from the `measure_tail_bands` calibration test (our impl's measured rel error vs
 # mpmath truth), lightly padded. CHANGE ONLY when an algorithm changes — re-run the
@@ -107,14 +107,14 @@ def _rel_err(approx, truth_mpf):
 
 
 class Quantity:
-    """One logical quantity declared with its three matched callables (spec §2
+    """One logical quantity declared with its three matched callables (the
     identity map). `kind`: 'value' (cdf/density-like, bulk ladder everywhere) or
     'quantile' (tail-tiered). `prob` = (arg_index, lo, hi) domain of the
     probability argument for tier tagging, or None when every row is bulk."""
     def __init__(self, name, kind, args_list, mp_fn, sp_fn, r_func, prob=None, r_argmap=None):
         self.name, self.kind, self.args_list = name, kind, args_list
         self.mp_fn, self.sp_fn, self.prob = mp_fn, sp_fn, prob
-        # r_func=None → R cannot compute this quantity (spec §4 "R: n/a"); it
+        # r_func=None → R cannot compute this quantity ("R: n/a"); it
         # cross-checks on mpmath+scipy only. r_argmap maps row args → the R call's
         # args when they differ (e.g. a dist row carries only [x] but R d/p/q needs
         # [x, *params]); default identity.
@@ -221,6 +221,20 @@ def gen_special():
     xs = [-5, -2, -1, -0.3, 0, 0.3, 1, 2, 5, 8]
     pos = [0.01, 0.1, 0.5, 1, 2, 5, 10, 50, 120]
     probs = [1e-9, 1e-4, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1 - 1e-9]
+
+    # logsumexp: each row is a 3-element input vector; R uses the stable form
+    # m + log(sum(exp(x - m))). Cases cover ordinary magnitudes, large values
+    # (overflow in a naive sum), mixed signs, all-negative, and large spread.
+    lse_cases = [
+        (1.0, 2.0, 3.0),           # ordinary positive — all three sources agree
+        (1000.0, 1000.0, 1000.0),  # naively exp() overflows; stable: 1000 + ln 3
+        (-1.0, 0.0, 1.0),          # symmetric around 0
+        (-5.0, -4.0, -3.0),        # all negative
+        (1.0, 100.0, 50.0),        # large spread; dominated by the max term
+    ]
+    def mp_lse(*xs_):  return mp.log(sum(mp.exp(mp.mpf(x)) for x in xs_))
+    def sp_lse(*xs_):  return float(sp.logsumexp(list(xs_)))
+
     quantities = [
         Quantity("erf",     "value", [(x,) for x in xs],  mp.erf,     sp.erf,      "erf"),
         Quantity("erfc",    "value", [(x,) for x in xs],  mp.erfc,    sp.erfc,     "erfc"),
@@ -232,6 +246,7 @@ def gen_special():
         Quantity("betai",   "value", [(a, b, x) for a in pos for b in pos for x in (0.05, 0.3, 0.7, 0.95)],
                  mp_betai, sp.betainc, "betai"),
         Quantity("lbeta",   "value", [(a, b) for a in pos for b in pos], mp_lbeta, sp.betaln, "lbeta"),
+        Quantity("logsumexp", "value", lse_cases, mp_lse, sp_lse, "logsumexp"),
         # Inverses: quantile-kind, tail-tiered on the probability argument.
         Quantity("erfcinv", "quantile", [(p,) for p in probs], mp_erfcinv, sp.erfcinv, "erfcinv",
                  prob=(0, 0.0, 2.0)),
@@ -409,20 +424,15 @@ def gen_htest():
     ]
     _htest_gate(gate)
 
-    # --- Welch-CI surfacing (spec §4/§6, memory commonstats-welch-ci-latent-bug) ---
-    # Our t_test_two(Welch) builds its CI with the *pooled* ci_mean_diff (df=nA+nB−2),
-    # not a Welch interval. R t.test(var.equal=FALSE)$conf.int is the correct Welch CI.
-    # Record both as provenance; the divergence is SURFACED here, not fixed.
+    # --- Welch-CI verification (ci_mean_diff_welch uses correct Welch SE + df) ---
+    # t_test_two(Welch).ci calls ci_mean_diff_welch (SE = √(vA/nA+vB/nB), Welch–
+    # Satterthwaite df), verified against R t.test(var.equal=FALSE)$conf.int.
+    # The prior pooled-CI latent bug was fixed; this block records the correct CI.
     tcw = _h_t_crit(0.95, df_w)
     welch_ci_correct = [float((ma - mb) - tcw * se_w), float((ma - mb) + tcw * se_w)]
-    tcp = _h_t_crit(0.95, df_stu)
-    se_pooled = mp.sqrt(sp2 * (mp.mpf(1) / na + mp.mpf(1) / nb))
-    pooled_ci = [float((ma - mb) - tcp * se_pooled), float((ma - mb) + tcp * se_pooled)]
-    print("\n[htest] Welch-CI inconsistency SURFACED (not fixed — see memory "
-          "commonstats-welch-ci-latent-bug):")
-    print(f"        impl t_test_two(Welch).ci (pooled): [{pooled_ci[0]:.6f}, {pooled_ci[1]:.6f}]")
-    print(f"        correct Welch CI (R/mpmath):        [{welch_ci_correct[0]:.6f}, {welch_ci_correct[1]:.6f}]")
-    print(f"        R conf.int: [{R['wel_cilo']:.6f}, {R['wel_cihi']:.6f}]")
+    print(f"\n[htest] Welch CI correct (impl matches R t.test(var.equal=FALSE)$conf.int):")
+    print(f"        mpmath Welch CI: [{welch_ci_correct[0]:.6f}, {welch_ci_correct[1]:.6f}]")
+    print(f"        R conf.int:     [{R['wel_cilo']:.6f}, {R['wel_cihi']:.6f}]")
 
     # --- write fixtures (mpmath truth as expected; xcheck provenance) ---
     def f2(pair): return [float(pair[0]), float(pair[1])]
@@ -433,8 +443,9 @@ def gen_htest():
          "xcheck": _xc(truth["student"][1], sci["student"][1], R["stu_p"])},
         {"args": ["welch"],   "expected": [float(truth["welch"][0]), float(truth["welch"][1]), float(truth["welch"][2])],
          "xcheck": _xc(truth["welch"][1], sci["welch"][1], R["wel_p"]),
-         "welch_ci_correct": welch_ci_correct, "impl_ci_is_pooled": pooled_ci,
-         "welch_ci_note": "impl returns pooled CI; correct Welch CI recorded — surfaced, not fixed"},
+         "welch_ci_correct": welch_ci_correct,
+         "welch_ci_note": "t_test_two(Welch).ci asserted against welch_ci_correct "
+                          "(R t.test var.equal=FALSE); the prior pooled-CI was the latent bug, now fixed"},
         {"args": ["paired"],  "expected": f2(truth["paired"]),
          "xcheck": _xc(truth["paired"][1], sci["paired"][1], R["pai_p"])},
     ]
@@ -994,7 +1005,7 @@ def gen_transform():
     def write_rankdata():
         # Ranks are EXACT (integers / half-integers), so scipy `rankdata` stays the
         # `expected` truth — mpmath adds nothing. R cross-checks average/min/max only;
-        # R base has no dense/ordinal (those rows carry r=null, "R n/a" per spec §4).
+        # R base has no dense/ordinal (those rows carry r=null, "R n/a").
         from scipy.stats import rankdata
         methods = ["average", "min", "max", "dense", "ordinal"]
         # Three representative input vectors (chosen to hit ties, all-same, monotone).
@@ -1214,12 +1225,206 @@ def gen_transform():
     write_quantile_normalize()
 
 
+def gen_descriptives():
+    """Three-source oracle fixtures for the exported descriptive statistics.
+
+    Covers mean, var (both ddof), sd (both ddof), median, skewness (g1),
+    kurtosis (excess), cov, and pearson.  R is n/a for skewness and kurtosis
+    (no base-R function); those are scipy-only in the gate.  `sum`, `count`,
+    `min`, `max`, and `range` return exact integers / comparisons and are
+    covered by inline unit tests — no floating-point oracle fixture needed.
+    """
+    def _desc_gate(items):
+        """items: (label, truth_mpf, {src: val}). Same gate as _htest_gate."""
+        failures = []
+        for label, truth_mpf, srcs in items:
+            if truth_mpf is None:
+                continue
+            t = truth_mpf
+            ft = float(t)
+            floor = max(CONV_ABS, CONV_REL * abs(ft) if math.isfinite(ft) else CONV_ABS)
+            for src, v in srcs.items():
+                if v is None:
+                    continue
+                if abs(mp.mpf(v) - t) > floor:
+                    failures.append((label, src, v, ft))
+        if failures:
+            print("\n*** DESCRIPTIVES CROSS-VALIDATION GATE FAILED — no fixtures written ***")
+            for label, src, got, truth in failures:
+                print(f"  {label}: {src}={got} vs mpmath={truth!r}")
+            sys.exit(1)
+
+    def _xc2(truth_mpf, scipy_val, r_val):
+        return {"scipy": {"val": scipy_val, "rel": _rel_err(scipy_val, truth_mpf)},
+                "r":     {"val": r_val,     "rel": _rel_err(r_val, truth_mpf)}}
+
+    def _xc1(truth_mpf, scipy_val):
+        return {"scipy": {"val": scipy_val, "rel": _rel_err(scipy_val, truth_mpf)}}
+
+    # --- mpmath truth helpers ---
+    def mp_mean(xs_):
+        return mp.fsum([mp.mpf(x) for x in xs_]) / len(xs_)
+
+    def mp_var_sample(xs_):
+        m = mp_mean(xs_)
+        return mp.fsum([(mp.mpf(x) - m)**2 for x in xs_]) / (len(xs_) - 1)
+
+    def mp_var_pop(xs_):
+        m = mp_mean(xs_)
+        return mp.fsum([(mp.mpf(x) - m)**2 for x in xs_]) / len(xs_)
+
+    def mp_median(xs_):
+        s = sorted(mp.mpf(x) for x in xs_)
+        n = len(s)
+        h = mp.mpf(n - 1) / 2
+        lo, hi = int(mp.floor(h)), int(mp.ceil(h))
+        return s[lo] + (h - lo) * (s[hi] - s[lo])
+
+    def mp_skewness(xs_):
+        # Fisher–Pearson g1: m3/m2^(3/2), biased (scipy skew default, bias=True)
+        m = mp_mean(xs_)
+        n = len(xs_)
+        ds = [mp.mpf(x) - m for x in xs_]
+        m2 = mp.fsum([d**2 for d in ds]) / n
+        m3 = mp.fsum([d**3 for d in ds]) / n
+        return m3 / m2**(mp.mpf(3) / 2)
+
+    def mp_kurtosis(xs_):
+        # Fisher excess: m4/m2^2 − 3, biased (scipy kurtosis default, bias=True)
+        m = mp_mean(xs_)
+        n = len(xs_)
+        ds = [mp.mpf(x) - m for x in xs_]
+        m2 = mp.fsum([d**2 for d in ds]) / n
+        m4 = mp.fsum([d**4 for d in ds]) / n
+        return m4 / m2**2 - 3
+
+    def mp_cov(xs_, ys_):
+        # sample covariance, ddof=1
+        n = len(xs_)
+        mx, my = mp_mean(xs_), mp_mean(ys_)
+        dx = [mp.mpf(x) - mx for x in xs_]
+        dy = [mp.mpf(y) - my for y in ys_]
+        return mp.fsum([a * b for a, b in zip(dx, dy)]) / (n - 1)
+
+    def mp_pearson(xs_, ys_):
+        mx, my = mp_mean(xs_), mp_mean(ys_)
+        dx = [mp.mpf(x) - mx for x in xs_]
+        dy = [mp.mpf(y) - my for y in ys_]
+        sxy = mp.fsum([a * b for a, b in zip(dx, dy)])
+        sxx = mp.fsum([a**2 for a in dx])
+        syy = mp.fsum([a**2 for a in dy])
+        return sxy / mp.sqrt(sxx * syy)
+
+    # Input vectors: two unary cases + one binary case.
+    # v1: numpy-docs classic, non-trivial skewness and kurtosis.
+    # v2: mixed signs, exercises negative-skewness path.
+    v1 = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
+    v2 = [1.0, 3.0, -2.0, 5.0, 0.0, 4.0]
+    xs_b = [1.0, 2.0, 3.0, 4.0, 5.0]
+    ys_b = [2.0, 1.0, 4.0, 3.0, 6.0]
+
+    # R jobs (R n/a for var_pop / sd_pop / skewness / kurtosis)
+    rj, ri = [], {}
+    def addj(key, func, args):
+        ri[key] = len(rj); rj.append({"func": func, "args": [float(x) for x in args]})
+    for tag, v in [("v1", v1), ("v2", v2)]:
+        addj(f"{tag}_mean",   "desc_mean",   v)
+        addj(f"{tag}_var",    "desc_var",    v)
+        addj(f"{tag}_sd",     "desc_sd",     v)
+        addj(f"{tag}_median", "desc_median", v)
+    nb = len(xs_b)
+    addj("bin_cov",     "desc_cov",     [nb] + xs_b + ys_b)
+    addj("bin_pearson", "desc_pearson", [nb] + xs_b + ys_b)
+    rv_all = _run_r(rj)
+    R = {key: rv_all[idx] for key, idx in ri.items()}
+
+    # Gate + fixture building (computed once, used in both)
+    gate = []
+    unary_records = []
+    for tag, v in [("v1", v1), ("v2", v2)]:
+        t_mean  = mp_mean(v)
+        t_vs    = mp_var_sample(v)
+        t_vp    = mp_var_pop(v)
+        t_sds   = mp.sqrt(t_vs)
+        t_sdp   = mp.sqrt(t_vp)
+        t_med   = mp_median(v)
+        t_skew  = mp_skewness(v)
+        t_kurt  = mp_kurtosis(v)
+
+        sp_mean  = float(np.mean(v))
+        sp_vs    = float(np.var(v, ddof=1))
+        sp_vp    = float(np.var(v, ddof=0))
+        sp_sds   = float(np.std(v, ddof=1))
+        sp_sdp   = float(np.std(v, ddof=0))
+        sp_med   = float(np.median(v))
+        sp_skew  = float(st.skew(v))     # bias=True (Fisher g1, biased)
+        sp_kurt  = float(st.kurtosis(v)) # fisher=True, bias=True (excess, biased)
+
+        gate += [
+            (f"{tag}/mean",       t_mean, {"scipy": sp_mean, "r": R[f"{tag}_mean"]}),
+            (f"{tag}/var_sample", t_vs,   {"scipy": sp_vs,   "r": R[f"{tag}_var"]}),
+            (f"{tag}/var_pop",    t_vp,   {"scipy": sp_vp,   "r": None}),
+            (f"{tag}/sd_sample",  t_sds,  {"scipy": sp_sds,  "r": R[f"{tag}_sd"]}),
+            (f"{tag}/sd_pop",     t_sdp,  {"scipy": sp_sdp,  "r": None}),
+            (f"{tag}/median",     t_med,  {"scipy": sp_med,  "r": R[f"{tag}_median"]}),
+            (f"{tag}/skewness",   t_skew, {"scipy": sp_skew, "r": None}),
+            (f"{tag}/kurtosis",   t_kurt, {"scipy": sp_kurt, "r": None}),
+        ]
+        unary_records.append({
+            "xs":         v,
+            "mean":       _f64(t_mean),
+            "var_sample": _f64(t_vs),
+            "var_pop":    _f64(t_vp),
+            "sd_sample":  _f64(t_sds),
+            "sd_pop":     _f64(t_sdp),
+            "median":     _f64(t_med),
+            "skewness":   _f64(t_skew),
+            "kurtosis":   _f64(t_kurt),
+            "xcheck": {
+                "mean":       _xc2(t_mean, sp_mean, R[f"{tag}_mean"]),
+                "var_sample": _xc2(t_vs,   sp_vs,   R[f"{tag}_var"]),
+                "var_pop":    _xc1(t_vp,   sp_vp),
+                "sd_sample":  _xc2(t_sds,  sp_sds,  R[f"{tag}_sd"]),
+                "sd_pop":     _xc1(t_sdp,  sp_sdp),
+                "median":     _xc2(t_med,  sp_med,  R[f"{tag}_median"]),
+                "skewness":   _xc1(t_skew, sp_skew),
+                "kurtosis":   _xc1(t_kurt, sp_kurt),
+            },
+        })
+
+    t_cov = mp_cov(xs_b, ys_b)
+    t_pea = mp_pearson(xs_b, ys_b)
+    sp_cov = float(np.cov(xs_b, ys_b, ddof=1)[0, 1])
+    sp_pea = float(st.pearsonr(xs_b, ys_b).statistic)
+    gate += [
+        ("binary/cov",     t_cov, {"scipy": sp_cov, "r": R["bin_cov"]}),
+        ("binary/pearson", t_pea, {"scipy": sp_pea, "r": R["bin_pearson"]}),
+    ]
+    binary_record = {
+        "xs": xs_b, "ys": ys_b,
+        "cov":     _f64(t_cov),
+        "pearson": _f64(t_pea),
+        "xcheck": {
+            "cov":     _xc2(t_cov, sp_cov, R["bin_cov"]),
+            "pearson": _xc2(t_pea, sp_pea, R["bin_pearson"]),
+        },
+    }
+
+    _desc_gate(gate)
+
+    fixture = {"unary": unary_records, "binary": [binary_record]}
+    with open(os.path.join(OUT, "descriptives.json"), "w") as f:
+        json.dump(fixture, f, indent=0)
+    print("wrote descriptives.json")
+
+
 AREAS = {
-    "special":   gen_special,
-    "htest":     gen_htest,
-    "dist":      gen_dist,
-    "density":   gen_density,
-    "transform": gen_transform,
+    "special":      gen_special,
+    "htest":        gen_htest,
+    "dist":         gen_dist,
+    "density":      gen_density,
+    "transform":    gen_transform,
+    "descriptives": gen_descriptives,
 }
 
 

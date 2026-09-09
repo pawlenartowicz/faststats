@@ -36,23 +36,23 @@ impl fmt::Display for StatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StatError::EmptyInput => write!(f, "input slice is empty"),
-            StatError::TooFewObservations { needed, got } =>
-                write!(f, "need at least {needed} observations, got {got}"),
-            StatError::MismatchedLengths { a, b } =>
-                write!(f, "mismatched lengths: {a} vs {b}"),
+            StatError::TooFewObservations { needed, got } => {
+                write!(f, "need at least {needed} observations, got {got}")
+            }
+            StatError::MismatchedLengths { a, b } => write!(f, "mismatched lengths: {a} vs {b}"),
             StatError::AllNaN => write!(f, "no usable (non-NaN) observations"),
             StatError::DomainError(m) => write!(f, "domain error: {m}"),
-            StatError::ProbabilityOutOfRange(p) =>
-                write!(f, "probability {p} outside [0, 1]"),
+            StatError::ProbabilityOutOfRange(p) => write!(f, "probability {p} outside [0, 1]"),
         }
     }
 }
 
-impl std::error::Error for StatError {}
+impl core::error::Error for StatError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::ToString;
     #[test]
     fn display_is_human_readable() {
         assert_eq!(StatError::EmptyInput.to_string(), "input slice is empty");

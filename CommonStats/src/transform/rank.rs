@@ -1,7 +1,8 @@
 //! Competitive ranking of a finite slice, configurable tie-breaking.
 
 use crate::error::StatError;
-use crate::nan::{clean, NanPolicy};
+use crate::nan::{NanPolicy, clean};
+use alloc::{vec, vec::Vec};
 
 /// Tie-breaking rule for [`rank`].
 ///
@@ -69,7 +70,7 @@ pub fn rank(v: &[f64], ties: Ties) -> Result<Vec<f64>, StatError> {
         }
         group_counter += 1;
         let lo = i + 1; // 1-based first position of this group
-        let hi = j;     // 1-based last position of this group
+        let hi = j; // 1-based last position of this group
 
         match ties {
             Ties::Average => {

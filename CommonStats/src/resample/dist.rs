@@ -1,9 +1,9 @@
 //! Mergeable distribution accumulators over per-draw scalar statistics: the
 //! p-value counter ([`NullDist`]) and the percentile-CI store ([`BootDist`]).
-//! Both are `Accumulator<Item = f64>`, both monoidal with no downdate
-//! (permutation-friendly.md §6).
-use crate::accum::{quantile_sorted, Accumulator, Mergeable};
+//! Both are `Accumulator<Item = f64>`, both monoidal with no downdate.
+use crate::accum::{Accumulator, Mergeable, quantile_sorted};
 use crate::htest::Ci;
+use alloc::vec::Vec;
 
 /// Which tail counts as "more extreme than the observed statistic" for a
 /// permutation p-value.
@@ -27,8 +27,7 @@ pub enum Sidedness {
 /// unbiased Monte-Carlo permutation p (Davison & Hinkley 1997; Phipson & Smyth
 /// 2010). The observed statistic is the same injected `statistic` evaluated on
 /// the identity (unpermuted) index, computed once by the consumer before the
-/// loop. Validated by exact full-enumeration p-values on tiny samples
-/// (spec §Validation).
+/// loop. Validated by exact full-enumeration p-values on tiny samples.
 ///
 /// `finalize()` returns the p-value; an empty accumulator (`B = 0`) yields
 /// `1/1 = 1.0`.
@@ -44,7 +43,12 @@ impl NullDist {
     /// Build a p-value accumulator for `observed` (the statistic on the
     /// unpermuted data) against the alternative `side`.
     pub fn new(observed: f64, side: Sidedness) -> Self {
-        Self { observed, side, count: 0, b: 0 }
+        Self {
+            observed,
+            side,
+            count: 0,
+            b: 0,
+        }
     }
 }
 
@@ -68,7 +72,12 @@ impl Accumulator for NullDist {
     /// is [`NullDist::new`]. `merge` adopts the configured operand's `observed`/
     /// `side`, so `empty().merge(&configured)` is the configured accumulator.
     fn empty() -> Self {
-        Self { observed: f64::NAN, side: Sidedness::TwoSided, count: 0, b: 0 }
+        Self {
+            observed: f64::NAN,
+            side: Sidedness::TwoSided,
+            count: 0,
+            b: 0,
+        }
     }
     fn update(&mut self, x: f64) {
         self.b += 1;
@@ -90,14 +99,14 @@ impl Accumulator for NullDist {
 ///
 /// Store-and-sort (decision 2026-06-21): holds every per-draw statistic; `merge`
 /// concatenates; `finalize` sorts and reads off percentiles. Costs `O(B)`
-/// **scalars**, not `O(B·n)` data copies, and gives an *exact* percentile CI; the
-/// P3 t-digest is a drop-in `O(1)` swap behind the same `finalize`.
+/// **scalars**, not `O(B·n)` data copies, and gives an *exact* percentile CI; a
+/// future t-digest backend is a drop-in `O(1)` swap behind the same `finalize` — see [`crate::accum::TDigest`].
 ///
 /// Convention: percentile-bootstrap CI at confidence `level` (e.g. `0.95` →
 /// the 2.5th/97.5th percentiles). Percentiles use linear interpolation between
 /// order statistics — `Matches numpy.percentile(..., method="linear")` (its
 /// default; Hyndman–Fan type 7). Validated by feeding known statistic-value sets
-/// directly (spec §Validation).
+/// directly.
 ///
 /// `finalize()` returns a [`Ci`]; an empty accumulator yields a NaN-filled `Ci`.
 #[derive(Debug, Clone)]
@@ -110,7 +119,10 @@ impl BootDist {
     /// Build a bootstrap-CI accumulator at confidence `level` (in `(0, 1)`, e.g.
     /// `0.95`).
     pub fn new(level: f64) -> Self {
-        Self { stats: Vec::new(), level }
+        Self {
+            stats: Vec::new(),
+            level,
+        }
     }
 }
 
@@ -131,7 +143,10 @@ impl Accumulator for BootDist {
     /// The monoid identity (empty store, unconfigured level). Real constructor is
     /// [`BootDist::new`]; `merge` adopts the configured operand's `level`.
     fn empty() -> Self {
-        Self { stats: Vec::new(), level: f64::NAN }
+        Self {
+            stats: Vec::new(),
+            level: f64::NAN,
+        }
     }
     fn update(&mut self, x: f64) {
         self.stats.push(x);

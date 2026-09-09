@@ -2,15 +2,12 @@
 //! Run: cargo test (base transforms); cargo test --features dist (PIT family).
 
 mod common;
-use common::{assert_close, Tol};
+use common::{Tol, assert_close};
 
-use commonstats::transform::{rank, Ties};
+use commonstats::transform::{Ties, rank};
 
 fn fixture_path(name: &str) -> String {
-    format!(
-        "{}/tests/fixtures/{name}.json",
-        env!("CARGO_MANIFEST_DIR")
-    )
+    format!("{}/tests/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR"))
 }
 
 fn load_str(name: &str) -> String {
@@ -36,11 +33,11 @@ fn opt_vec_to_f64(v: &[Option<f64>]) -> Vec<f64> {
 fn method_to_ties(m: &str) -> Ties {
     match m {
         "average" => Ties::Average,
-        "min"     => Ties::Min,
-        "max"     => Ties::Max,
-        "dense"   => Ties::Dense,
+        "min" => Ties::Min,
+        "max" => Ties::Max,
+        "dense" => Ties::Dense,
         "ordinal" => Ties::Ordinal,
-        other     => panic!("unknown ties method: {other}"),
+        other => panic!("unknown ties method: {other}"),
     }
 }
 
@@ -63,8 +60,12 @@ fn rank_oracle() {
         for (i, (&g, &w)) in got.iter().zip(r.expected.iter()).enumerate() {
             assert_close(
                 &format!("rank[{}] input={:?} method={}", i, r.input, r.method),
-                g, w,
-                Tol { rel: 1e-14, abs: 1e-14 },
+                g,
+                w,
+                Tol {
+                    rel: 1e-14,
+                    abs: 1e-14,
+                },
             );
         }
     }
@@ -92,9 +93,33 @@ fn rank_nan_omit_length() {
     let got = rank(&v, Ties::Average).unwrap();
     assert_eq!(got.len(), 3, "expected 3 finite values");
     // ranks of [5,3,1] with Average: 3,2,1
-    assert_close("rank[0]", got[0], 3.0, Tol { rel: 1e-14, abs: 1e-14 });
-    assert_close("rank[1]", got[1], 2.0, Tol { rel: 1e-14, abs: 1e-14 });
-    assert_close("rank[2]", got[2], 1.0, Tol { rel: 1e-14, abs: 1e-14 });
+    assert_close(
+        "rank[0]",
+        got[0],
+        3.0,
+        Tol {
+            rel: 1e-14,
+            abs: 1e-14,
+        },
+    );
+    assert_close(
+        "rank[1]",
+        got[1],
+        2.0,
+        Tol {
+            rel: 1e-14,
+            abs: 1e-14,
+        },
+    );
+    assert_close(
+        "rank[2]",
+        got[2],
+        1.0,
+        Tol {
+            rel: 1e-14,
+            abs: 1e-14,
+        },
+    );
 }
 
 // ── box_cox ──────────────────────────────────────────────────────────────────
@@ -120,7 +145,9 @@ fn boxcox_oracle() {
                 assert!(
                     result.is_err(),
                     "box_cox([{}], lambda={}) should be Err, got {:?}",
-                    r.x, r.lambda, result
+                    r.x,
+                    r.lambda,
+                    result
                 );
             }
             Some(w) => {
@@ -128,7 +155,12 @@ fn boxcox_oracle() {
                     .unwrap_or_else(|e| panic!("box_cox([{}], lambda={}): {:?}", r.x, r.lambda, e));
                 assert_close(
                     &format!("box_cox x={} lambda={}", r.x, r.lambda),
-                    got[0], w, Tol { rel: 1e-12, abs: 1e-14 },
+                    got[0],
+                    w,
+                    Tol {
+                        rel: 1e-12,
+                        abs: 1e-14,
+                    },
                 );
             }
         }
@@ -176,7 +208,20 @@ fn yeojohnson_oracle() {
                 .unwrap_or_else(|e| panic!("yeo_johnson([{}], lambda={}): {:?}", r.x, r.lambda, e));
             assert_close(
                 &format!("yeo_johnson x={} lambda={}", r.x, r.lambda),
-                got[0], w, Tol { rel: 1e-12, abs: 1e-14 },
+                got[0],
+                w,
+                Tol {
+                    rel: 1e-12,
+                    abs: 1e-14,
+                },
+            );
+        } else {
+            // YJ is defined for all reals, so None rows represent overflow cases; assert Err.
+            assert!(
+                yeo_johnson(&[r.x], r.lambda).is_err(),
+                "yeo_johnson([{}], lambda={}) should be Err on a None-expected row",
+                r.x,
+                r.lambda
             );
         }
     }
@@ -213,11 +258,21 @@ fn normal_scores_oracle() {
         let input_f64 = opt_vec_to_f64(&r.input);
         let got = normal_scores(&input_f64)
             .unwrap_or_else(|e| panic!("normal_scores({:?}): {:?}", r.input, e));
-        assert_eq!(got.len(), r.expected.len(), "length mismatch for {:?}", r.input);
+        assert_eq!(
+            got.len(),
+            r.expected.len(),
+            "length mismatch for {:?}",
+            r.input
+        );
         for (i, (&g, &w)) in got.iter().zip(r.expected.iter()).enumerate() {
             assert_close(
                 &format!("normal_scores[{}] input={:?}", i, input_f64),
-                g, w, Tol { rel: 1e-12, abs: 1e-14 },
+                g,
+                w,
+                Tol {
+                    rel: 1e-12,
+                    abs: 1e-14,
+                },
             );
         }
     }
@@ -239,7 +294,15 @@ fn normal_scores_all_nan_is_err() {
 fn normal_scores_single_value() {
     // n=1: rank=1, p=(1-3/8)/(1+1/4)=0.5 → Φ⁻¹(0.5)=0
     let got = normal_scores(&[42.0]).unwrap();
-    assert_close("normal_scores[0]", got[0], 0.0, Tol { rel: 1e-12, abs: 1e-14 });
+    assert_close(
+        "normal_scores[0]",
+        got[0],
+        0.0,
+        Tol {
+            rel: 1e-12,
+            abs: 1e-14,
+        },
+    );
 }
 
 // ── quantile_normalize ────────────────────────────────────────────────────────
@@ -266,7 +329,12 @@ fn quantile_normalize_bolstad_example() {
         for (i, (&g, &w)) in gc.iter().zip(ec.iter()).enumerate() {
             assert_close(
                 &format!("qn[col={j}][row={i}]"),
-                g, w, Tol { rel: 1e-12, abs: 1e-14 },
+                g,
+                w,
+                Tol {
+                    rel: 1e-12,
+                    abs: 1e-14,
+                },
             );
         }
     }
@@ -294,19 +362,50 @@ fn quantile_normalize_nan_propagates() {
     let col1 = [2.0f64, 4.0, 6.0];
     let got = quantile_normalize(&[&col0, &col1]).unwrap();
     assert!(got[0][1].is_nan(), "NaN should propagate at col0[1]");
-    // Non-NaN positions should be finite
-    assert!(got[0][0].is_finite());
-    assert!(got[0][2].is_finite());
+    // Non-NaN positions: reference = [(1+2)/2, (3+4)/2, 6/1] = [1.5, 3.5, 6.0];
+    // col0 ranks [1,2] → col0[0]=1.5, col0[2]=3.5.
+    assert_close(
+        "qn_nan/col0[0]",
+        got[0][0],
+        1.5,
+        Tol {
+            rel: 1e-12,
+            abs: 1e-14,
+        },
+    );
+    assert_close(
+        "qn_nan/col0[2]",
+        got[0][2],
+        3.5,
+        Tol {
+            rel: 1e-12,
+            abs: 1e-14,
+        },
+    );
 }
 
 #[test]
-fn quantile_normalize_shape_preserved() {
+fn quantile_normalize_both_cols_map_to_reference() {
+    // Distinct input from the Bolstad fixture: no NaN, clean arithmetic.
+    // reference = [(1+4)/2, (2+5)/2, (3+6)/2] = [2.5, 3.5, 4.5];
+    // both columns share ranks [1,2,3] → both normalize to [2.5, 3.5, 4.5].
     let col0 = [1.0f64, 2.0, 3.0];
     let col1 = [4.0f64, 5.0, 6.0];
     let got = quantile_normalize(&[&col0, &col1]).unwrap();
-    assert_eq!(got.len(), 2);
-    assert_eq!(got[0].len(), 3);
-    assert_eq!(got[1].len(), 3);
+    let want = [2.5, 3.5, 4.5];
+    for j in 0..2 {
+        for i in 0..3 {
+            assert_close(
+                &format!("qn_shape/col{j}[{i}]"),
+                got[j][i],
+                want[i],
+                Tol {
+                    rel: 1e-12,
+                    abs: 1e-14,
+                },
+            );
+        }
+    }
 }
 
 // ── PIT family (requires --features dist) ────────────────────────────────────
@@ -314,8 +413,8 @@ fn quantile_normalize_shape_preserved() {
 #[cfg(feature = "dist")]
 mod pit_tests {
     use commonstats::dist::continuous::Normal;
-    use commonstats::transform::{inv_pit, pit, quantile_map};
     use commonstats::error::StatError;
+    use commonstats::transform::{inv_pit, pit, quantile_map};
 
     fn normal() -> Normal {
         Normal::new(0.0, 1.0).unwrap()
@@ -326,18 +425,33 @@ mod pit_tests {
         let n = normal();
         // pit is just cdf — verify against known values
         let p = pit(0.0, &n);
-        assert!((p - 0.5).abs() < 1e-12, "pit(0, N(0,1)) should be 0.5, got {p}");
+        assert!(
+            (p - 0.5).abs() < 1e-12,
+            "pit(0, N(0,1)) should be 0.5, got {p}"
+        );
         let p2 = pit(1.6448536269514729, &n); // Φ(1.645) ≈ 0.95
-        assert!((p2 - 0.95).abs() < 1e-4, "pit(1.645, N(0,1)) ≈ 0.95, got {p2}");
+        assert!(
+            (p2 - 0.95).abs() < 1e-12,
+            "pit(1.645, N(0,1)) ≈ 0.95, got {p2}"
+        );
     }
 
     #[test]
     fn inv_pit_normal_quantile() {
         let n = normal();
         let x = inv_pit(0.5, &n).unwrap();
-        assert!((x - 0.0).abs() < 1e-10, "inv_pit(0.5, N(0,1)) should be 0, got {x}");
-        assert!(matches!(inv_pit(-0.1, &n), Err(StatError::ProbabilityOutOfRange(_))));
-        assert!(matches!(inv_pit(1.1, &n), Err(StatError::ProbabilityOutOfRange(_))));
+        assert!(
+            (x - 0.0).abs() < 1e-10,
+            "inv_pit(0.5, N(0,1)) should be 0, got {x}"
+        );
+        assert!(matches!(
+            inv_pit(-0.1, &n),
+            Err(StatError::ProbabilityOutOfRange(_))
+        ));
+        assert!(matches!(
+            inv_pit(1.1, &n),
+            Err(StatError::ProbabilityOutOfRange(_))
+        ));
     }
 
     #[test]
@@ -346,7 +460,10 @@ mod pit_tests {
         let n = normal();
         let x = 1.5f64;
         let mapped = quantile_map(x, &n, &n).unwrap();
-        assert!((mapped - x).abs() < 1e-8, "identity map got {mapped}, want {x}");
+        assert!(
+            (mapped - x).abs() < 1e-8,
+            "identity map got {mapped}, want {x}"
+        );
     }
 
     #[test]
@@ -354,8 +471,11 @@ mod pit_tests {
         // quantile_map(0, N(0,1), N(1,1)) should give 1.0
         // because Φ₀₁(0) = 0.5 → Φ₁₁⁻¹(0.5) = 1.0
         let from = Normal::new(0.0, 1.0).unwrap();
-        let to   = Normal::new(1.0, 1.0).unwrap();
+        let to = Normal::new(1.0, 1.0).unwrap();
         let mapped = quantile_map(0.0, &from, &to).unwrap();
-        assert!((mapped - 1.0).abs() < 1e-8, "shifted map got {mapped}, want 1.0");
+        assert!(
+            (mapped - 1.0).abs() < 1e-8,
+            "shifted map got {mapped}, want 1.0"
+        );
     }
 }

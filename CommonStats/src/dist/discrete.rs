@@ -1,7 +1,11 @@
 //! The 6 discrete distributions of the `dist` suite.
+//!
+//! Quantile strategy: every distribution delegates to `discrete_bsearch_quantile`,
+//! which binary-searches for the smallest `k` with `cdf(k) ≥ p`. This is the
+//! single home for the quantile algorithm — do not add per-distribution loops.
 
-use crate::error::StatError;
 use crate::dist::{Bound, DiscreteCdf, DiscreteMass, Distribution};
+use crate::error::StatError;
 
 /// `ln C(n, k) = lnΓ(n+1) − lnΓ(k+1) − lnΓ(n−k+1)`.
 pub(crate) fn ln_choose(n: f64, k: f64) -> f64 {
@@ -21,11 +25,17 @@ pub(crate) fn discrete_bsearch_quantile<D: DiscreteCdf + ?Sized>(
     if !(0.0..=1.0).contains(&p) {
         return Err(StatError::ProbabilityOutOfRange(p));
     }
-    if p == 0.0 { return Ok(lo); }
+    if p == 0.0 {
+        return Ok(lo);
+    }
     let (mut a, mut b) = (lo, hi);
     while a < b {
         let mid = a + (b - a) / 2;
-        if d.cdf(mid) < p { a = mid + 1; } else { b = mid; }
+        if d.cdf(mid) < p {
+            a = mid + 1;
+        } else {
+            b = mid;
+        }
     }
     Ok(a)
 }
@@ -35,7 +45,9 @@ pub(crate) fn discrete_bsearch_quantile<D: DiscreteCdf + ?Sized>(
 /// Convention: support `{0, 1}`, `mass(1) = p`. `0·ln0 := 0` so `p ∈ {0, 1}`
 /// give finite `log_mass` (no NaN). Matches `scipy.stats.bernoulli(p)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bernoulli { p: f64 }
+pub struct Bernoulli {
+    p: f64,
+}
 
 impl Bernoulli {
     /// Construct with `p ∈ [0, 1]`.
@@ -59,21 +71,45 @@ impl Bernoulli {
 }
 
 impl Distribution for Bernoulli {
-    fn support_min(&self) -> Bound { Bound::Finite(0.0) }
-    fn support_max(&self) -> Bound { Bound::Finite(1.0) }
-    fn mean(&self) -> Option<f64> { Some(self.p) }
-    fn variance(&self) -> Option<f64> { Some(self.p * (1.0 - self.p)) }
+    fn support_min(&self) -> Bound {
+        Bound::Finite(0.0)
+    }
+    fn support_max(&self) -> Bound {
+        Bound::Finite(1.0)
+    }
+    fn mean(&self) -> Option<f64> {
+        Some(self.p)
+    }
+    fn variance(&self) -> Option<f64> {
+        Some(self.p * (1.0 - self.p))
+    }
 }
 
 impl DiscreteMass for Bernoulli {
     fn mass(&self, k: i64) -> f64 {
-        match k { 0 => 1.0 - self.p, 1 => self.p, _ => 0.0 }
+        match k {
+            0 => 1.0 - self.p,
+            1 => self.p,
+            _ => 0.0,
+        }
     }
     fn log_mass(&self, k: i64) -> f64 {
         // 0·ln0 := 0 handled by mapping the zero-prob branch to ln of the value.
         match k {
-            0 => if self.p >= 1.0 { f64::NEG_INFINITY } else { (1.0 - self.p).ln() },
-            1 => if self.p <= 0.0 { f64::NEG_INFINITY } else { self.p.ln() },
+            0 => {
+                if self.p >= 1.0 {
+                    f64::NEG_INFINITY
+                } else {
+                    libm::log(1.0 - self.p)
+                }
+            }
+            1 => {
+                if self.p <= 0.0 {
+                    f64::NEG_INFINITY
+                } else {
+                    libm::log(self.p)
+                }
+            }
             _ => f64::NEG_INFINITY,
         }
     }
@@ -81,7 +117,13 @@ impl DiscreteMass for Bernoulli {
 
 impl DiscreteCdf for Bernoulli {
     fn cdf(&self, k: i64) -> f64 {
-        if k < 0 { 0.0 } else if k == 0 { 1.0 - self.p } else { 1.0 }
+        if k < 0 {
+            0.0
+        } else if k == 0 {
+            1.0 - self.p
+        } else {
+            1.0
+        }
     }
     fn quantile(&self, p: f64) -> Result<i64, StatError> {
         if !(0.0..=1.0).contains(&p) {
@@ -97,7 +139,10 @@ impl DiscreteCdf for Bernoulli {
 /// CDF `P(X ≤ k) = I_{1−p}(n−k, k+1)` (regularized incomplete beta). Matches
 /// `scipy.stats.binom(n, p)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Binomial { n: i64, p: f64 }
+pub struct Binomial {
+    n: i64,
+    p: f64,
+}
 
 impl Binomial {
     /// Construct with `n ≥ 1`, `p ∈ [0, 1]`.
@@ -124,31 +169,61 @@ impl Binomial {
 }
 
 impl Distribution for Binomial {
-    fn support_min(&self) -> Bound { Bound::Finite(0.0) }
-    fn support_max(&self) -> Bound { Bound::Finite(self.n as f64) }
-    fn mean(&self) -> Option<f64> { Some(self.n as f64 * self.p) }
-    fn variance(&self) -> Option<f64> { Some(self.n as f64 * self.p * (1.0 - self.p)) }
+    fn support_min(&self) -> Bound {
+        Bound::Finite(0.0)
+    }
+    fn support_max(&self) -> Bound {
+        Bound::Finite(self.n as f64)
+    }
+    fn mean(&self) -> Option<f64> {
+        Some(self.n as f64 * self.p)
+    }
+    fn variance(&self) -> Option<f64> {
+        Some(self.n as f64 * self.p * (1.0 - self.p))
+    }
 }
 
 impl DiscreteMass for Binomial {
     fn mass(&self, k: i64) -> f64 {
-        if k < 0 || k > self.n { return 0.0; }
-        self.log_mass(k).exp()
+        if k < 0 || k > self.n {
+            return 0.0;
+        }
+        libm::exp(self.log_mass(k))
     }
     fn log_mass(&self, k: i64) -> f64 {
-        if k < 0 || k > self.n { return f64::NEG_INFINITY; }
+        if k < 0 || k > self.n {
+            return f64::NEG_INFINITY;
+        }
         let (kf, nf) = (k as f64, self.n as f64);
         // p=0 / p=1 edges: only k=0 / k=n have mass; ln of the rest is −∞.
-        let lp = if self.p <= 0.0 { if k == 0 { return 0.0; } f64::NEG_INFINITY } else { self.p.ln() };
-        let lq = if self.p >= 1.0 { if k == self.n { return 0.0; } f64::NEG_INFINITY } else { (1.0 - self.p).ln() };
+        let lp = if self.p <= 0.0 {
+            if k == 0 {
+                return 0.0;
+            }
+            f64::NEG_INFINITY
+        } else {
+            libm::log(self.p)
+        };
+        let lq = if self.p >= 1.0 {
+            if k == self.n {
+                return 0.0;
+            }
+            f64::NEG_INFINITY
+        } else {
+            libm::log(1.0 - self.p)
+        };
         ln_choose(nf, kf) + kf * lp + (nf - kf) * lq
     }
 }
 
 impl DiscreteCdf for Binomial {
     fn cdf(&self, k: i64) -> f64 {
-        if k < 0 { return 0.0; }
-        if k >= self.n { return 1.0; }
+        if k < 0 {
+            return 0.0;
+        }
+        if k >= self.n {
+            return 1.0;
+        }
         // I_{1-p}(n-k, k+1) = P(X ≤ k).
         crate::special::betai((self.n - k) as f64, (k + 1) as f64, 1.0 - self.p)
     }
@@ -163,7 +238,9 @@ impl DiscreteCdf for Binomial {
 /// `P(X ≤ k) = Q(k+1, λ)` (upper regularized incomplete gamma). Matches
 /// `scipy.stats.poisson(λ)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Poisson { lambda: f64 }
+pub struct Poisson {
+    lambda: f64,
+}
 
 impl Poisson {
     /// Construct with `λ > 0`.
@@ -180,40 +257,60 @@ impl Poisson {
     /// ```
     pub fn new(lambda: f64) -> Result<Self, StatError> {
         if !lambda.is_finite() || lambda <= 0.0 {
-            return Err(StatError::DomainError("Poisson: lambda must be finite and > 0"));
+            return Err(StatError::DomainError(
+                "Poisson: lambda must be finite and > 0",
+            ));
         }
         Ok(Poisson { lambda })
     }
     /// Generous upper search bound: `λ + 10·√λ + 20`, well past the tail.
     fn search_hi(&self) -> i64 {
-        (self.lambda + 10.0 * self.lambda.sqrt() + 20.0).ceil() as i64
+        libm::ceil(self.lambda + 10.0 * libm::sqrt(self.lambda) + 20.0) as i64
     }
 }
 
 impl Distribution for Poisson {
-    fn support_min(&self) -> Bound { Bound::Finite(0.0) }
-    fn support_max(&self) -> Bound { Bound::PosInfinity }
-    fn mean(&self) -> Option<f64> { Some(self.lambda) }
-    fn variance(&self) -> Option<f64> { Some(self.lambda) }
-    fn skewness(&self) -> Option<f64> { Some(1.0 / self.lambda.sqrt()) }
-    fn kurtosis(&self) -> Option<f64> { Some(1.0 / self.lambda) }
+    fn support_min(&self) -> Bound {
+        Bound::Finite(0.0)
+    }
+    fn support_max(&self) -> Bound {
+        Bound::PosInfinity
+    }
+    fn mean(&self) -> Option<f64> {
+        Some(self.lambda)
+    }
+    fn variance(&self) -> Option<f64> {
+        Some(self.lambda)
+    }
+    fn skewness(&self) -> Option<f64> {
+        Some(1.0 / libm::sqrt(self.lambda))
+    }
+    fn kurtosis(&self) -> Option<f64> {
+        Some(1.0 / self.lambda)
+    }
 }
 
 impl DiscreteMass for Poisson {
     fn mass(&self, k: i64) -> f64 {
-        if k < 0 { return 0.0; }
-        self.log_mass(k).exp()
+        if k < 0 {
+            return 0.0;
+        }
+        libm::exp(self.log_mass(k))
     }
     fn log_mass(&self, k: i64) -> f64 {
-        if k < 0 { return f64::NEG_INFINITY; }
+        if k < 0 {
+            return f64::NEG_INFINITY;
+        }
         let kf = k as f64;
-        -self.lambda + kf * self.lambda.ln() - crate::special::lgamma(kf + 1.0)
+        -self.lambda + kf * libm::log(self.lambda) - crate::special::lgamma(kf + 1.0)
     }
 }
 
 impl DiscreteCdf for Poisson {
     fn cdf(&self, k: i64) -> f64 {
-        if k < 0 { return 0.0; }
+        if k < 0 {
+            return 0.0;
+        }
         crate::special::gammq((k + 1) as f64, self.lambda)
     }
     fn quantile(&self, p: f64) -> Result<i64, StatError> {
@@ -227,7 +324,9 @@ impl DiscreteCdf for Poisson {
 /// number-of-failures form. `mass(k) = (1−p)^{k−1} p`. CDF `1 − (1−p)^k`.
 /// Matches `scipy.stats.geom(p)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Geometric { p: f64 }
+pub struct Geometric {
+    p: f64,
+}
 
 impl Geometric {
     /// Construct with `p ∈ (0, 1]`.
@@ -252,38 +351,58 @@ impl Geometric {
 }
 
 impl Distribution for Geometric {
-    fn support_min(&self) -> Bound { Bound::Finite(1.0) }
-    fn support_max(&self) -> Bound { Bound::PosInfinity }
-    fn mean(&self) -> Option<f64> { Some(1.0 / self.p) }
-    fn variance(&self) -> Option<f64> { Some((1.0 - self.p) / (self.p * self.p)) }
+    fn support_min(&self) -> Bound {
+        Bound::Finite(1.0)
+    }
+    fn support_max(&self) -> Bound {
+        Bound::PosInfinity
+    }
+    fn mean(&self) -> Option<f64> {
+        Some(1.0 / self.p)
+    }
+    fn variance(&self) -> Option<f64> {
+        Some((1.0 - self.p) / (self.p * self.p))
+    }
 }
 
 impl DiscreteMass for Geometric {
     fn mass(&self, k: i64) -> f64 {
-        if k < 1 { return 0.0; }
-        self.log_mass(k).exp()
+        if k < 1 {
+            return 0.0;
+        }
+        libm::exp(self.log_mass(k))
     }
     fn log_mass(&self, k: i64) -> f64 {
-        if k < 1 { return f64::NEG_INFINITY; }
+        if k < 1 {
+            return f64::NEG_INFINITY;
+        }
         // p=1: only k=1 has mass; (1-p)=0 ⇒ ln 0 = −∞ for k>1, but k=1 term is p.
-        if self.p >= 1.0 { return if k == 1 { 0.0 } else { f64::NEG_INFINITY }; }
-        (k as f64 - 1.0) * (1.0 - self.p).ln() + self.p.ln()
+        if self.p >= 1.0 {
+            return if k == 1 { 0.0 } else { f64::NEG_INFINITY };
+        }
+        (k as f64 - 1.0) * libm::log(1.0 - self.p) + libm::log(self.p)
     }
 }
 
 impl DiscreteCdf for Geometric {
     fn cdf(&self, k: i64) -> f64 {
-        if k < 1 { return 0.0; }
-        -((k as f64) * (1.0 - self.p).ln()).exp_m1() // 1 - (1-p)^k
+        if k < 1 {
+            return 0.0;
+        }
+        -libm::expm1((k as f64) * libm::log(1.0 - self.p)) // 1 - (1-p)^k
     }
     fn quantile(&self, p: f64) -> Result<i64, StatError> {
         if !(0.0..=1.0).contains(&p) {
             return Err(StatError::ProbabilityOutOfRange(p));
         }
-        if p == 0.0 { return Ok(1); }
-        if self.p >= 1.0 { return Ok(1); }
+        if p == 0.0 {
+            return Ok(1);
+        }
+        if self.p >= 1.0 {
+            return Ok(1);
+        }
         // smallest k with 1-(1-p)^k ≥ q ⟺ k ≥ ln(1-q)/ln(1-p).
-        let k = ((1.0 - p).ln() / (1.0 - self.p).ln()).ceil();
+        let k = libm::ceil(libm::log(1.0 - p) / libm::log(1.0 - self.p));
         Ok((k.max(1.0)) as i64)
     }
 }
@@ -296,7 +415,10 @@ impl DiscreteCdf for Geometric {
 /// p=1−p)` (scipy's `p` is the *failure*-stop probability). `mass(k) =
 /// C(k+r−1, k) (1−p)^r p^k`. CDF `P(X ≤ k) = I_{1−p}(r, k+1)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NegBinomial { r: f64, p: f64 }
+pub struct NegBinomial {
+    r: f64,
+    p: f64,
+}
 
 impl NegBinomial {
     /// Construct with `r > 0`, `p ∈ (0, 1)`.
@@ -314,7 +436,9 @@ impl NegBinomial {
     /// ```
     pub fn new(r: f64, p: f64) -> Result<Self, StatError> {
         if !r.is_finite() || r <= 0.0 {
-            return Err(StatError::DomainError("NegBinomial: r must be finite and > 0"));
+            return Err(StatError::DomainError(
+                "NegBinomial: r must be finite and > 0",
+            ));
         }
         if !p.is_finite() || p <= 0.0 || p >= 1.0 {
             return Err(StatError::ProbabilityOutOfRange(p));
@@ -325,14 +449,20 @@ impl NegBinomial {
     fn search_hi(&self) -> i64 {
         let mean = self.r * self.p / (1.0 - self.p);
         let var = self.r * self.p / ((1.0 - self.p) * (1.0 - self.p));
-        (mean + 12.0 * var.sqrt() + 30.0).ceil() as i64
+        libm::ceil(mean + 12.0 * libm::sqrt(var) + 30.0) as i64
     }
 }
 
 impl Distribution for NegBinomial {
-    fn support_min(&self) -> Bound { Bound::Finite(0.0) }
-    fn support_max(&self) -> Bound { Bound::PosInfinity }
-    fn mean(&self) -> Option<f64> { Some(self.r * self.p / (1.0 - self.p)) }
+    fn support_min(&self) -> Bound {
+        Bound::Finite(0.0)
+    }
+    fn support_max(&self) -> Bound {
+        Bound::PosInfinity
+    }
+    fn mean(&self) -> Option<f64> {
+        Some(self.r * self.p / (1.0 - self.p))
+    }
     fn variance(&self) -> Option<f64> {
         Some(self.r * self.p / ((1.0 - self.p) * (1.0 - self.p)))
     }
@@ -340,23 +470,29 @@ impl Distribution for NegBinomial {
 
 impl DiscreteMass for NegBinomial {
     fn mass(&self, k: i64) -> f64 {
-        if k < 0 { return 0.0; }
-        self.log_mass(k).exp()
+        if k < 0 {
+            return 0.0;
+        }
+        libm::exp(self.log_mass(k))
     }
     fn log_mass(&self, k: i64) -> f64 {
-        if k < 0 { return f64::NEG_INFINITY; }
+        if k < 0 {
+            return f64::NEG_INFINITY;
+        }
         let kf = k as f64;
         crate::special::lgamma(kf + self.r)
             - crate::special::lgamma(self.r)
             - crate::special::lgamma(kf + 1.0)
-            + self.r * (1.0 - self.p).ln()
-            + kf * self.p.ln()
+            + self.r * libm::log(1.0 - self.p)
+            + kf * libm::log(self.p)
     }
 }
 
 impl DiscreteCdf for NegBinomial {
     fn cdf(&self, k: i64) -> f64 {
-        if k < 0 { return 0.0; }
+        if k < 0 {
+            return 0.0;
+        }
         // P(X ≤ k) = I_{1-p}(r, k+1).
         crate::special::betai(self.r, (k + 1) as f64, 1.0 - self.p)
     }
@@ -373,7 +509,11 @@ impl DiscreteCdf for NegBinomial {
 /// `scipy.stats.hypergeom(M=N, n=K, N=n)`. CDF is a direct sum over the support
 /// (no closed form).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Hypergeometric { big_n: i64, k: i64, n: i64 }
+pub struct Hypergeometric {
+    big_n: i64,
+    k: i64,
+    n: i64,
+}
 
 impl Hypergeometric {
     /// Construct with `K ≤ N`, `n ≤ N`, all `≥ 0`.
@@ -390,34 +530,50 @@ impl Hypergeometric {
     /// ```
     pub fn new(big_n: i64, k: i64, n: i64) -> Result<Self, StatError> {
         if big_n < 0 || k < 0 || n < 0 || k > big_n || n > big_n {
-            return Err(StatError::DomainError("Hypergeometric: require 0 ≤ K ≤ N and 0 ≤ n ≤ N"));
+            return Err(StatError::DomainError(
+                "Hypergeometric: require 0 ≤ K ≤ N and 0 ≤ n ≤ N",
+            ));
         }
         Ok(Hypergeometric { big_n, k, n })
     }
-    fn k_lo(&self) -> i64 { (self.n + self.k - self.big_n).max(0) }
-    fn k_hi(&self) -> i64 { self.n.min(self.k) }
+    fn k_lo(&self) -> i64 {
+        (self.n + self.k - self.big_n).max(0)
+    }
+    fn k_hi(&self) -> i64 {
+        self.n.min(self.k)
+    }
 }
 
 impl Distribution for Hypergeometric {
-    fn support_min(&self) -> Bound { Bound::Finite(self.k_lo() as f64) }
-    fn support_max(&self) -> Bound { Bound::Finite(self.k_hi() as f64) }
+    fn support_min(&self) -> Bound {
+        Bound::Finite(self.k_lo() as f64)
+    }
+    fn support_max(&self) -> Bound {
+        Bound::Finite(self.k_hi() as f64)
+    }
     fn mean(&self) -> Option<f64> {
         Some(self.n as f64 * self.k as f64 / self.big_n as f64)
     }
     fn variance(&self) -> Option<f64> {
         let (nn, kk, n) = (self.big_n as f64, self.k as f64, self.n as f64);
-        if nn <= 1.0 { return Some(0.0); }
+        if nn <= 1.0 {
+            return Some(0.0);
+        }
         Some(n * (kk / nn) * ((nn - kk) / nn) * ((nn - n) / (nn - 1.0)))
     }
 }
 
 impl DiscreteMass for Hypergeometric {
     fn mass(&self, k: i64) -> f64 {
-        if k < self.k_lo() || k > self.k_hi() { return 0.0; }
-        self.log_mass(k).exp()
+        if k < self.k_lo() || k > self.k_hi() {
+            return 0.0;
+        }
+        libm::exp(self.log_mass(k))
     }
     fn log_mass(&self, k: i64) -> f64 {
-        if k < self.k_lo() || k > self.k_hi() { return f64::NEG_INFINITY; }
+        if k < self.k_lo() || k > self.k_hi() {
+            return f64::NEG_INFINITY;
+        }
         let (nn, kk, n, kf) = (self.big_n as f64, self.k as f64, self.n as f64, k as f64);
         ln_choose(kk, kf) + ln_choose(nn - kk, n - kf) - ln_choose(nn, n)
     }
@@ -425,8 +581,12 @@ impl DiscreteMass for Hypergeometric {
 
 impl DiscreteCdf for Hypergeometric {
     fn cdf(&self, k: i64) -> f64 {
-        if k < self.k_lo() { return 0.0; }
-        if k >= self.k_hi() { return 1.0; }
+        if k < self.k_lo() {
+            return 0.0;
+        }
+        if k >= self.k_hi() {
+            return 1.0;
+        }
         // Direct sum over the support up to k (no closed form).
         let mut acc = 0.0;
         for j in self.k_lo()..=k {

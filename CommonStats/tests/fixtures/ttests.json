@@ -82,7 +82,7 @@
 -1.5579722960522782,
 -0.4781388150588328
 ],
-"welch_ci_note": "t_test_two(Welch).ci asserted against welch_ci_correct (R t.test var.equal=FALSE); the prior pooled-CI [-1.5542881098294552, -0.4818230012816558] was the latent bug, now fixed"
+"welch_ci_note": "t_test_two(Welch).ci asserted against welch_ci_correct (R t.test var.equal=FALSE); the prior pooled-CI was the latent bug, now fixed"
 },
 {
 "args": [

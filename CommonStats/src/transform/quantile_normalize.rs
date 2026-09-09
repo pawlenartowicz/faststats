@@ -9,7 +9,8 @@
 //! matrix — cite Bolstad 2003, not sklearn, when using this function.
 
 use crate::error::StatError;
-use crate::transform::rank::{rank, Ties};
+use crate::transform::rank::{Ties, rank};
+use alloc::{vec, vec::Vec};
 
 /// Column-rank-averaging normalization (Bolstad et al. 2003).
 ///
@@ -24,7 +25,7 @@ use crate::transform::rank::{rank, Ties};
 /// **NaN deviation from crate default:** NaN propagates element-wise; the output
 /// matrix has the same shape as the input. NaN positions do not contribute to
 /// ranks or the reference row computation. This is the documented exception to
-/// the crate's Omit default — see §0 of the P3 design spec.
+/// the crate's Omit default.
 ///
 /// **Matches** Bolstad et al. (2003), *Bioinformatics* 19(2):185–193.
 ///
@@ -65,12 +66,8 @@ pub fn quantile_normalize(matrix: &[&[f64]]) -> Result<Vec<Vec<f64>>, StatError>
     }
     let ncols = matrix.len();
 
-    // Step 1: for each column, sort the finite values to build per-column sorted order.
-    // NaN elements are left as NaN in the output at their original positions.
-    //
-    // For each column j:
-    //   finite_sorted[j] = finite values of col j, sorted ascending
-    //   (original indices tracked separately for step 3)
+    // Per-column sorted-finite vectors; NaN elements remain NaN in the output at
+    // their original positions (tracked in step 3 via finite_indices).
     let mut finite_sorted: Vec<Vec<f64>> = Vec::with_capacity(ncols);
     for col in matrix.iter() {
         let mut pairs: Vec<(usize, f64)> = col
@@ -83,10 +80,8 @@ pub fn quantile_normalize(matrix: &[&[f64]]) -> Result<Vec<Vec<f64>>, StatError>
         finite_sorted.push(pairs.iter().map(|&(_, v)| v).collect());
     }
 
-    // Step 2: build the reference row.
-    // ref[k] = mean of the k-th finite sorted value across all columns.
-    // Columns with fewer finite values (due to NaN) have shorter sorted vecs;
-    // average only the columns that have a k-th finite value.
+    // Reference row: ref[k] = mean of the k-th sorted finite value across columns.
+    // Columns shorter than ref_len (NaN-reduced) contribute only up to their length.
     let ref_len = finite_sorted.iter().map(|s| s.len()).max().unwrap_or(0);
     let mut reference: Vec<f64> = vec![0.0; ref_len];
     let mut ref_counts: Vec<usize> = vec![0; ref_len];
@@ -102,13 +97,9 @@ pub fn quantile_normalize(matrix: &[&[f64]]) -> Result<Vec<Vec<f64>>, StatError>
         }
     }
 
-    // Step 3: replace each finite value by the reference at its average rank.
-    // Average rank of value at sorted position k (1-based, among tied values in this column):
-    // use rank(column, Ties::Average) to get per-element fractional ranks.
-    let mut output: Vec<Vec<f64>> = matrix
-        .iter()
-        .map(|col| col.to_vec())
-        .collect();
+    // Replace each finite value by the reference at its average rank within the column,
+    // linearly interpolating for fractional (tied) ranks.
+    let mut output: Vec<Vec<f64>> = matrix.iter().map(|col| col.to_vec()).collect();
 
     for (j, col) in matrix.iter().enumerate() {
         // Compute average ranks of finite values within this column
@@ -135,9 +126,10 @@ pub fn quantile_normalize(matrix: &[&[f64]]) -> Result<Vec<Vec<f64>>, StatError>
             // Interpolate reference at fractional rank r:
             //   floor index = r.floor() as usize - 1  (0-based)
             //   ceil  index = min(r.ceil() as usize - 1, n_finite - 1)
-            let lo_idx = (r.floor() as usize).saturating_sub(1);
-            let hi_idx = (r.ceil() as usize).saturating_sub(1).min(n_finite - 1);
-            let frac = r - r.floor();
+            let r_floor = libm::floor(r);
+            let lo_idx = (r_floor as usize).saturating_sub(1);
+            let hi_idx = (libm::ceil(r) as usize).saturating_sub(1).min(n_finite - 1);
+            let frac = r - r_floor;
             let val = if lo_idx == hi_idx {
                 reference[lo_idx]
             } else {

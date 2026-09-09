@@ -24,13 +24,21 @@ pub fn cor_test(a: &[f64], b: &[f64], method: CorMethod) -> Result<TestResult, S
     let CorMethod::Pearson = method; // only Pearson today; add arms when Spearman/Kendall land
     let c = comoment_pairs(a, b)?;
     let n = c.count() as f64;
-    if n < 3.0 { return Err(StatError::TooFewObservations { needed: 3, got: n as usize }); }
+    if n < 3.0 {
+        return Err(StatError::TooFewObservations {
+            needed: 3,
+            got: n as usize,
+        });
+    }
     let r = c.pearson();
     let df = n - 2.0;
-    let t = r * (df / (1.0 - r * r)).sqrt();
+    let t = r * libm::sqrt(df / (1.0 - r * r));
     let p = betai(df / 2.0, 0.5, df / (df + t * t));
     Ok(TestResult {
-        statistic: t, df, df2: None, p_value: p,
+        statistic: t,
+        df,
+        df2: None,
+        p_value: p,
         effect_size: Some(EffectSize::R(r)),
         ci: ci_correlation(a, b, 0.95).ok(),
     })

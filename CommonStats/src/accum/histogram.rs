@@ -2,6 +2,8 @@
 //! RNG dependency, so they live in the always-compiled base.
 use super::{Accumulator, Mergeable};
 use crate::error::StatError;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// Finalized histogram: per-bin counts, the `n_bins + 1` bin edges, and the
 /// out-of-range tallies.
@@ -60,7 +62,14 @@ impl Histogram {
         if n_bins == 0 {
             return Err(StatError::DomainError("histogram: need n_bins >= 1"));
         }
-        Ok(Self { lo, hi, n_bins, counts: vec![0; n_bins], underflow: 0, overflow: 0 })
+        Ok(Self {
+            lo,
+            hi,
+            n_bins,
+            counts: vec![0; n_bins],
+            underflow: 0,
+            overflow: 0,
+        })
     }
 
     #[inline]
@@ -139,7 +148,14 @@ impl Accumulator for Histogram {
     /// The monoid identity (no bins). The real constructor is [`Histogram::new`];
     /// `merge` absorbs the configured operand's binning.
     fn empty() -> Self {
-        Self { lo: 0.0, hi: 0.0, n_bins: 0, counts: Vec::new(), underflow: 0, overflow: 0 }
+        Self {
+            lo: 0.0,
+            hi: 0.0,
+            n_bins: 0,
+            counts: Vec::new(),
+            underflow: 0,
+            overflow: 0,
+        }
     }
     fn update(&mut self, x: f64) {
         if x.is_nan() {

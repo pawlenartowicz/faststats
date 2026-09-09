@@ -1,28 +1,35 @@
-//! Counter-based randomness source for the whole ecosystem
-//! (permutation-friendly.md §3). Draw *k*'s words are a pure function of
+//! Counter-based randomness source for the whole ecosystem.
+//! Draw *k*'s words are a pure function of
 //! `(seed, draw_id)` with zero stored state — the property the dependency-graph
 //! cache and 1-vs-N-thread bit-identity both ride on.
 //!
-//! The [`philox`] core is the verbatim mcpower port; [`CommonStatsRng`] is the
+//! The [`philox`] core is the Philox4x32-10 counter-based PRNG (Random123); [`CommonStatsRng`] is the
 //! draw-addressable adaptation (the within-draw position and the draw id are
 //! encoded into the Philox counter, not a streaming state); [`CommonStatsRng::bounded`]
-//! is the Lemire unbiased `[0, n)` integer the resample index path needs. Float /
-//! unit-interval sampling is deferred to P3 with the `dist` suite — the P2 index
-//! path is integer-only.
+//! is the Lemire unbiased `[0, n)` integer the resample index path needs.
+//! Float/unit-interval sampling is deferred to the `dist` feature — this module
+//! (integer-only path) generates indices and bounded integers.
 pub mod philox;
 
 use philox::philox4x32_10;
 
 /// Domain-separation tag XOR'd into `draw_id` so the resample stream never
-/// collides with the base-data or (later) synthetic-generation streams
-/// (permutation-friendly.md §3). The bytes spell `RESAMPLE`.
+/// collides with the base-data or (later) synthetic-generation streams.
+/// The bytes spell `RESAMPLE`.
 pub const STREAM_TAG_RESAMPLE: u64 = 0x5245_5341_4D50_4C45;
+
+/// Domain-separation tag for the sign-flip stream ([`gen_sign_flips`]) so sign
+/// flips and row permutations of the same `draw_id` never share random bits.
+/// The bytes spell `SIGNFLIP`.
+///
+/// [`gen_sign_flips`]: crate::resample::gen_sign_flips
+pub const STREAM_TAG_SIGNFLIP: u64 = 0x5349_474E_464C_4950;
 
 /// David Stafford's "Mix13" SplitMix64 finalizer (avalanche function). Mixes a
 /// raw `u64` seed into the two Philox key words so low-entropy standalone seeds
-/// (0, 1, 2, …) still produce well-separated streams. mcpower uses the same
-/// finalizer; consumers that already seed from a node hash pass an
-/// already-mixed value and pay only this one extra avalanche.
+/// (0, 1, 2, …) still produce well-separated streams. Consumers that already
+/// seed from a node hash pass an already-mixed value and pay only this one
+/// extra avalanche.
 #[inline]
 fn splitmix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -36,15 +43,15 @@ fn splitmix64(mut z: u64) -> u64 {
 /// within-draw position)` with no carried entropy — re-running draw *k* with the
 /// same `(seed, draw_id)` reproduces it exactly, independent of how many draws
 /// ran before it or on which thread. The key derives from `seed` (mixed); the
-/// counter carries `(position_block, draw_id ^ STREAM_TAG_RESAMPLE)`, so distinct
-/// draws are independent Philox sub-streams. Yields `u32` words and Lemire
-/// unbiased bounded integers; float sampling is P3.
+/// counter carries `(position_block, draw_id ^ tag)`, tag `STREAM_TAG_RESAMPLE`
+/// by default, so distinct draws are independent Philox sub-streams. Yields
+/// `u32` words and Lemire unbiased bounded integers; float sampling is P3.
 #[derive(Debug, Clone)]
 pub struct CommonStatsRng {
     key: [u32; 2],
     draw_lo: u32,
     draw_hi: u32,
-    block: u64,     // counter block within this draw; 4 words per block
+    block: u64, // counter block within this draw; 4 words per block
     buf: [u32; 4],
     buf_pos: usize, // 0..=4; 4 = exhausted, refill on next draw
 }
@@ -55,9 +62,17 @@ impl CommonStatsRng {
     /// `seed`: the consumer's run seed (already node-hash-mixed in SDOC; any
     /// `u64` for the standalone path — internally re-mixed). `draw_id`: the draw
     /// index in `0..B`; XOR'd with [`STREAM_TAG_RESAMPLE`] for domain separation.
+    /// Equals `new_tagged(seed, draw_id, STREAM_TAG_RESAMPLE)`.
     pub fn new(seed: u64, draw_id: u64) -> Self {
+        Self::new_tagged(seed, draw_id, STREAM_TAG_RESAMPLE)
+    }
+
+    /// [`new`](Self::new) with an explicit domain-separation `tag` XOR'd into
+    /// `draw_id` — one of the `STREAM_TAG_*` constants. Streams with different
+    /// tags and the same `(seed, draw_id)` are independent Philox sub-streams.
+    pub fn new_tagged(seed: u64, draw_id: u64, tag: u64) -> Self {
         let k = splitmix64(seed);
-        let eff = draw_id ^ STREAM_TAG_RESAMPLE;
+        let eff = draw_id ^ tag;
         Self {
             key: [k as u32, (k >> 32) as u32],
             draw_lo: eff as u32,
@@ -75,7 +90,10 @@ impl CommonStatsRng {
     pub fn next_u32(&mut self) -> u32 {
         if self.buf_pos == 4 {
             let b = self.block;
-            self.buf = philox4x32_10([b as u32, (b >> 32) as u32, self.draw_lo, self.draw_hi], self.key);
+            self.buf = philox4x32_10(
+                [b as u32, (b >> 32) as u32, self.draw_lo, self.draw_hi],
+                self.key,
+            );
             self.block = self.block.wrapping_add(1);
             self.buf_pos = 0;
         }
@@ -130,9 +148,10 @@ impl CommonStatsRng {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     // Same (seed, draw_id) reproduces the exact word stream, draw after draw —
-    // the determinism leg of the P2 oracle (spec §Validation).
+    // the determinism guarantee the resampling layer relies on.
     #[test]
     fn same_key_reproduces_words() {
         let mut a = CommonStatsRng::new(42, 7);
@@ -166,7 +185,10 @@ mod tests {
                 diff += 1;
             }
         }
-        assert!(diff > 90, "different draw_ids must give independent streams");
+        assert!(
+            diff > 90,
+            "different draw_ids must give independent streams"
+        );
     }
 
     #[test]
@@ -180,6 +202,24 @@ mod tests {
             }
         }
         assert!(diff > 90, "different seeds must give independent streams");
+    }
+
+    // `new` is `new_tagged` with the resample tag — existing fixtures stay byte-identical.
+    #[test]
+    fn new_equals_new_tagged_resample() {
+        let mut a = CommonStatsRng::new(42, 7);
+        let mut b = CommonStatsRng::new_tagged(42, 7, STREAM_TAG_RESAMPLE);
+        for _ in 0..100 {
+            assert_eq!(a.next_u32(), b.next_u32());
+        }
+    }
+
+    #[test]
+    fn signflip_tag_diverges_from_resample_stream() {
+        let mut a = CommonStatsRng::new_tagged(42, 7, STREAM_TAG_RESAMPLE);
+        let mut b = CommonStatsRng::new_tagged(42, 7, STREAM_TAG_SIGNFLIP);
+        let diff = (0..100).filter(|_| a.next_u32() != b.next_u32()).count();
+        assert!(diff > 90, "tags must separate streams");
     }
 
     #[test]
@@ -202,7 +242,7 @@ mod tests {
 
     // No modulo bias: over many draws every bucket in [0, n) is hit with roughly
     // equal frequency. A biased floor(u*n) would systematically over-fill the low
-    // buckets; the χ²-style spread check catches gross deviation (spec §Validation).
+    // buckets; the χ²-style spread check catches gross deviation.
     #[test]
     fn bounded_is_approximately_uniform() {
         let n = 7u32;
@@ -215,7 +255,10 @@ mod tests {
         let expected = draws as f64 / n as f64;
         for (i, &c) in counts.iter().enumerate() {
             let rel = (c as f64 - expected).abs() / expected;
-            assert!(rel < 0.02, "bucket {i} count {c} deviates {rel:.4} from uniform");
+            assert!(
+                rel < 0.02,
+                "bucket {i} count {c} deviates {rel:.4} from uniform"
+            );
         }
     }
 

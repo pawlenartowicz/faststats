@@ -23,10 +23,10 @@ pub fn gammp(a: f64, x: f64) -> f64 {
             term *= x / ap;
             sum += term;
             if term.abs() < sum.abs() * EPS {
-                return sum * (-x + a * x.ln() - lgamma(a)).exp();
+                return sum * libm::exp(-x + a * libm::log(x) - lgamma(a));
             }
         }
-        sum * (-x + a * x.ln() - lgamma(a)).exp()
+        sum * libm::exp(-x + a * libm::log(x) - lgamma(a))
     } else {
         // Continued fraction for Q(a, x) (upper); P = 1 - Q.
         let mut b = x + 1.0 - a;
@@ -48,18 +48,20 @@ pub fn gammp(a: f64, x: f64) -> f64 {
             let del = d * c;
             h *= del;
             if (del - 1.0).abs() < EPS {
-                let q = (-x + a * x.ln() - lgamma(a)).exp() * h;
+                let q = libm::exp(-x + a * libm::log(x) - lgamma(a)) * h;
                 return 1.0 - q;
             }
         }
-        let q = (-x + a * x.ln() - lgamma(a)).exp() * h;
+        let q = libm::exp(-x + a * libm::log(x) - lgamma(a)) * h;
         1.0 - q
     }
 }
 
 /// Regularized upper incomplete gamma Q(a,x) = 1 − P(a,x), for a > 0 and x ≥ 0.
 /// Used by χ² p-values. Matches `scipy.special.gammaincc` (`tests/fixtures/gammq.json`).
-pub fn gammq(a: f64, x: f64) -> f64 { 1.0 - gammp(a, x) }
+pub fn gammq(a: f64, x: f64) -> f64 {
+    1.0 - gammp(a, x)
+}
 
 /// Regularized incomplete beta I_x(a,b), for a,b > 0 and x ∈ [0,1]; range [0, 1].
 /// (NR §6.4 continued fraction with the x < (a+1)/(a+b+2) symmetry transform; ~1e-15.)
@@ -71,7 +73,7 @@ pub fn betai(a: f64, b: f64, x: f64) -> f64 {
     if x >= 1.0 {
         return 1.0;
     }
-    let bt = (a * x.ln() + b * (1.0 - x).ln() - lbeta(a, b)).exp();
+    let bt = libm::exp(a * libm::log(x) + b * libm::log(1.0 - x) - lbeta(a, b));
     if x < (a + 1.0) / (a + b + 2.0) {
         bt * betacf(a, b, x) / a
     } else {

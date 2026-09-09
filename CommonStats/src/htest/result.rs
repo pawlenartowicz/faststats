@@ -57,11 +57,24 @@ mod tests {
         // that SDOC's reporting layer relies on (a field dropped from either derive
         // would break round-trip equality here), not any computation.
         let r = TestResult {
-            statistic: 2.0, df: 9.0, df2: None, p_value: 0.05,
+            statistic: 2.0,
+            df: 9.0,
+            df2: None,
+            p_value: 0.05,
             effect_size: Some(EffectSize::CohenD(0.8)),
-            ci: Some(Ci { lower: 0.1, upper: 3.9, level: 0.95 }),
+            ci: Some(Ci {
+                lower: 0.1,
+                upper: 3.9,
+                level: 0.95,
+            }),
         };
         assert_eq!(r.clone(), r);
-        assert_ne!(r, TestResult { effect_size: Some(EffectSize::EtaSquared(0.8)), ..r.clone() });
+        assert_ne!(
+            r,
+            TestResult {
+                effect_size: Some(EffectSize::EtaSquared(0.8)),
+                ..r.clone()
+            }
+        );
     }
 }

@@ -1,10 +1,11 @@
 //! t-tests. Group statistics from the Variance accumulator; p-values from betai.
 use crate::accum::moments::{checked_variance, pooled_var};
 use crate::error::StatError;
-use crate::htest::effect::cohen_d;
 use crate::htest::ci::{ci_mean, ci_mean_diff, ci_mean_diff_welch};
+use crate::htest::effect::cohen_d;
 use crate::htest::result::{EffectSize, TestResult};
 use crate::special::betai;
+use alloc::vec::Vec;
 
 /// Variance assumption for the two-sample t-test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,11 +32,14 @@ fn t_two_sided_p(t: f64, df: f64) -> f64 {
 pub fn t_test_one(v: &[f64], mu0: f64) -> Result<TestResult, StatError> {
     let s = checked_variance(v)?;
     let n = s.count() as f64;
-    let se = s.sd_sample() / n.sqrt();
+    let se = s.sd_sample() / libm::sqrt(n);
     let t = (s.mean() - mu0) / se;
     let df = n - 1.0;
     Ok(TestResult {
-        statistic: t, df, df2: None, p_value: t_two_sided_p(t, df),
+        statistic: t,
+        df,
+        df2: None,
+        p_value: t_two_sided_p(t, df),
         effect_size: Some(EffectSize::CohenD((s.mean() - mu0) / s.sd_sample())),
         ci: ci_mean(v, 0.95).ok(),
     })
@@ -57,15 +61,18 @@ pub fn t_test_two(a: &[f64], b: &[f64], va: VarAssumption) -> Result<TestResult,
     let (t, df) = match va {
         VarAssumption::Equal => {
             // SE = √(sp²(1/nA+1/nB)); pooled sp² from the shared accumulator helper.
-            let se = (pooled_var(&sa, &sb) * (1.0 / na + 1.0 / nb)).sqrt();
+            let se = libm::sqrt(pooled_var(&sa, &sb) * (1.0 / na + 1.0 / nb));
             ((sa.mean() - sb.mean()) / se, na + nb - 2.0)
         }
         VarAssumption::Welch => {
             // Welch–Satterthwaite df = (vA/nA + vB/nB)² /
             //   [ (vA/nA)²/(nA−1) + (vB/nB)²/(nB−1) ]; SE = √(vA/nA + vB/nB).
-            let se = (va_ / na + vb / nb).sqrt();
-            let df = (va_ / na + vb / nb).powi(2)
-                / ((va_ / na).powi(2) / (na - 1.0) + (vb / nb).powi(2) / (nb - 1.0));
+            let se_term = va_ / na + vb / nb;
+            let se = libm::sqrt(se_term);
+            let a_term = va_ / na;
+            let b_term = vb / nb;
+            let df = (se_term * se_term)
+                / ((a_term * a_term) / (na - 1.0) + (b_term * b_term) / (nb - 1.0));
             ((sa.mean() - sb.mean()) / se, df)
         }
     };
@@ -74,7 +81,10 @@ pub fn t_test_two(a: &[f64], b: &[f64], va: VarAssumption) -> Result<TestResult,
         VarAssumption::Welch => ci_mean_diff_welch(a, b, 0.95),
     };
     Ok(TestResult {
-        statistic: t, df, df2: None, p_value: t_two_sided_p(t, df),
+        statistic: t,
+        df,
+        df2: None,
+        p_value: t_two_sided_p(t, df),
         effect_size: Some(EffectSize::CohenD(cohen_d(a, b)?)),
         ci: ci.ok(),
     })
@@ -86,7 +96,12 @@ pub fn t_test_two(a: &[f64], b: &[f64], va: VarAssumption) -> Result<TestResult,
 /// `a.len() != b.len()`; [`StatError::TooFewObservations`] when < 2 pairs.
 /// Matches `scipy.stats.ttest_rel` (`tests/fixtures/ttests.json`).
 pub fn t_test_paired(a: &[f64], b: &[f64]) -> Result<TestResult, StatError> {
-    if a.len() != b.len() { return Err(StatError::MismatchedLengths { a: a.len(), b: b.len() }); }
+    if a.len() != b.len() {
+        return Err(StatError::MismatchedLengths {
+            a: a.len(),
+            b: b.len(),
+        });
+    }
     let diff: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
     t_test_one(&diff, 0.0)
 }

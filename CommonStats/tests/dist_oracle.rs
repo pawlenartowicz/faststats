@@ -5,33 +5,44 @@
 //! asserting a curated band. Discrete pmf/cdf use the value ladder; the discrete
 //! ppf is an exact integer, so it asserts within ±0.5 (no float band).
 mod common;
-use common::{check_grid, measure_band, Tol};
+use common::{Tol, check_grid, measure_band};
 
+use commonstats::dist::continuous::Beta;
+use commonstats::dist::continuous::Cauchy;
+use commonstats::dist::continuous::ChiSquared;
+use commonstats::dist::continuous::Exponential;
+use commonstats::dist::continuous::FisherF;
+use commonstats::dist::continuous::Gamma;
+use commonstats::dist::continuous::LogNormal;
 use commonstats::dist::continuous::Normal;
 use commonstats::dist::continuous::StudentT;
-use commonstats::dist::continuous::ChiSquared;
-use commonstats::dist::continuous::FisherF;
 use commonstats::dist::continuous::Uniform;
-use commonstats::dist::continuous::Exponential;
-use commonstats::dist::continuous::Cauchy;
 use commonstats::dist::continuous::Weibull;
-use commonstats::dist::continuous::LogNormal;
-use commonstats::dist::continuous::Gamma;
-use commonstats::dist::continuous::Beta;
 use commonstats::dist::discrete::Bernoulli;
 use commonstats::dist::discrete::Binomial;
-use commonstats::dist::discrete::Poisson;
 use commonstats::dist::discrete::Geometric;
-use commonstats::dist::discrete::NegBinomial;
 use commonstats::dist::discrete::Hypergeometric;
-use commonstats::dist::{ContinuousCdf, ContinuousDensity, Distribution, DiscreteCdf, DiscreteMass};
+use commonstats::dist::discrete::NegBinomial;
+use commonstats::dist::discrete::Poisson;
+use commonstats::dist::{
+    ContinuousCdf, ContinuousDensity, DiscreteCdf, DiscreteMass, Distribution,
+};
 
 // Bulk ladder (spec §3): pdf/cdf/sf/pmf value-kind vs ppf inverse-kind.
-const VAL: Tol = Tol { rel: 1e-12, abs: 1e-14 };
-const INV: Tol = Tol { rel: 1e-10, abs: 1e-12 };
+const VAL: Tol = Tol {
+    rel: 1e-12,
+    abs: 1e-14,
+};
+const INV: Tol = Tol {
+    rel: 1e-10,
+    abs: 1e-12,
+};
 // Discrete ppf returns an exact integer (i64→f64); the only error is the i64→f64
 // cast, so any result within ½ of the truth integer is an exact match.
-const EXACT: Tol = Tol { rel: 1e-15, abs: 0.5 };
+const EXACT: Tol = Tol {
+    rel: 1e-15,
+    abs: 0.5,
+};
 
 // ---- continuous oracle grids -------------------------------------------------
 #[test]
@@ -39,7 +50,7 @@ fn normal_oracle() {
     let n = Normal::new(0.5, 2.0).unwrap();
     check_grid("dist_normal_pdf", VAL, |a| n.density(a[0]));
     check_grid("dist_normal_cdf", VAL, |a| n.cdf(a[0]));
-    check_grid("dist_normal_sf",  VAL, |a| n.sf(a[0]));
+    check_grid("dist_normal_sf", VAL, |a| n.sf(a[0]));
     check_grid("dist_normal_ppf", INV, |a| n.quantile(a[0]).unwrap());
 }
 
@@ -48,7 +59,7 @@ fn studentt_oracle() {
     let t = StudentT::new(7.0).unwrap();
     check_grid("dist_studentt_pdf", VAL, |a| t.density(a[0]));
     check_grid("dist_studentt_cdf", VAL, |a| t.cdf(a[0]));
-    check_grid("dist_studentt_sf",  VAL, |a| t.sf(a[0]));
+    check_grid("dist_studentt_sf", VAL, |a| t.sf(a[0]));
     check_grid("dist_studentt_ppf", INV, |a| t.quantile(a[0]).unwrap());
 }
 
@@ -57,7 +68,7 @@ fn chisquared_oracle() {
     let c = ChiSquared::new(5.0).unwrap();
     check_grid("dist_chisquared_pdf", VAL, |a| c.density(a[0]));
     check_grid("dist_chisquared_cdf", VAL, |a| c.cdf(a[0]));
-    check_grid("dist_chisquared_sf",  VAL, |a| c.sf(a[0]));
+    check_grid("dist_chisquared_sf", VAL, |a| c.sf(a[0]));
     check_grid("dist_chisquared_ppf", INV, |a| c.quantile(a[0]).unwrap());
 }
 
@@ -66,7 +77,7 @@ fn fisherf_oracle() {
     let f = FisherF::new(6.0, 12.0).unwrap();
     check_grid("dist_fisherf_pdf", VAL, |a| f.density(a[0]));
     check_grid("dist_fisherf_cdf", VAL, |a| f.cdf(a[0]));
-    check_grid("dist_fisherf_sf",  VAL, |a| f.sf(a[0]));
+    check_grid("dist_fisherf_sf", VAL, |a| f.sf(a[0]));
     check_grid("dist_fisherf_ppf", INV, |a| f.quantile(a[0]).unwrap());
 }
 
@@ -75,7 +86,7 @@ fn uniform_dist_oracle() {
     let u = Uniform::new(-1.0, 3.0).unwrap();
     check_grid("dist_uniform_pdf", VAL, |a| u.density(a[0]));
     check_grid("dist_uniform_cdf", VAL, |a| u.cdf(a[0]));
-    check_grid("dist_uniform_sf",  VAL, |a| u.sf(a[0]));
+    check_grid("dist_uniform_sf", VAL, |a| u.sf(a[0]));
     check_grid("dist_uniform_ppf", INV, |a| u.quantile(a[0]).unwrap());
 }
 
@@ -84,7 +95,7 @@ fn exponential_oracle() {
     let e = Exponential::new(1.5).unwrap();
     check_grid("dist_exponential_pdf", VAL, |a| e.density(a[0]));
     check_grid("dist_exponential_cdf", VAL, |a| e.cdf(a[0]));
-    check_grid("dist_exponential_sf",  VAL, |a| e.sf(a[0]));
+    check_grid("dist_exponential_sf", VAL, |a| e.sf(a[0]));
     check_grid("dist_exponential_ppf", INV, |a| e.quantile(a[0]).unwrap());
 }
 
@@ -93,7 +104,7 @@ fn cauchy_oracle() {
     let c = Cauchy::new(1.0, 2.0).unwrap();
     check_grid("dist_cauchy_pdf", VAL, |a| c.density(a[0]));
     check_grid("dist_cauchy_cdf", VAL, |a| c.cdf(a[0]));
-    check_grid("dist_cauchy_sf",  VAL, |a| c.sf(a[0]));
+    check_grid("dist_cauchy_sf", VAL, |a| c.sf(a[0]));
     check_grid("dist_cauchy_ppf", INV, |a| c.quantile(a[0]).unwrap());
 }
 
@@ -102,7 +113,7 @@ fn weibull_oracle() {
     let w = Weibull::new(2.0, 1.5).unwrap();
     check_grid("dist_weibull_pdf", VAL, |a| w.density(a[0]));
     check_grid("dist_weibull_cdf", VAL, |a| w.cdf(a[0]));
-    check_grid("dist_weibull_sf",  VAL, |a| w.sf(a[0]));
+    check_grid("dist_weibull_sf", VAL, |a| w.sf(a[0]));
     check_grid("dist_weibull_ppf", INV, |a| w.quantile(a[0]).unwrap());
 }
 
@@ -111,7 +122,7 @@ fn lognormal_oracle() {
     let l = LogNormal::new(0.5, 0.75).unwrap();
     check_grid("dist_lognormal_pdf", VAL, |a| l.density(a[0]));
     check_grid("dist_lognormal_cdf", VAL, |a| l.cdf(a[0]));
-    check_grid("dist_lognormal_sf",  VAL, |a| l.sf(a[0]));
+    check_grid("dist_lognormal_sf", VAL, |a| l.sf(a[0]));
     check_grid("dist_lognormal_ppf", INV, |a| l.quantile(a[0]).unwrap());
 }
 
@@ -120,7 +131,7 @@ fn gamma_oracle() {
     let g = Gamma::new(3.5, 2.0).unwrap();
     check_grid("dist_gamma_pdf", VAL, |a| g.density(a[0]));
     check_grid("dist_gamma_cdf", VAL, |a| g.cdf(a[0]));
-    check_grid("dist_gamma_sf",  VAL, |a| g.sf(a[0]));
+    check_grid("dist_gamma_sf", VAL, |a| g.sf(a[0]));
     check_grid("dist_gamma_ppf", INV, |a| g.quantile(a[0]).unwrap());
 }
 
@@ -129,7 +140,7 @@ fn beta_oracle() {
     let b = Beta::new(2.5, 4.0).unwrap();
     check_grid("dist_beta_pdf", VAL, |a| b.density(a[0]));
     check_grid("dist_beta_cdf", VAL, |a| b.cdf(a[0]));
-    check_grid("dist_beta_sf",  VAL, |a| b.sf(a[0]));
+    check_grid("dist_beta_sf", VAL, |a| b.sf(a[0]));
     check_grid("dist_beta_ppf", INV, |a| b.quantile(a[0]).unwrap());
 }
 
@@ -137,49 +148,61 @@ fn beta_oracle() {
 #[test]
 fn bernoulli_oracle() {
     let b = Bernoulli::new(0.4).unwrap();
-    check_grid("dist_bernoulli_pmf", VAL,   |a| b.mass(a[0] as i64));
-    check_grid("dist_bernoulli_cdf", VAL,   |a| b.cdf(a[0] as i64));
-    check_grid("dist_bernoulli_ppf", EXACT, |a| b.quantile(a[0]).unwrap() as f64);
+    check_grid("dist_bernoulli_pmf", VAL, |a| b.mass(a[0] as i64));
+    check_grid("dist_bernoulli_cdf", VAL, |a| b.cdf(a[0] as i64));
+    check_grid("dist_bernoulli_ppf", EXACT, |a| {
+        b.quantile(a[0]).unwrap() as f64
+    });
 }
 
 #[test]
 fn binomial_oracle() {
     let b = Binomial::new(20, 0.35).unwrap();
-    check_grid("dist_binomial_pmf", VAL,   |a| b.mass(a[0] as i64));
-    check_grid("dist_binomial_cdf", VAL,   |a| b.cdf(a[0] as i64));
-    check_grid("dist_binomial_ppf", EXACT, |a| b.quantile(a[0]).unwrap() as f64);
+    check_grid("dist_binomial_pmf", VAL, |a| b.mass(a[0] as i64));
+    check_grid("dist_binomial_cdf", VAL, |a| b.cdf(a[0] as i64));
+    check_grid("dist_binomial_ppf", EXACT, |a| {
+        b.quantile(a[0]).unwrap() as f64
+    });
 }
 
 #[test]
 fn poisson_oracle() {
     let p = Poisson::new(4.5).unwrap();
-    check_grid("dist_poisson_pmf", VAL,   |a| p.mass(a[0] as i64));
-    check_grid("dist_poisson_cdf", VAL,   |a| p.cdf(a[0] as i64));
-    check_grid("dist_poisson_ppf", EXACT, |a| p.quantile(a[0]).unwrap() as f64);
+    check_grid("dist_poisson_pmf", VAL, |a| p.mass(a[0] as i64));
+    check_grid("dist_poisson_cdf", VAL, |a| p.cdf(a[0] as i64));
+    check_grid("dist_poisson_ppf", EXACT, |a| {
+        p.quantile(a[0]).unwrap() as f64
+    });
 }
 
 #[test]
 fn geometric_oracle() {
     let g = Geometric::new(0.4).unwrap();
-    check_grid("dist_geometric_pmf", VAL,   |a| g.mass(a[0] as i64));
-    check_grid("dist_geometric_cdf", VAL,   |a| g.cdf(a[0] as i64));
-    check_grid("dist_geometric_ppf", EXACT, |a| g.quantile(a[0]).unwrap() as f64);
+    check_grid("dist_geometric_pmf", VAL, |a| g.mass(a[0] as i64));
+    check_grid("dist_geometric_cdf", VAL, |a| g.cdf(a[0] as i64));
+    check_grid("dist_geometric_ppf", EXACT, |a| {
+        g.quantile(a[0]).unwrap() as f64
+    });
 }
 
 #[test]
 fn negbinomial_oracle() {
     let nb = NegBinomial::new(4.0, 0.3).unwrap();
-    check_grid("dist_negbinomial_pmf", VAL,   |a| nb.mass(a[0] as i64));
-    check_grid("dist_negbinomial_cdf", VAL,   |a| nb.cdf(a[0] as i64));
-    check_grid("dist_negbinomial_ppf", EXACT, |a| nb.quantile(a[0]).unwrap() as f64);
+    check_grid("dist_negbinomial_pmf", VAL, |a| nb.mass(a[0] as i64));
+    check_grid("dist_negbinomial_cdf", VAL, |a| nb.cdf(a[0] as i64));
+    check_grid("dist_negbinomial_ppf", EXACT, |a| {
+        nb.quantile(a[0]).unwrap() as f64
+    });
 }
 
 #[test]
 fn hypergeometric_oracle() {
     let h = Hypergeometric::new(30, 12, 10).unwrap();
-    check_grid("dist_hypergeometric_pmf", VAL,   |a| h.mass(a[0] as i64));
-    check_grid("dist_hypergeometric_cdf", VAL,   |a| h.cdf(a[0] as i64));
-    check_grid("dist_hypergeometric_ppf", EXACT, |a| h.quantile(a[0]).unwrap() as f64);
+    check_grid("dist_hypergeometric_pmf", VAL, |a| h.mass(a[0] as i64));
+    check_grid("dist_hypergeometric_cdf", VAL, |a| h.cdf(a[0] as i64));
+    check_grid("dist_hypergeometric_ppf", EXACT, |a| {
+        h.quantile(a[0]).unwrap() as f64
+    });
 }
 
 /// Band calibration (spec §5). Run with `cargo test -- --ignored --nocapture`;
@@ -201,17 +224,50 @@ fn measure_tail_bands() {
     let g = Gamma::new(3.5, 2.0).unwrap();
     let b = Beta::new(2.5, 4.0).unwrap();
     let bands = [
-        ("dist_normal_ppf",      measure_band("dist_normal_ppf",      |a| n.quantile(a[0]).unwrap())),
-        ("dist_studentt_ppf",    measure_band("dist_studentt_ppf",    |a| t.quantile(a[0]).unwrap())),
-        ("dist_chisquared_ppf",  measure_band("dist_chisquared_ppf",  |a| c.quantile(a[0]).unwrap())),
-        ("dist_fisherf_ppf",     measure_band("dist_fisherf_ppf",     |a| f.quantile(a[0]).unwrap())),
-        ("dist_uniform_ppf",     measure_band("dist_uniform_ppf",     |a| u.quantile(a[0]).unwrap())),
-        ("dist_exponential_ppf", measure_band("dist_exponential_ppf", |a| e.quantile(a[0]).unwrap())),
-        ("dist_cauchy_ppf",      measure_band("dist_cauchy_ppf",      |a| ca.quantile(a[0]).unwrap())),
-        ("dist_weibull_ppf",     measure_band("dist_weibull_ppf",     |a| w.quantile(a[0]).unwrap())),
-        ("dist_lognormal_ppf",   measure_band("dist_lognormal_ppf",   |a| l.quantile(a[0]).unwrap())),
-        ("dist_gamma_ppf",       measure_band("dist_gamma_ppf",       |a| g.quantile(a[0]).unwrap())),
-        ("dist_beta_ppf",        measure_band("dist_beta_ppf",        |a| b.quantile(a[0]).unwrap())),
+        (
+            "dist_normal_ppf",
+            measure_band("dist_normal_ppf", |a| n.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_studentt_ppf",
+            measure_band("dist_studentt_ppf", |a| t.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_chisquared_ppf",
+            measure_band("dist_chisquared_ppf", |a| c.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_fisherf_ppf",
+            measure_band("dist_fisherf_ppf", |a| f.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_uniform_ppf",
+            measure_band("dist_uniform_ppf", |a| u.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_exponential_ppf",
+            measure_band("dist_exponential_ppf", |a| e.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_cauchy_ppf",
+            measure_band("dist_cauchy_ppf", |a| ca.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_weibull_ppf",
+            measure_band("dist_weibull_ppf", |a| w.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_lognormal_ppf",
+            measure_band("dist_lognormal_ppf", |a| l.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_gamma_ppf",
+            measure_band("dist_gamma_ppf", |a| g.quantile(a[0]).unwrap()),
+        ),
+        (
+            "dist_beta_ppf",
+            measure_band("dist_beta_ppf", |a| b.quantile(a[0]).unwrap()),
+        ),
     ];
     for (name, val) in bands {
         match val {
@@ -244,7 +300,7 @@ fn studentt_basic() {
     assert_eq!(t.quantile(0.5).unwrap(), 0.0);
     // scipy: t.ppf(0.975, 5) = 2.5705818366147395
     assert!((t.quantile(0.975).unwrap() - 2.570_581_836_614_74).abs() < 1e-9);
-    assert_eq!(t.mean(), Some(0.0));        // df>1
+    assert_eq!(t.mean(), Some(0.0)); // df>1
     assert_eq!(StudentT::new(1.0).unwrap().mean(), None); // df=1 undefined
     assert_eq!(t.variance(), Some(5.0 / 3.0)); // df/(df-2)
     assert!(StudentT::new(0.0).is_err());
@@ -290,7 +346,7 @@ fn uniform_dist_basic() {
 #[test]
 fn exponential_basic() {
     let e = Exponential::new(2.0).unwrap();
-    assert_eq!(e.mean(), Some(0.5));      // 1/λ
+    assert_eq!(e.mean(), Some(0.5)); // 1/λ
     assert_eq!(e.variance(), Some(0.25)); // 1/λ²
     assert_eq!(e.density(-1.0), 0.0);
     // cdf(x)=1-e^{-2x}; quantile(0.5)=ln2/2
@@ -339,8 +395,8 @@ fn lognormal_basic() {
 #[test]
 fn gamma_basic() {
     let g = Gamma::new(2.0, 1.0).unwrap(); // shape 2, rate 1
-    assert_eq!(g.mean(), Some(2.0));       // α/β
-    assert_eq!(g.variance(), Some(2.0));   // α/β²
+    assert_eq!(g.mean(), Some(2.0)); // α/β
+    assert_eq!(g.variance(), Some(2.0)); // α/β²
     assert_eq!(g.density(-1.0), 0.0);
     // scipy: gamma(a=2, scale=1).ppf(0.5) = 1.6783469900166612
     assert!((g.quantile(0.5).unwrap() - 1.678_346_990_016_661).abs() < 1e-8);
@@ -384,8 +440,8 @@ fn bernoulli_basic() {
 #[test]
 fn binomial_basic() {
     let b = Binomial::new(10, 0.3).unwrap();
-    assert_eq!(b.mean(), Some(3.0));        // np
-    assert!((b.variance().unwrap() - 2.1).abs() < 1e-14);    // np(1-p)
+    assert_eq!(b.mean(), Some(3.0)); // np
+    assert!((b.variance().unwrap() - 2.1).abs() < 1e-14); // np(1-p)
     // scipy: binom.pmf(3, 10, 0.3) = 0.26682793200000005
     assert!((b.mass(3) - 0.266_827_932_0).abs() < 1e-12);
     assert_eq!(b.mass(-1), 0.0);
@@ -416,7 +472,7 @@ fn poisson_basic() {
 fn geometric_basic() {
     let g = Geometric::new(0.25).unwrap();
     assert_eq!(g.mean(), Some(4.0)); // 1/p
-    assert_eq!(g.mass(0), 0.0);      // 1-indexed: support starts at 1
+    assert_eq!(g.mass(0), 0.0); // 1-indexed: support starts at 1
     // scipy: geom.pmf(1, 0.25) = 0.25; geom.pmf(3,0.25)=0.140625
     assert!((g.mass(1) - 0.25).abs() < 1e-15);
     assert!((g.mass(3) - 0.140_625).abs() < 1e-15);
@@ -447,19 +503,19 @@ fn hypergeometric_basic() {
     let h = Hypergeometric::new(20, 7, 12).unwrap();
     assert_eq!(h.mean(), Some(12.0 * 7.0 / 20.0)); // n·K/N
     // support is max(0, n+K-N)..min(n,K) = max(0,-1)..min(12,7) = 0..7
-    assert_eq!(h.mass(8), 0.0);  // above min(n,K)
+    assert_eq!(h.mass(8), 0.0); // above min(n,K)
     // scipy: hypergeom(M=20,n=7,N=12).pmf(4) = 0.3575851393188855
     assert!((h.mass(4) - 0.357_585_139).abs() < 1e-6);
     assert_eq!(h.quantile(0.0).unwrap(), 0);
     assert!(Hypergeometric::new(20, 25, 12).is_err()); // K > N
-    assert!(Hypergeometric::new(20, 7, 25).is_err());  // n > N
+    assert!(Hypergeometric::new(20, 7, 25).is_err()); // n > N
 }
 
 #[cfg(all(feature = "dist", feature = "rng"))]
 #[test]
 fn sampler_draws_in_support() {
-    use commonstats::dist::{Sampler, Distribution};
-    use commonstats::dist::continuous::{Normal, Exponential, Uniform};
+    use commonstats::dist::continuous::{Exponential, Normal, Uniform};
+    use commonstats::dist::{Distribution, Sampler};
     use commonstats::rng::CommonStatsRng;
     let mut rng = CommonStatsRng::new(99, 0);
     let n = Normal::new(0.0, 1.0).unwrap();

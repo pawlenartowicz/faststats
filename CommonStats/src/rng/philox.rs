@@ -1,8 +1,6 @@
 //! Philox4x32-10 counter-based PRNG core.
 //!
-//! Ported verbatim from mcpower's `engine-core/src/philox.rs` (our own
-//! extraction-ready code — umbrella reuse rule): same constants, round count, and
-//! known-answer vectors. Self-contained: imports nothing else, pulls in no
+//! Self-contained: imports nothing else, pulls in no
 //! `rand`. The output stream is part of the reproducibility contract — the KAT
 //! below pins the algorithm bit-for-bit; [`CommonStatsRng`](super::CommonStatsRng)
 //! pins the derived draws.
@@ -35,7 +33,7 @@ fn round(ctr: [u32; 4], key: [u32; 2]) -> [u32; 4] {
 /// four pseudo-random `u32` words. Round 0 uses the original key; rounds 1..9
 /// bump first (canonical Random123 order — verified by the KAT below). Pure
 /// integer arithmetic, no floats, no libm — byte-identical across hosts and
-/// 1-vs-N threads (permutation-friendly.md §3).
+/// 1-vs-N threads.
 #[inline]
 pub fn philox4x32_10(ctr: [u32; 4], mut key: [u32; 2]) -> [u32; 4] {
     let mut c = round(ctr, key);
@@ -52,8 +50,8 @@ mod tests {
     use super::*;
 
     // Random123 v1.x published known-answer vectors for philox4x32_10. A wrong
-    // round/bump order or constant fails the first line. Bit-identity vs these
-    // is the Philox-core leg of the P2 validation oracle (spec §Validation).
+    // round/bump order or constant fails the first line. Bit-identity against
+    // these vectors is the cross-host correctness anchor.
     #[test]
     fn philox_known_answer_vectors() {
         assert_eq!(

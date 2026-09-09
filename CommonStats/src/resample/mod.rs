@@ -1,5 +1,4 @@
-//! The CommonStats half of the frozen resampling seam
-//! (permutation-friendly.md §"The frozen seam"): draw-addressable, no-alloc
+//! The CommonStats half of the frozen resampling seam: draw-addressable, no-alloc
 //! index generation; the [`NullDist`]/[`BootDist`] distribution accumulators; and
 //! a serial reference driver that is both the standalone path and SDOC's
 //! differential-testing oracle. Orchestration (worker pool, SAB provider,
@@ -10,7 +9,8 @@ pub use dist::{BootDist, NullDist, Sidedness};
 
 use crate::accum::Accumulator;
 use crate::error::StatError;
-use crate::rng::CommonStatsRng;
+use crate::rng::{CommonStatsRng, STREAM_TAG_SIGNFLIP};
+use alloc::vec;
 
 /// Row-index resampling scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +79,46 @@ pub fn gen_resample_indices(
     Ok(())
 }
 
+/// Fill `out` with one sign-flip realization: `n` values in `{-1.0, +1.0}`,
+/// draw-addressable and allocation-free.
+///
+/// Convention: subject `i` gets `-1.0` when bit `i & 31` of word `i / 32` of the
+/// stream `CommonStatsRng::new_tagged(seed, draw_id, STREAM_TAG_SIGNFLIP)` is
+/// set, `+1.0` otherwise — 32 independent fair signs per Philox word. The tag
+/// keeps sign flips and row permutations of the same `draw_id` on disjoint
+/// streams. Draw *k* is reproducible from `(seed, draw_id)` alone and is
+/// 1-vs-N-thread invariant, like [`gen_resample_indices`]. `draw_id` is not
+/// special-cased: a caller that wants the identity realization in its null
+/// supplies it itself.
+///
+/// These are also Rademacher wild-bootstrap weights (the reserved
+/// `gen_resample_weights` slot of the resampling seam).
+///
+/// `n`: number of subjects/rows. `draw_id`: the draw index in `0..B`. `seed`:
+/// the run seed. `out`: caller-owned buffer; **its length must equal `n`**.
+///
+/// Returns [`StatError::MismatchedLengths`] when `out.len() != n`.
+///
+/// ```
+/// use commonstats::gen_sign_flips;
+/// let mut s = [0.0f64; 8];
+/// gen_sign_flips(8, 0, 42, &mut s).unwrap();
+/// assert!(s.iter().all(|&v| v == 1.0 || v == -1.0));
+/// ```
+pub fn gen_sign_flips(n: usize, draw_id: u64, seed: u64, out: &mut [f64]) -> Result<(), StatError> {
+    if out.len() != n {
+        return Err(StatError::MismatchedLengths { a: n, b: out.len() });
+    }
+    let mut rng = CommonStatsRng::new_tagged(seed, draw_id, STREAM_TAG_SIGNFLIP);
+    for chunk in out.chunks_mut(32) {
+        let word = rng.next_u32();
+        for (i, slot) in chunk.iter_mut().enumerate() {
+            *slot = if (word >> i) & 1 == 1 { -1.0 } else { 1.0 };
+        }
+    }
+    Ok(())
+}
+
 /// Serial reference driver: run `b` resample draws, inject the consumer's
 /// `statistic` on each, and fold the scalar result into `dist`.
 ///
@@ -90,9 +130,8 @@ pub fn gen_resample_indices(
 ///
 /// `statistic(base, idx)` is **injected** by the consumer: `base` is the
 /// immutable column set, `idx` the current draw's row indices; it returns the
-/// per-draw scalar. (P2 carries the scalar form of the seam's
-/// `statistic(base, fit, idx) -> Stat: Mergeable`: the `fit` prelude slot and the
-/// vector-valued return are the reserved GLMM-era extensions.)
+/// per-draw scalar. (Current signature: scalar `f64` per draw. The `fit` prelude
+/// slot and vector-valued return are reserved for future generalization.)
 ///
 /// `dist` is constructed and owned by the caller (e.g. `NullDist::new(observed,
 /// side)` or `BootDist::new(level)`).
@@ -142,6 +181,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     #[test]
     fn permutation_is_a_valid_permutation() {
@@ -151,7 +191,11 @@ mod tests {
             gen_resample_indices(Scheme::Permutation, n, draw_id, 123, &mut idx).unwrap();
             let mut sorted = idx.clone();
             sorted.sort_unstable();
-            assert_eq!(sorted, (0..n as u32).collect::<Vec<_>>(), "draw {draw_id} not a permutation");
+            assert_eq!(
+                sorted,
+                (0..n as u32).collect::<Vec<_>>(),
+                "draw {draw_id} not a permutation"
+            );
         }
     }
 
@@ -163,7 +207,10 @@ mod tests {
         assert!(idx.iter().all(|&i| (i as usize) < n));
         // With replacement: over n draws from n rows, collisions are near-certain.
         let distinct: std::collections::HashSet<u32> = idx.iter().copied().collect();
-        assert!(distinct.len() < n, "bootstrap of n from n should repeat some rows");
+        assert!(
+            distinct.len() < n,
+            "bootstrap of n from n should repeat some rows"
+        );
     }
 
     #[test]
@@ -219,6 +266,47 @@ mod tests {
     // Bootstrap CI of the mean brackets the data mean (the bootstrap distribution
     // of the sample mean is centred on it).
     #[test]
+    fn sign_flips_are_signs_both_present_and_reproducible() {
+        let n = 40;
+        let mut a = vec![0.0f64; n];
+        let mut b = vec![0.0f64; n];
+        gen_sign_flips(n, 3, 11, &mut a).unwrap();
+        gen_sign_flips(n, 3, 11, &mut b).unwrap();
+        assert_eq!(a, b, "same (seed, draw_id) must reproduce the sign vector");
+        assert!(a.iter().all(|&s| s == 1.0 || s == -1.0));
+        assert!(
+            a.contains(&1.0) && a.contains(&-1.0),
+            "n = 40 should show both signs"
+        );
+        let mut c = vec![0.0f64; n];
+        gen_sign_flips(n, 4, 11, &mut c).unwrap();
+        assert_ne!(a, c, "different draw_id must differ");
+    }
+
+    #[test]
+    fn sign_flips_length_mismatch_errors() {
+        let mut out = vec![0.0f64; 4];
+        assert_eq!(
+            gen_sign_flips(5, 0, 1, &mut out),
+            Err(StatError::MismatchedLengths { a: 5, b: 4 }),
+        );
+    }
+
+    // Bit `i & 31` of word `i / 32` — pinned so the fixture layout never drifts.
+    #[test]
+    fn sign_flips_use_one_bit_per_subject() {
+        let n = 70;
+        let mut out = vec![0.0f64; n];
+        gen_sign_flips(n, 2, 5, &mut out).unwrap();
+        let mut rng = CommonStatsRng::new_tagged(5, 2, crate::rng::STREAM_TAG_SIGNFLIP);
+        let words = [rng.next_u32(), rng.next_u32(), rng.next_u32()];
+        for (i, &s) in out.iter().enumerate() {
+            let bit = (words[i / 32] >> (i & 31)) & 1;
+            assert_eq!(s, if bit == 1 { -1.0 } else { 1.0 }, "subject {i}");
+        }
+    }
+
+    #[test]
     fn run_serial_bootstrap_ci_brackets_mean() {
         let data = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
         let base: &[&[f64]] = &[&data];
@@ -227,8 +315,21 @@ mod tests {
             idx.iter().map(|&i| b[0][i as usize]).sum::<f64>() / idx.len() as f64
         };
         let mut dist = BootDist::new(0.95);
-        run_serial(Scheme::Bootstrap, base, data.len(), 2000, 1, stat, &mut dist).unwrap();
+        run_serial(
+            Scheme::Bootstrap,
+            base,
+            data.len(),
+            2000,
+            1,
+            stat,
+            &mut dist,
+        )
+        .unwrap();
         let ci = dist.finalize();
-        assert!(ci.lower < mean && mean < ci.upper, "CI {:?} must bracket {mean}", ci);
+        assert!(
+            ci.lower < mean && mean < ci.upper,
+            "CI {:?} must bracket {mean}",
+            ci
+        );
     }
 }

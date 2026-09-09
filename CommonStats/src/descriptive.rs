@@ -1,12 +1,15 @@
 //! Batch descriptives — thin finalize() wrappers over the accum accumulators.
 //! One source of truth: each fn folds a (NaN-omitted) slice and reads out.
-use crate::accum::moments::{comoment_pairs, CoMoment, Moments, Variance};
-use crate::accum::{from_slice, quantile_sorted, Accumulator};
+use crate::accum::moments::{CoMoment, Moments, Variance, comoment_pairs};
 use crate::accum::simple::{Count, MinMax, Sum};
+use crate::accum::{Accumulator, from_slice, quantile_sorted};
 use crate::error::StatError;
-use crate::nan::{clean, NanPolicy};
+use crate::nan::{NanPolicy, clean};
+use alloc::vec::Vec;
 
-fn omit(xs: &[f64]) -> Result<Vec<f64>, StatError> { clean(xs, NanPolicy::Omit) }
+fn omit(xs: &[f64]) -> Result<Vec<f64>, StatError> {
+    clean(xs, NanPolicy::Omit)
+}
 
 /// Count of finite observations in `xs` (NaN dropped under the Omit default).
 pub fn count(xs: &[f64]) -> usize {
@@ -43,14 +46,16 @@ pub fn max(xs: &[f64]) -> Result<f64, StatError> {
 /// assert!((commonstats::median(&[3., 1., 4., 1., 5., 9.]).unwrap() - 3.5).abs() < 1e-12);
 /// ```
 pub fn median(xs: &[f64]) -> Result<f64, StatError> {
-    let mut v = omit(xs)?;         // Err(EmptyInput) or Err(AllNaN) propagated by ?
-    v.sort_by(f64::total_cmp);     // total order; NaN already dropped by omit
-    Ok(quantile_sorted(&v, 0.50))  // type-7: linear interpolation of order statistics
+    let mut v = omit(xs)?; // Err(EmptyInput) or Err(AllNaN) propagated by ?
+    v.sort_by(f64::total_cmp); // total order; NaN already dropped by omit
+    Ok(quantile_sorted(&v, 0.50)) // type-7: linear interpolation of order statistics
 }
 /// max − min over the finite values of `xs`. [`StatError::AllNaN`] if none finite.
 pub fn range(xs: &[f64]) -> Result<f64, StatError> {
     let mm: MinMax = from_slice(xs);
-    mm.finalize().map(|(lo, hi)| hi - lo).ok_or(StatError::AllNaN)
+    mm.finalize()
+        .map(|(lo, hi)| hi - lo)
+        .ok_or(StatError::AllNaN)
 }
 /// Arithmetic mean of the finite values in `xs` (NaN dropped under the Omit
 /// default). [`StatError::EmptyInput`] if `xs` is empty; [`StatError::AllNaN`]
@@ -67,7 +72,12 @@ pub fn mean(xs: &[f64]) -> Result<f64, StatError> {
 
 fn variance_of(xs: &[f64]) -> Result<Variance, StatError> {
     let v = omit(xs)?;
-    if v.len() < 2 { return Err(StatError::TooFewObservations { needed: 2, got: v.len() }); }
+    if v.len() < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: v.len(),
+        });
+    }
     Ok(Variance::from_slice_two_pass(&v)) // two-pass override: whole vector in hand
 }
 /// Degrees-of-freedom convention for [`var`] / [`sd`]: the divisor is `n − ddof`.
@@ -106,21 +116,51 @@ pub fn var(xs: &[f64], ddof: Ddof) -> Result<f64, StatError> {
 /// Standard deviation of the finite values in `xs` under the chosen
 /// degrees-of-freedom convention `ddof` — the square root of [`var`]. Matches
 /// `numpy.std(xs, ddof=…)`. Needs ≥ 2 finite values; [`StatError::TooFewObservations`] otherwise.
-pub fn sd(xs: &[f64], ddof: Ddof) -> Result<f64, StatError> { Ok(var(xs, ddof)?.sqrt()) }
+///
+/// ```
+/// use commonstats::{sd, Ddof};
+/// let s = sd(&[2., 4., 4., 4., 5., 5., 7., 9.], Ddof::Sample).unwrap();
+/// assert!((s - (32.0_f64 / 7.0).sqrt()).abs() < 1e-13);
+/// ```
+pub fn sd(xs: &[f64], ddof: Ddof) -> Result<f64, StatError> {
+    Ok(libm::sqrt(var(xs, ddof)?))
+}
 
-/// Sample skewness (Fisher–Pearson g1, no bias correction; matches
-/// `scipy.stats.skew`) of the finite values in `xs`. Needs ≥ 2.
+/// Sample skewness (Fisher–Pearson g1, no bias correction) of the finite values
+/// in `xs`. Needs ≥ 2. Matches `scipy.stats.skew(xs, bias=True)`.
+///
+/// ```
+/// let g = commonstats::skewness(&[2., 4., 4., 4., 5., 5., 7., 9.]).unwrap();
+/// // scipy.stats.skew([2,4,4,4,5,5,7,9], bias=True) = 0.65625
+/// assert!((g - 0.65625).abs() < 1e-12);
+/// ```
 pub fn skewness(xs: &[f64]) -> Result<f64, StatError> {
     let v = omit(xs)?;
-    if v.len() < 2 { return Err(StatError::TooFewObservations { needed: 2, got: v.len() }); }
+    if v.len() < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: v.len(),
+        });
+    }
     let m: Moments = from_slice(&v);
     Ok(m.skewness())
 }
-/// Excess kurtosis (Fisher, no bias correction; matches `scipy.stats.kurtosis`)
-/// of the finite values in `xs`. Needs ≥ 2.
+/// Excess kurtosis (Fisher, no bias correction) of the finite values in `xs`.
+/// Needs ≥ 2. Matches `scipy.stats.kurtosis(xs, bias=True, fisher=True)`.
+///
+/// ```
+/// let k = commonstats::kurtosis(&[1., 2., 3., 4., 5.]).unwrap();
+/// // scipy.stats.kurtosis([1,2,3,4,5], bias=True, fisher=True) = -1.3
+/// assert!((k - (-1.3)).abs() < 1e-12);
+/// ```
 pub fn kurtosis(xs: &[f64]) -> Result<f64, StatError> {
     let v = omit(xs)?;
-    if v.len() < 2 { return Err(StatError::TooFewObservations { needed: 2, got: v.len() }); }
+    if v.len() < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: v.len(),
+        });
+    }
     let m: Moments = from_slice(&v);
     Ok(m.kurtosis_excess())
 }
@@ -128,17 +168,37 @@ pub fn kurtosis(xs: &[f64]) -> Result<f64, StatError> {
 /// Pairwise; rows with a NaN in either coordinate are dropped together.
 fn comoment_of(a: &[f64], b: &[f64]) -> Result<CoMoment, StatError> {
     let c = comoment_pairs(a, b)?;
-    if c.count() < 2 { return Err(StatError::TooFewObservations { needed: 2, got: c.count() as usize }); }
+    if c.count() < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: c.count() as usize,
+        });
+    }
     Ok(c)
 }
 /// Sample covariance (ddof = 1) of paired `a`, `b`. Pairs with a NaN in either
 /// coordinate are dropped together. [`StatError::MismatchedLengths`] if lengths
-/// differ; needs ≥ 2 complete pairs.
-pub fn cov(a: &[f64], b: &[f64]) -> Result<f64, StatError> { Ok(comoment_of(a, b)?.covariance_sample()) }
+/// differ; needs ≥ 2 complete pairs. Matches `numpy.cov(a, b, ddof=1)[0,1]`.
+///
+/// ```
+/// let c = commonstats::cov(&[1., 2., 3.], &[2., 4., 6.]).unwrap();
+/// assert!((c - 2.0).abs() < 1e-13);
+/// ```
+pub fn cov(a: &[f64], b: &[f64]) -> Result<f64, StatError> {
+    Ok(comoment_of(a, b)?.covariance_sample())
+}
 /// Pearson correlation r of paired `a`, `b`. Pairs with a NaN in either coordinate
 /// are dropped together. [`StatError::MismatchedLengths`] if lengths differ; needs
-/// ≥ 2 complete pairs.
-pub fn pearson(a: &[f64], b: &[f64]) -> Result<f64, StatError> { Ok(comoment_of(a, b)?.pearson()) }
+/// ≥ 2 complete pairs. Matches `scipy.stats.pearsonr(a, b).statistic`.
+///
+/// ```
+/// let r = commonstats::pearson(&[1., 2., 3., 4., 5.], &[2., 1., 4., 3., 6.]).unwrap();
+/// // scipy.stats.pearsonr([1..5], [2,1,4,3,6]).statistic = 0.8219949365267865
+/// assert!((r - 0.8219949365267865).abs() < 1e-13);
+/// ```
+pub fn pearson(a: &[f64], b: &[f64]) -> Result<f64, StatError> {
+    Ok(comoment_of(a, b)?.pearson())
+}
 
 /// Five-number summary plus moments for a sample. Quantiles use the type-7
 /// (R/NumPy default) rule; `sd` is ddof = 1; `kurtosis` is excess (Fisher).
@@ -177,7 +237,12 @@ pub struct Describe {
 /// ```
 pub fn describe(xs: &[f64]) -> Result<Describe, StatError> {
     let mut v = omit(xs)?;
-    if v.len() < 2 { return Err(StatError::TooFewObservations { needed: 2, got: v.len() }); }
+    if v.len() < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: v.len(),
+        });
+    }
     v.sort_by(f64::total_cmp); // total order; NaN already dropped by omit
     let m: Moments = from_slice(&v);
     Ok(Describe {
@@ -188,7 +253,7 @@ pub fn describe(xs: &[f64]) -> Result<Describe, StatError> {
         q3: quantile_sorted(&v, 0.75),
         max: v[v.len() - 1],
         mean: m.mean(),
-        sd: m.var_sample().sqrt(),
+        sd: libm::sqrt(m.var_sample()),
         skewness: m.skewness(),
         kurtosis: m.kurtosis_excess(),
     })
@@ -207,16 +272,26 @@ mod tests {
     }
     #[test]
     fn sd_known() {
-        assert!((sd(&[2.,4.,4.,4.,5.,5.,7.,9.], Ddof::Sample).unwrap() - (32.0_f64/7.0).sqrt()).abs() < 1e-13);
+        assert!(
+            (sd(&[2., 4., 4., 4., 5., 5., 7., 9.], Ddof::Sample).unwrap()
+                - (32.0_f64 / 7.0).sqrt())
+            .abs()
+                < 1e-13
+        );
     }
     #[test]
     fn var_needs_two() {
-        assert_eq!(var(&[1.0], Ddof::Sample), Err(crate::StatError::TooFewObservations { needed: 2, got: 1 }));
+        assert_eq!(
+            var(&[1.0], Ddof::Sample),
+            Err(crate::StatError::TooFewObservations { needed: 2, got: 1 })
+        );
     }
     #[test]
     fn pearson_mismatch_errors() {
-        assert_eq!(pearson(&[1.,2.], &[1.,2.,3.]),
-                   Err(crate::StatError::MismatchedLengths { a: 2, b: 3 }));
+        assert_eq!(
+            pearson(&[1., 2.], &[1., 2., 3.]),
+            Err(crate::StatError::MismatchedLengths { a: 2, b: 3 })
+        );
     }
     #[test]
     fn pearson_known() {
@@ -265,7 +340,7 @@ mod describe_tests {
     #[test]
     fn describe_five_number() {
         // 1..=9, type-7 quartiles: q1=3, median=5, q3=7
-        let d = describe(&[1.,2.,3.,4.,5.,6.,7.,8.,9.]).unwrap();
+        let d = describe(&[1., 2., 3., 4., 5., 6., 7., 8., 9.]).unwrap();
         assert_eq!(d.n, 9);
         assert_eq!(d.min, 1.0);
         assert_eq!(d.max, 9.0);
@@ -273,9 +348,9 @@ mod describe_tests {
         assert!((d.median - 5.0).abs() < 1e-12);
         assert!((d.q3 - 7.0).abs() < 1e-12);
         assert!((d.mean - 5.0).abs() < 1e-12);
-        assert!((d.sd - 2.7386127875258306).abs() < 1e-12, "sd {}", d.sd);        // √(60/8), ddof=1
-        assert!(d.skewness.abs() < 1e-12, "skew {}", d.skewness);                 // symmetric → 0
-        assert!((d.kurtosis - (-1.23)).abs() < 1e-9, "kurt {}", d.kurtosis);      // scipy excess kurtosis
+        assert!((d.sd - 2.7386127875258306).abs() < 1e-12, "sd {}", d.sd); // √(60/8), ddof=1
+        assert!(d.skewness.abs() < 1e-12, "skew {}", d.skewness); // symmetric → 0
+        assert!((d.kurtosis - (-1.23)).abs() < 1e-9, "kurt {}", d.kurtosis); // scipy excess kurtosis
     }
     #[test]
     fn describe_empty_errors() {

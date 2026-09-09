@@ -1,4 +1,8 @@
 //! Effect sizes paired with the tests.
+//!
+//! `eta_squared` and `anova_one_way` share the private `anova_sums` helper
+//! (owner: `htest::anova::anova_sums`) for SSB/SSW computation — change both
+//! together when the one-way sums formula changes.
 use crate::accum::moments::{checked_variance, pooled_var};
 use crate::error::StatError;
 use crate::htest::anova::anova_sums;
@@ -13,7 +17,7 @@ use crate::htest::chi2::contingency_chi2;
 /// `scipy.stats.ttest_ind`.
 pub fn cohen_d(a: &[f64], b: &[f64]) -> Result<f64, StatError> {
     let (sa, sb) = (checked_variance(a)?, checked_variance(b)?);
-    let sp = pooled_var(&sa, &sb).sqrt();
+    let sp = libm::sqrt(pooled_var(&sa, &sb));
     Ok((sa.mean() - sb.mean()) / sp)
 }
 
@@ -22,6 +26,11 @@ pub fn cohen_d(a: &[f64], b: &[f64]) -> Result<f64, StatError> {
 ///
 /// `groups`: one slice per group (`&[&[f64]]`), NaN dropped under Omit; each group
 /// needs ≥ 2 finite values, else [`StatError::TooFewObservations`].
+///
+/// Matches `scipy.stats.f_oneway` (η² = SSB/SST, manual verification).
+///
+/// Formula is duplicated in `anova_one_way` — mirrors `htest::anova::anova_one_way`,
+/// change both together.
 pub fn eta_squared(groups: &[&[f64]]) -> Result<f64, StatError> {
     let (_grand_n, ssb, ssw) = anova_sums(groups)?;
     Ok(ssb / (ssb + ssw))
@@ -34,8 +43,10 @@ pub fn eta_squared(groups: &[&[f64]]) -> Result<f64, StatError> {
 ///
 /// `table`: a rectangular ≥2×2 grid of non-negative counts (shape validated by the
 /// caller, e.g. [`chi2_independence`](crate::htest::chi2_independence)).
+///
+/// Matches `scipy.stats.contingency.association(table, method='cramer')`.
 pub fn cramers_v(table: &[&[f64]]) -> Result<f64, StatError> {
     let (chi2, grand) = contingency_chi2(table);
     let k = ((table.len() - 1).min(table[0].len() - 1)) as f64;
-    Ok((chi2 / (grand * k)).sqrt())
+    Ok(libm::sqrt(chi2 / (grand * k)))
 }

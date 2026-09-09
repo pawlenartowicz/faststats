@@ -8,3 +8,10 @@ rustc-ice-*.txt
 # OS / editor cruft
 .DS_Store
 *.swp
+
+# Python binding (faststats/python)
+venv/
+*.so
+__pycache__/
+.pytest_cache/
+/python/dist/

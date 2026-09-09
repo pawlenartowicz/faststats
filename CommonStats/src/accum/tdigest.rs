@@ -5,6 +5,7 @@
 
 use crate::accum::{Accumulator, Mergeable};
 use crate::error::StatError;
+use alloc::vec::Vec;
 
 /// A weighted summary point: the mean of a cluster of observations and the
 /// number of observations it stands for. Sorted by `mean`; `weight ≥ 1` after
@@ -151,7 +152,11 @@ fn quantile_interior(centroids: &[Centroid], total: f64, min: f64, max: f64, q: 
         if r < pos {
             // interpolate between (prev_pos, prev_mean) and (pos, c.mean)
             let span = pos - prev_pos;
-            let t = if span > 0.0 { (r - prev_pos) / span } else { 0.0 };
+            let t = if span > 0.0 {
+                (r - prev_pos) / span
+            } else {
+                0.0
+            };
             return prev_mean + t * (c.mean - prev_mean);
         }
         prev_pos = pos;
@@ -160,7 +165,11 @@ fn quantile_interior(centroids: &[Centroid], total: f64, min: f64, max: f64, q: 
     }
     // r is at or beyond the last midpoint: interpolate toward exact max at rank total.
     let span = total - prev_pos;
-    let t = if span > 0.0 { (r - prev_pos) / span } else { 0.0 };
+    let t = if span > 0.0 {
+        (r - prev_pos) / span
+    } else {
+        0.0
+    };
     prev_mean + t * (max - prev_mean)
 }
 
@@ -188,7 +197,11 @@ fn cdf_core(centroids: &[Centroid], total: f64, n: u64, min: f64, max: f64, x: f
         let pos = cum + c.weight / 2.0;
         if x < c.mean {
             let span = c.mean - prev_mean;
-            let t = if span > 0.0 { (x - prev_mean) / span } else { 0.0 };
+            let t = if span > 0.0 {
+                (x - prev_mean) / span
+            } else {
+                0.0
+            };
             return (prev_pos + t * (pos - prev_pos)) / total;
         }
         prev_pos = pos;
@@ -196,7 +209,11 @@ fn cdf_core(centroids: &[Centroid], total: f64, n: u64, min: f64, max: f64, x: f
         cum += c.weight;
     }
     let span = max - prev_mean;
-    let t = if span > 0.0 { (x - prev_mean) / span } else { 1.0 };
+    let t = if span > 0.0 {
+        (x - prev_mean) / span
+    } else {
+        1.0
+    };
     (prev_pos + t * (total - prev_pos)) / total
 }
 
@@ -330,7 +347,10 @@ impl TDigest {
         let fresh: Vec<Centroid> = self
             .ingest_buf
             .iter()
-            .map(|&v| Centroid { mean: v, weight: 1.0 })
+            .map(|&v| Centroid {
+                mean: v,
+                weight: 1.0,
+            })
             .collect();
         let mut all = merge_sorted_centroids(&self.centroids, &fresh);
         compress(&mut all, self.total_weight, self.delta);
@@ -489,7 +509,14 @@ impl TDigestResult {
 
     /// Estimate `P(X ≤ x)`. Same convention as [`TDigest::cdf`]; NaN when empty.
     pub fn cdf(&self, x: f64) -> f64 {
-        cdf_core(&self.centroids, self.total_weight, self.n, self.min, self.max, x)
+        cdf_core(
+            &self.centroids,
+            self.total_weight,
+            self.n,
+            self.min,
+            self.max,
+            x,
+        )
     }
 
     /// Number of non-NaN observations summarized.
@@ -511,15 +538,28 @@ impl TDigestResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     // ---- Task 1: skeleton ----
 
     #[test]
     fn new_rejects_bad_delta() {
-        assert_eq!(TDigest::new(0.5).unwrap_err(), StatError::DomainError("t-digest delta must be >= 1"));
-        assert_eq!(TDigest::new(0.0).unwrap_err(), StatError::DomainError("t-digest delta must be >= 1"));
-        assert_eq!(TDigest::new(-3.0).unwrap_err(), StatError::DomainError("t-digest delta must be >= 1"));
-        assert_eq!(TDigest::new(f64::NAN).unwrap_err(), StatError::DomainError("t-digest delta must be >= 1"));
+        assert_eq!(
+            TDigest::new(0.5).unwrap_err(),
+            StatError::DomainError("t-digest delta must be >= 1")
+        );
+        assert_eq!(
+            TDigest::new(0.0).unwrap_err(),
+            StatError::DomainError("t-digest delta must be >= 1")
+        );
+        assert_eq!(
+            TDigest::new(-3.0).unwrap_err(),
+            StatError::DomainError("t-digest delta must be >= 1")
+        );
+        assert_eq!(
+            TDigest::new(f64::NAN).unwrap_err(),
+            StatError::DomainError("t-digest delta must be >= 1")
+        );
         assert!(TDigest::new(1.0).is_ok());
         assert!(TDigest::new(100.0).is_ok());
     }
@@ -644,7 +684,10 @@ mod tests {
     fn quantile_rejects_bad_q() {
         let mut d = TDigest::new(100.0).unwrap();
         d.update(1.0);
-        assert_eq!(d.quantile(-0.1), Err(StatError::ProbabilityOutOfRange(-0.1)));
+        assert_eq!(
+            d.quantile(-0.1),
+            Err(StatError::ProbabilityOutOfRange(-0.1))
+        );
         assert_eq!(d.quantile(1.5), Err(StatError::ProbabilityOutOfRange(1.5)));
     }
 
@@ -660,7 +703,7 @@ mod tests {
         for x in [10.0, 20.0, 30.0, 40.0, 50.0] {
             d.update(x);
         }
-        assert_eq!(d.cdf(5.0), 0.0);  // below min
+        assert_eq!(d.cdf(5.0), 0.0); // below min
         assert_eq!(d.cdf(99.0), 1.0); // above max
         assert!(TDigest::empty().cdf(0.0).is_nan());
     }
@@ -669,7 +712,7 @@ mod tests {
     fn cdf_monotone() {
         let mut d = TDigest::new(100.0).unwrap();
         for i in 0..500 {
-            d.update((i as f64 * 0.123).sin().abs());
+            d.update(libm::sin(i as f64 * 0.123).abs());
         }
         let mut prev = f64::NEG_INFINITY;
         for i in 0..=200 {
@@ -685,7 +728,7 @@ mod tests {
     fn finalize_snapshot_matches_digest_queries() {
         let mut d = TDigest::new(100.0).unwrap();
         for i in 0..1000 {
-            d.update((i as f64 * 0.317).sin().abs());
+            d.update(libm::sin(i as f64 * 0.317).abs());
         }
         let snap = d.finalize();
         assert_eq!(snap.count(), d.count());
@@ -702,7 +745,9 @@ mod tests {
 
     // Deterministic, rng-free data generator (sin-based; no `rng` feature).
     fn sample(n: usize) -> Vec<f64> {
-        (0..n).map(|i| ((i as f64 + 1.0) * 0.6180339887).sin().abs() * 100.0).collect()
+        (0..n)
+            .map(|i| libm::sin((i as f64 + 1.0) * 0.6180339887).abs() * 100.0)
+            .collect()
     }
 
     fn digest_of(xs: &[f64]) -> TDigest {

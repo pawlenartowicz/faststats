@@ -3,17 +3,26 @@
 //! spec §3 bulk ladder: value-kind (erf/gamma/incomplete fns) 1e-12, inverse
 //! (quantile-kind) 1e-10. Tail rows assert against a curated band.
 mod common;
-use common::{assert_monotone, check_grid, measure_band, Tol};
+use common::{Tol, assert_monotone, check_grid, measure_band};
 
 use commonstats::special;
 
 // Bulk ladder (spec §3): pdf/cdf/density-like vs inverse/quantile.
-const VAL: Tol = Tol { rel: 1e-12, abs: 1e-14 };
-const INV: Tol = Tol { rel: 1e-10, abs: 1e-12 };
+const VAL: Tol = Tol {
+    rel: 1e-12,
+    abs: 1e-14,
+};
+const INV: Tol = Tol {
+    rel: 1e-10,
+    abs: 1e-12,
+};
 // digamma (ψ, the lgamma derivative) is neither value- nor quantile-kind: across
 // its grid it achieves ~1e-10 (worst 9.7e-11 at x≈2), mpmath-confirmed and not a
 // regression — the pre-rebaseline test already used 1e-10. Tiered on its own.
-const DERIV: Tol = Tol { rel: 1e-10, abs: 1e-12 };
+const DERIV: Tol = Tol {
+    rel: 1e-10,
+    abs: 1e-12,
+};
 
 #[test]
 fn erf_grid() {
@@ -63,7 +72,9 @@ fn erfinv_grid() {
 }
 #[test]
 fn invbetareg_grid() {
-    check_grid("invbetareg", INV, |a| special::inv_beta_reg(a[0], a[1], a[2]));
+    check_grid("invbetareg", INV, |a| {
+        special::inv_beta_reg(a[0], a[1], a[2])
+    });
 }
 
 /// Band calibration (spec §5). Run with `cargo test -- --ignored --nocapture`;
@@ -73,8 +84,14 @@ fn invbetareg_grid() {
 #[ignore]
 fn measure_tail_bands() {
     let bands = [
-        ("erfcinv", measure_band("erfcinv", |a| special::erfc_inv(a[0]))),
-        ("invbetareg", measure_band("invbetareg", |a| special::inv_beta_reg(a[0], a[1], a[2]))),
+        (
+            "erfcinv",
+            measure_band("erfcinv", |a| special::erfc_inv(a[0])),
+        ),
+        (
+            "invbetareg",
+            measure_band("invbetareg", |a| special::inv_beta_reg(a[0], a[1], a[2])),
+        ),
     ];
     for (name, val) in bands {
         match val {
@@ -84,6 +101,12 @@ fn measure_tail_bands() {
     }
 }
 
+#[test]
+fn logsumexp_grid() {
+    // Three-source grid (mpmath truth + scipy + R stable logsumexp). Each row's
+    // args is the full input slice: logsumexp(&[a0, a1, a2]).
+    check_grid("logsumexp", VAL, |a| special::logsumexp(a));
+}
 #[test]
 fn logsumexp_is_stable() {
     // Naively exp() of these overflows; logsumexp must not.
@@ -95,7 +118,19 @@ fn logsumexp_is_stable() {
 fn beta_known_values() {
     // Closed-form: B(½,½)=π, B(1,1)=1, B(2,3)=1/12. Guards the exp(lbeta) round-trip,
     // which costs ~2 ulp (B(1,1) lands at 0.999…982) — 1e-13 is the realistic bar.
-    assert!((special::beta(0.5, 0.5) - core::f64::consts::PI).abs() < 1e-13, "B(.5,.5) {}", special::beta(0.5, 0.5));
-    assert!((special::beta(1.0, 1.0) - 1.0).abs() < 1e-13, "B(1,1) {}", special::beta(1.0, 1.0));
-    assert!((special::beta(2.0, 3.0) - 1.0 / 12.0).abs() < 1e-13, "B(2,3) {}", special::beta(2.0, 3.0));
+    assert!(
+        (special::beta(0.5, 0.5) - core::f64::consts::PI).abs() < 1e-13,
+        "B(.5,.5) {}",
+        special::beta(0.5, 0.5)
+    );
+    assert!(
+        (special::beta(1.0, 1.0) - 1.0).abs() < 1e-13,
+        "B(1,1) {}",
+        special::beta(1.0, 1.0)
+    );
+    assert!(
+        (special::beta(2.0, 3.0) - 1.0 / 12.0).abs() < 1e-13,
+        "B(2,3) {}",
+        special::beta(2.0, 3.0)
+    );
 }

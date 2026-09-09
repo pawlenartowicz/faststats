@@ -49,17 +49,29 @@ pub trait Distribution {
     /// Upper edge of the support.
     fn support_max(&self) -> Bound;
     /// Mean, or `None` if undefined.
-    fn mean(&self) -> Option<f64> { None }
+    fn mean(&self) -> Option<f64> {
+        None
+    }
     /// Variance, or `None` if undefined.
-    fn variance(&self) -> Option<f64> { None }
+    fn variance(&self) -> Option<f64> {
+        None
+    }
     /// Standard deviation; defaults to `variance().map(sqrt)`.
-    fn std_dev(&self) -> Option<f64> { self.variance().map(f64::sqrt) }
+    fn std_dev(&self) -> Option<f64> {
+        self.variance().map(libm::sqrt)
+    }
     /// Skewness, or `None` if undefined.
-    fn skewness(&self) -> Option<f64> { None }
+    fn skewness(&self) -> Option<f64> {
+        None
+    }
     /// Excess kurtosis (Kurt − 3), or `None` if undefined.
-    fn kurtosis(&self) -> Option<f64> { None }
+    fn kurtosis(&self) -> Option<f64> {
+        None
+    }
     /// Differential/Shannon entropy, or `None` if not provided.
-    fn entropy(&self) -> Option<f64> { None }
+    fn entropy(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// Continuous density.
@@ -94,7 +106,9 @@ pub trait ContinuousCdf: Distribution {
     /// Cumulative probability `P(X ≤ x)`.
     fn cdf(&self, x: f64) -> f64;
     /// Survival function `P(X > x)`; override to avoid `1 − cdf` cancellation.
-    fn sf(&self, x: f64) -> f64 { 1.0_f64 - self.cdf(x) }
+    fn sf(&self, x: f64) -> f64 {
+        1.0_f64 - self.cdf(x)
+    }
     /// Inverse CDF: smallest `x` with `cdf(x) ≥ p`.
     ///
     /// # Errors
@@ -109,7 +123,9 @@ pub trait DiscreteCdf: Distribution {
     /// Cumulative probability `P(X ≤ k)`.
     fn cdf(&self, k: i64) -> f64;
     /// Survival function `P(X > k)`.
-    fn sf(&self, k: i64) -> f64 { 1.0_f64 - self.cdf(k) }
+    fn sf(&self, k: i64) -> f64 {
+        1.0_f64 - self.cdf(k)
+    }
     /// Inverse CDF: smallest integer `k` with `cdf(k) ≥ p`.
     ///
     /// # Errors
@@ -146,26 +162,28 @@ pub(crate) fn gamma_log_density(shape: f64, rate: f64, x: f64) -> f64 {
     if x <= 0.0 {
         return f64::NEG_INFINITY;
     }
-    shape * rate.ln() + (shape - 1.0) * x.ln() - rate * x - crate::special::lgamma(shape)
+    shape * libm::log(rate) + (shape - 1.0) * libm::log(x)
+        - rate * x
+        - crate::special::lgamma(shape)
 }
 
+pub use continuous::Beta;
+pub use continuous::Cauchy;
+pub use continuous::ChiSquared;
+pub use continuous::Exponential;
+pub use continuous::FisherF;
+pub use continuous::Gamma;
+pub use continuous::LogNormal;
 pub use continuous::Normal;
 pub use continuous::StudentT;
-pub use continuous::ChiSquared;
-pub use continuous::FisherF;
 pub use continuous::Uniform;
-pub use continuous::Exponential;
-pub use continuous::Cauchy;
 pub use continuous::Weibull;
-pub use continuous::LogNormal;
-pub use continuous::Gamma;
-pub use continuous::Beta;
 pub use discrete::Bernoulli;
 pub use discrete::Binomial;
-pub use discrete::Poisson;
 pub use discrete::Geometric;
-pub use discrete::NegBinomial;
 pub use discrete::Hypergeometric;
+pub use discrete::NegBinomial;
+pub use discrete::Poisson;
 
 #[cfg(test)]
 mod tests {

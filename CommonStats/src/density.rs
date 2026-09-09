@@ -6,11 +6,13 @@
 //!
 //! Both are base-feature (no gate) and WASM-clean (libm-only math).
 
+use crate::accum;
+use crate::accum::{Accumulator, HistResult, Histogram};
+use crate::descriptive;
 use crate::error::StatError;
 use crate::nan::{self, NanPolicy};
-use crate::accum::{Histogram, HistResult, Accumulator};
-use crate::accum;
-use crate::descriptive;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -102,7 +104,6 @@ pub fn kde(xs: &[f64], kernel: Kernel, bandwidth: Bandwidth) -> Result<Kde, Stat
         return Err(StatError::TooFewObservations { needed: 2, got: n });
     }
 
-    // Resolve bandwidth h.
     let h = match bandwidth {
         Bandwidth::Fixed(h) => {
             if !h.is_finite() || h <= 0.0 {
@@ -155,7 +156,11 @@ impl Kde {
         }
         let n = self.data.len() as f64;
         let h = self.h;
-        let sum: f64 = self.data.iter().map(|&xi| kernel_eval(self.kernel, (x - xi) / h)).sum();
+        let sum: f64 = self
+            .data
+            .iter()
+            .map(|&xi| kernel_eval(self.kernel, (x - xi) / h))
+            .sum();
         sum / (n * h)
     }
 
@@ -301,7 +306,9 @@ pub fn histogram_auto(
     let hi = descriptive::max(&finite)?;
 
     if lo == hi {
-        return Err(StatError::DomainError("min == max: cannot form histogram bins"));
+        return Err(StatError::DomainError(
+            "min == max: cannot form histogram bins",
+        ));
     }
 
     // Handle the Edges path (variable-width): does not go through Histogram::new.
@@ -309,7 +316,6 @@ pub fn histogram_auto(
         return histogram_edges(&finite, edges, norm);
     }
 
-    // All other paths go through Histogram::new.
     let n_bins = resolve_bin_count(&finite, &bins, lo, hi, n_f)?;
 
     let mut hist = Histogram::new(lo, hi, n_bins)?;
@@ -348,9 +354,7 @@ fn resolve_bin_count(
         }
         Bins::Width(w) => {
             if !w.is_finite() || *w <= 0.0 {
-                return Err(StatError::DomainError(
-                    "Width must be finite and > 0",
-                ));
+                return Err(StatError::DomainError("Width must be finite and > 0"));
             }
             Ok(libm::ceil(range / w) as usize)
         }
@@ -426,12 +430,9 @@ fn histogram_edges(
             "Edges must have at least 2 elements",
         ));
     }
-    // Verify strictly increasing.
     for w in edges.windows(2) {
         if w[0] >= w[1] {
-            return Err(StatError::DomainError(
-                "Edges must be strictly increasing",
-            ));
+            return Err(StatError::DomainError("Edges must be strictly increasing"));
         }
     }
 
@@ -492,7 +493,10 @@ mod tests {
     #[test]
     fn kde_empty_input() {
         let xs: &[f64] = &[];
-        assert_eq!(kde(xs, Kernel::Gaussian, Bandwidth::Silverman).unwrap_err(), StatError::EmptyInput);
+        assert_eq!(
+            kde(xs, Kernel::Gaussian, Bandwidth::Silverman).unwrap_err(),
+            StatError::EmptyInput
+        );
     }
 
     #[test]
@@ -555,7 +559,12 @@ mod tests {
         let n = 5_f64;
         let expected_h = sd * libm::pow(3.0 * n / 4.0, -0.2);
         let diff = (k.bandwidth() - expected_h).abs();
-        assert!(diff < 1e-14, "Silverman h: got {}, want {}", k.bandwidth(), expected_h);
+        assert!(
+            diff < 1e-14,
+            "Silverman h: got {}, want {}",
+            k.bandwidth(),
+            expected_h
+        );
     }
 
     #[test]
@@ -565,7 +574,12 @@ mod tests {
         let sd = crate::descriptive::sd(xs, crate::descriptive::Ddof::Sample).unwrap();
         let expected_h = sd * libm::pow(5.0_f64, -0.2);
         let diff = (k.bandwidth() - expected_h).abs();
-        assert!(diff < 1e-14, "Scott h: got {}, want {}", k.bandwidth(), expected_h);
+        assert!(
+            diff < 1e-14,
+            "Scott h: got {}, want {}",
+            k.bandwidth(),
+            expected_h
+        );
     }
 
     // ---- KDE density formula ----
@@ -597,7 +611,10 @@ mod tests {
         let expected = 0.25 * (0.75 * (1.0 - u1 * u1) + 0.75 * (1.0 - u2 * u2));
         let got = k.density(0.5);
         let diff = (got - expected).abs();
-        assert!(diff < 1e-15, "epanechnikov density: got {got}, want {expected}");
+        assert!(
+            diff < 1e-15,
+            "epanechnikov density: got {got}, want {expected}"
+        );
     }
 
     #[test]
@@ -733,7 +750,10 @@ mod tests {
             .enumerate()
             .map(|(i, &v)| v * (edges[i + 1] - edges[i]))
             .sum();
-        assert!((integral - 1.0).abs() < 1e-13, "Density integral != 1: {integral}");
+        assert!(
+            (integral - 1.0).abs() < 1e-13,
+            "Density integral != 1: {integral}"
+        );
     }
 
     #[test]

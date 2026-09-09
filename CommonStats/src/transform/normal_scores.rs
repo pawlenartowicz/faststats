@@ -1,9 +1,10 @@
 //! Blom (1958) normal scores using average ranks.
 
 use crate::error::StatError;
-use crate::nan::{clean, NanPolicy};
+use crate::nan::{NanPolicy, clean};
 use crate::special::erfc_inv;
-use crate::transform::rank::{rank, Ties};
+use crate::transform::rank::{Ties, rank};
+use alloc::vec::Vec;
 use core::f64::consts::SQRT_2;
 
 /// Φ⁻¹(p) — the standard normal quantile function.
@@ -44,7 +45,6 @@ pub(crate) fn norm_quantile(p: f64) -> f64 {
 /// assert!(zs[0] < 0.0 && zs[2] > 0.0);
 /// ```
 pub fn normal_scores(v: &[f64]) -> Result<Vec<f64>, StatError> {
-    // clean NaN-filters and errors on empty/all-NaN
     let data = clean(v, NanPolicy::Omit)?;
     let n = data.len() as f64;
     // Average ranks of the cleaned data

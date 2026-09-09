@@ -1,4 +1,9 @@
 //! Inverse special functions for closed-form critical values.
+//!
+//! `norm_ppf` uses P. J. Acklam's rational approximation (Acklam 2003,
+//! unpublished) refined by one Halley step to ~1e-12: "An algorithm for
+//! computing the inverse normal cumulative distribution function," archived at
+//! `http://home.online.no/~pjacklam/notes/invnorm/` (Wayback 2015-10-30).
 use crate::special::betai;
 
 /// Inverse complementary error function, for p ∈ (0, 2):
@@ -10,12 +15,14 @@ pub fn erfc_inv(p: f64) -> f64 {
 
 /// Inverse error function, for x ∈ (−1, 1): erf_inv(x) = erfc_inv(1 − x).
 /// Matches `scipy.special.erfinv` (`tests/fixtures/erfinv.json`).
-pub fn erf_inv(x: f64) -> f64 { erfc_inv(1.0 - x) }
+pub fn erf_inv(x: f64) -> f64 {
+    erfc_inv(1.0 - x)
+}
 
 /// Normal quantile Φ⁻¹(p). Acklam rational seed (~1.15e-9) refined by one Halley
 /// step against libm::erf to ~1e-12. Kept private.
 fn norm_ppf(p: f64) -> f64 {
-    // Rational-approximation coefficients (Acklam).
+    // Rational-approximation coefficients (Acklam 2003).
     const A: [f64; 6] = [
         -3.969683028665376e+01,
         2.209460984245205e+02,
@@ -55,7 +62,7 @@ fn norm_ppf(p: f64) -> f64 {
         return f64::INFINITY;
     }
     let mut x = if p < P_LOW {
-        let q = (-2.0 * p.ln()).sqrt();
+        let q = libm::sqrt(-2.0 * libm::log(p));
         (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     } else if p <= P_HIGH {
@@ -64,7 +71,7 @@ fn norm_ppf(p: f64) -> f64 {
         (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
             / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
     } else {
-        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        let q = libm::sqrt(-2.0 * libm::log(1.0 - p));
         -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     };
@@ -72,7 +79,7 @@ fn norm_ppf(p: f64) -> f64 {
     // libm's ~1e-15 erfc to lift the Acklam seed from ~1e-9 to ~1e-12.
     if x.is_finite() {
         let e = 0.5 * libm::erfc(-x / core::f64::consts::SQRT_2) - p; // Φ(x) - p
-        let u = e * (2.0 * core::f64::consts::PI).sqrt() * (x * x / 2.0).exp();
+        let u = e * libm::sqrt(2.0 * core::f64::consts::PI) * libm::exp(x * x / 2.0);
         x -= u / (1.0 + x * u / 2.0);
     }
     x
@@ -88,8 +95,12 @@ fn norm_ppf(p: f64) -> f64 {
 /// bisection is immune to that. Matches `scipy.special.betaincinv`
 /// (`tests/fixtures/invbetareg.json`).
 pub fn inv_beta_reg(a: f64, b: f64, p: f64) -> f64 {
-    if p <= 0.0 { return 0.0; }
-    if p >= 1.0 { return 1.0; }
+    if p <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        return 1.0;
+    }
     if p > 0.5 {
         return 1.0 - inv_beta_reg_lower(b, a, 1.0 - p);
     }
@@ -103,8 +114,14 @@ fn inv_beta_reg_lower(a: f64, b: f64, p: f64) -> f64 {
     let mut hi = 1.0_f64;
     for _ in 0..80 {
         let mid = 0.5 * (lo + hi);
-        if mid <= lo || mid >= hi { break; } // bracket below f64 resolution
-        if betai(a, b, mid) < p { lo = mid; } else { hi = mid; }
+        if mid <= lo || mid >= hi {
+            break;
+        } // bracket below f64 resolution
+        if betai(a, b, mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
     }
     0.5 * (lo + hi)
 }

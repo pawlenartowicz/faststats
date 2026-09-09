@@ -3,54 +3,110 @@ use super::{Accumulator, Mergeable};
 
 /// Running count of observations folded in (NaN filtered upstream by `from_slice`).
 #[derive(Clone, Default)]
-pub struct Count { n: u64 }
-impl Mergeable for Count { fn merge(&mut self, o: &Self) { self.n += o.n; } }
+pub struct Count {
+    n: u64,
+}
+impl Mergeable for Count {
+    fn merge(&mut self, o: &Self) {
+        self.n += o.n;
+    }
+}
 impl Accumulator for Count {
-    type Item = f64; type Output = u64;
-    fn empty() -> Self { Self::default() }
-    fn update(&mut self, _x: f64) { self.n += 1; }
-    fn finalize(&self) -> u64 { self.n }
+    type Item = f64;
+    type Output = u64;
+    fn empty() -> Self {
+        Self::default()
+    }
+    fn update(&mut self, _x: f64) {
+        self.n += 1;
+    }
+    fn finalize(&self) -> u64 {
+        self.n
+    }
 }
 
 /// Neumaier-compensated sum (Kahan variant robust to large-then-small ordering).
 #[derive(Clone, Default)]
-pub struct Sum { sum: f64, c: f64 }
+pub struct Sum {
+    sum: f64,
+    c: f64,
+}
 impl Mergeable for Sum {
     // Feed the other's running sum through the compensated add, then carry its
     // leftover correction across; true total stays sum + c on both sides.
-    fn merge(&mut self, o: &Self) { self.add(o.sum); self.c += o.c; }
+    fn merge(&mut self, o: &Self) {
+        self.add(o.sum);
+        self.c += o.c;
+    }
 }
 impl Sum {
     fn add(&mut self, x: f64) {
         let t = self.sum + x;
-        if self.sum.abs() >= x.abs() { self.c += (self.sum - t) + x; }
-        else { self.c += (x - t) + self.sum; }
+        if self.sum.abs() >= x.abs() {
+            self.c += (self.sum - t) + x;
+        } else {
+            self.c += (x - t) + self.sum;
+        }
         self.sum = t;
     }
 }
 impl Accumulator for Sum {
-    type Item = f64; type Output = f64;
-    fn empty() -> Self { Self::default() }
-    fn update(&mut self, x: f64) { self.add(x); }
-    fn finalize(&self) -> f64 { self.sum + self.c }
+    type Item = f64;
+    type Output = f64;
+    fn empty() -> Self {
+        Self::default()
+    }
+    fn update(&mut self, x: f64) {
+        self.add(x);
+    }
+    fn finalize(&self) -> f64 {
+        self.sum + self.c
+    }
 }
 
 /// Running minimum and maximum; `finalize` is `None` until the first observation.
 #[derive(Clone)]
-pub struct MinMax { lo: f64, hi: f64, seen: bool }
+pub struct MinMax {
+    lo: f64,
+    hi: f64,
+    seen: bool,
+}
 impl Default for MinMax {
-    fn default() -> Self { Self { lo: f64::INFINITY, hi: f64::NEG_INFINITY, seen: false } }
+    fn default() -> Self {
+        Self {
+            lo: f64::INFINITY,
+            hi: f64::NEG_INFINITY,
+            seen: false,
+        }
+    }
 }
 impl Mergeable for MinMax {
     fn merge(&mut self, o: &Self) {
-        if o.seen { self.lo = self.lo.min(o.lo); self.hi = self.hi.max(o.hi); self.seen = true; }
+        if o.seen {
+            self.lo = self.lo.min(o.lo);
+            self.hi = self.hi.max(o.hi);
+            self.seen = true;
+        }
     }
 }
 impl Accumulator for MinMax {
-    type Item = f64; type Output = Option<(f64, f64)>;
-    fn empty() -> Self { Self::default() }
-    fn update(&mut self, x: f64) { self.lo = self.lo.min(x); self.hi = self.hi.max(x); self.seen = true; }
-    fn finalize(&self) -> Option<(f64, f64)> { if self.seen { Some((self.lo, self.hi)) } else { None } }
+    type Item = f64;
+    type Output = Option<(f64, f64)>;
+    fn empty() -> Self {
+        Self::default()
+    }
+    fn update(&mut self, x: f64) {
+        self.lo = self.lo.min(x);
+        self.hi = self.hi.max(x);
+        self.seen = true;
+    }
+    fn finalize(&self) -> Option<(f64, f64)> {
+        if self.seen {
+            Some((self.lo, self.hi))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

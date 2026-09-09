@@ -1,5 +1,11 @@
 # commonstats
 
+[![CI](https://github.com/pawlenartowicz/faststats/actions/workflows/ci.yml/badge.svg)](https://github.com/pawlenartowicz/faststats/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/commonstats.svg)](https://crates.io/crates/commonstats)
+[![docs.rs](https://img.shields.io/docsrs/commonstats)](https://docs.rs/commonstats)
+[![license](https://img.shields.io/crates/l/commonstats.svg)](https://github.com/pawlenartowicz/faststats#license)
+![MSRV](https://img.shields.io/badge/MSRV-1.85-blue.svg)
+
 WASM-first Rust statistical core: special functions, mergeable accumulators,
 descriptives, and hypothesis tests. `&[f64]` in, structs out — no binding glue.
 
@@ -66,70 +72,79 @@ cor_test(a: &[f64], b: &[f64], method: CorMethod) -> Result<TestResult> // corre
 
 ### C. Effect sizes & confidence intervals
 
-```rust
-cohen_d(a: &[f64], b: &[f64])         -> Result<f64> // pooled-SD standardized mean diff
-eta_squared(groups: &[&[f64]])        -> Result<f64> // η² for one-way ANOVA
-cramers_v(table: &[&[f64]])           -> Result<f64> // Cramér's V for an r×c table
+All items in this section live in the `commonstats::htest` module (not the crate root).
 
-ci_mean(v: &[f64], level: f64)                -> Result<Ci> // mean CI (Student t)
-ci_mean_diff(a: &[f64], b: &[f64], level: f64) -> Result<Ci> // mean-diff CI (pooled)
-ci_mean_diff_welch(a: &[f64], b: &[f64], level: f64) -> Result<Ci> // mean-diff CI (Welch)
-ci_proportion(successes: usize, n: usize, level: f64) -> Result<Ci> // Wald proportion CI
-ci_correlation(a: &[f64], b: &[f64], level: f64) -> Result<Ci> // Pearson r CI (Fisher z)
+```rust
+htest::cohen_d(a: &[f64], b: &[f64])         -> Result<f64> // pooled-SD standardized mean diff
+htest::eta_squared(groups: &[&[f64]])        -> Result<f64> // η² for one-way ANOVA
+htest::cramers_v(table: &[&[f64]])           -> Result<f64> // Cramér's V for an r×c table
+
+htest::ci_mean(v: &[f64], level: f64)                -> Result<Ci> // mean CI (Student t)
+htest::ci_mean_diff(a: &[f64], b: &[f64], level: f64) -> Result<Ci> // mean-diff CI (pooled)
+htest::ci_mean_diff_welch(a: &[f64], b: &[f64], level: f64) -> Result<Ci> // mean-diff CI (Welch)
+htest::ci_proportion(successes: usize, n: usize, level: f64) -> Result<Ci> // Wald proportion CI
+htest::ci_correlation(a: &[f64], b: &[f64], level: f64) -> Result<Ci> // Pearson r CI (Fisher z)
 ```
 
 ### D. Distributions *(requires feature `dist`)*
 
-Each constructor returns `Result<Self>`. All implement `.cdf(x)`, `.sf(x)`,
+All items in this section live in the `commonstats::dist` module (not the crate
+root). Each constructor returns `Result<Self>`. All implement `.cdf(x)`, `.sf(x)`,
 `.quantile(p) -> Result<_>`, the moment accessors (`.mean()`, `.variance()`,
 `.std_dev()`, `.skewness()`, `.kurtosis()`, `.entropy()`), plus `.density(x)` /
 `.log_density(x)` (continuous) or `.mass(k)` / `.log_mass(k)` (discrete).
 
 ```rust
 // continuous
-Normal::new(mean: f64, sd: f64)          // N(μ, σ)
-StudentT::new(df: f64)                   // Student's t
-ChiSquared::new(k: f64)                  // χ²(k)
-FisherF::new(dfn: f64, dfd: f64)         // F(d1, d2)
-Uniform::new(a: f64, b: f64)             // Uniform[a, b]
-Exponential::new(rate: f64)              // Exp(λ)
-Cauchy::new(loc: f64, scale: f64)        // Cauchy (no moments)
-Weibull::new(shape: f64, scale: f64)     // Weibull
-LogNormal::new(mu: f64, sigma: f64)      // Log-normal
-Gamma::new(shape: f64, rate: f64)        // Γ(α, β)
-Beta::new(alpha: f64, beta: f64)         // Beta on [0, 1]
+dist::Normal::new(mean: f64, sd: f64)          // N(μ, σ)
+dist::StudentT::new(df: f64)                   // Student's t
+dist::ChiSquared::new(k: f64)                  // χ²(k)
+dist::FisherF::new(dfn: f64, dfd: f64)         // F(d1, d2)
+dist::Uniform::new(a: f64, b: f64)             // Uniform[a, b]
+dist::Exponential::new(rate: f64)              // Exp(λ)
+dist::Cauchy::new(loc: f64, scale: f64)        // Cauchy (no moments)
+dist::Weibull::new(shape: f64, scale: f64)     // Weibull
+dist::LogNormal::new(mu: f64, sigma: f64)      // Log-normal
+dist::Gamma::new(shape: f64, rate: f64)        // Γ(α, β)
+dist::Beta::new(alpha: f64, beta: f64)         // Beta on [0, 1]
 
 // discrete
-Bernoulli::new(p: f64)                   // Bernoulli(p)
-Binomial::new(n: i64, p: f64)            // Binom(n, p)
-Poisson::new(lambda: f64)                // Poisson(λ)
-Geometric::new(p: f64)                   // trials until first success
-NegBinomial::new(r: f64, p: f64)         // negative binomial
-Hypergeometric::new(big_n: i64, k: i64, n: i64) // hypergeometric
+dist::Bernoulli::new(p: f64)                   // Bernoulli(p)
+dist::Binomial::new(n: i64, p: f64)            // Binom(n, p)
+dist::Poisson::new(lambda: f64)                // Poisson(λ)
+dist::Geometric::new(p: f64)                   // trials until first success
+dist::NegBinomial::new(r: f64, p: f64)         // negative binomial
+dist::Hypergeometric::new(big_n: i64, k: i64, n: i64) // hypergeometric
 ```
 
 ### E. Transforms
 
+All items in this section live in the `commonstats::transform` module (not the
+crate root).
+
 ```rust
-rank(v: &[f64], ties: Ties)   -> Result<Vec<f64>> // 1-based ranks; ties = Average|Min|Max|Dense|Ordinal
-normal_scores(v: &[f64])      -> Result<Vec<f64>> // Blom (1958) rankits
-box_cox(v: &[f64], lambda: f64)     -> Result<Vec<f64>> // Box–Cox power (positive data)
-yeo_johnson(v: &[f64], lambda: f64) -> Result<Vec<f64>> // Yeo–Johnson power (all reals)
-quantile_normalize(matrix: &[&[f64]]) -> Result<Vec<Vec<f64>>> // column rank-averaging
+transform::rank(v: &[f64], ties: Ties)   -> Result<Vec<f64>> // 1-based ranks; ties = Average|Min|Max|Dense|Ordinal
+transform::normal_scores(v: &[f64])      -> Result<Vec<f64>> // Blom (1958) rankits
+transform::box_cox(v: &[f64], lambda: f64)     -> Result<Vec<f64>> // Box–Cox power (positive data)
+transform::yeo_johnson(v: &[f64], lambda: f64) -> Result<Vec<f64>> // Yeo–Johnson power (all reals)
+transform::quantile_normalize(matrix: &[&[f64]]) -> Result<Vec<Vec<f64>>> // column rank-averaging
 
 // PIT (requires feature `dist`)
-pit(x: f64, dist: &D)                 -> f64         // probability-integral transform
-inv_pit(u: f64, dist: &D)             -> Result<f64> // inverse PIT
-quantile_map(x: f64, from: &D1, to: &D2) -> Result<f64> // transport between scales
+transform::pit(x: f64, dist: &D)                 -> f64         // probability-integral transform
+transform::inv_pit(u: f64, dist: &D)             -> Result<f64> // inverse PIT
+transform::quantile_map(x: f64, from: &D1, to: &D2) -> Result<f64> // transport between scales
 ```
 
 ### F. Density & histograms
 
+All items in this section live in the `commonstats::density` module (not the
+crate root); `Histogram` is the exception — it is a crate-root re-export.
+
 ```rust
-kde(xs: &[f64], kernel: Kernel, bandwidth: Bandwidth) -> Result<Kde>
+density::kde(xs: &[f64], kernel: density::Kernel, bandwidth: density::Bandwidth) -> Result<density::Kde>
                           // kernel = Gaussian|Epanechnikov; bandwidth = Silverman|Scott|Fixed(h)
                           // -> Kde { .density(x), .evaluate(xs), .bandwidth(), .n() }
-histogram_auto(xs: &[f64], bins: Bins, norm: Norm) -> Result<(Vec<f64>, Vec<f64>)>
+density::histogram_auto(xs: &[f64], bins: density::Bins, norm: density::Norm) -> Result<(Vec<f64>, Vec<f64>)>
                           // (edges, values); bins = Rule(Sturges|FreedmanDiaconis|…)|Fixed(k)|Width(w)|Edges
                           // norm = Count|Density|Probability
 

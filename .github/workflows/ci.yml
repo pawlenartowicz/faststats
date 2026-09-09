@@ -9,14 +9,64 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
-# The crate lives in CommonStats/ (no root workspace manifest yet).
-defaults:
-  run:
-    working-directory: CommonStats
-
+# No root workspace manifest: each crate dir is built on its own. Add new
+# crates to both matrices. The python/ binding crate (faststats-py, the
+# faststats wheel) is not a stats crate and has its own `python` job below.
 jobs:
   test:
-    name: build + test
+    name: build + test (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [CommonStats, NeuroStats]
+    defaults:
+      run:
+        working-directory: ${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - run: cargo fmt --all -- --check
+      - run: cargo build --all-features
+      - run: cargo test --all-features
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      # NeuroStats only: permutations without rayon must still build and pass.
+      - run: cargo test --no-default-features --features std
+        if: matrix.crate == 'NeuroStats'
+
+  wasm:
+    name: wasm32 build (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: CommonStats
+            flags: --all-features
+          # NeuroStats' default features pull in rayon, which needs threads the
+          # target does not have; the no_std core is what must build here.
+          - crate: NeuroStats
+            flags: --no-default-features
+    defaults:
+      run:
+        working-directory: ${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - run: cargo build ${{ matrix.flags }} --target wasm32-unknown-unknown
+
+  python:
+    name: faststats wheel (build + pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,20 +75,17 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: CommonStats
-      - run: cargo build --all-features
-      - run: cargo test --all-features
-      - run: cargo clippy --all-features -- -D warnings
-
-  wasm:
-    name: wasm32 build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+          workspaces: python
+      - uses: actions/setup-python@v5
         with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: CommonStats
-      - run: cargo build --all-features --target wasm32-unknown-unknown
+          python-version: "3.12"
+      # maturin develop refuses to run outside a virtualenv; VIRTUAL_ENV is what it checks.
+      - run: python -m venv .venv && echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV" && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+        working-directory: python
+      - run: pip install "maturin>=1.15,<2" pytest numpy scipy nilearn
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: python
+      - run: maturin develop --release
+        working-directory: python
+      - run: pytest -q
+        working-directory: python

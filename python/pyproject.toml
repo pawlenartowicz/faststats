@@ -1,0 +1,42 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "faststats"
+version = "0.1.0"
+description = "Rust-backed statistics for Python: TFCE and permutation inference (faststats.neuro)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE", "LICENSE-GPL"]
+authors = [{ name = "Paweł Lenartowicz" }]
+keywords = ["statistics", "neuroimaging", "tfce", "permutation", "rust"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+test = ["pytest", "scipy", "nilearn"]
+
+[project.urls]
+Repository = "https://github.com/pawlenartowicz/faststats"
+
+[tool.maturin]
+python-source = "python"
+module-name = "faststats._faststats"
+features = ["pyo3/extension-module"]
+exclude = [
+    { path = "venv/**/*", format = "sdist" },
+    { path = "target/**/*", format = "sdist" },
+    { path = "dist/**/*", format = "sdist" },
+    { path = ".pytest_cache/**/*", format = "sdist" },
+    { path = "**/__pycache__/**/*", format = "sdist" },
+    { path = "**/*.so", format = "sdist" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

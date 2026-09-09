@@ -1,9 +1,9 @@
 //! The mergeable-accumulator core. `merge` is the whole game: one op gives
 //! one-pass streaming, parallel chunking, and incremental recompute — never
 //! downdating.
-pub mod simple;
-pub mod moments;
 pub mod histogram;
+pub mod moments;
+pub mod simple;
 pub mod tdigest;
 
 pub use histogram::{HistResult, Histogram};
@@ -35,7 +35,9 @@ pub trait Accumulator: Mergeable {
 pub fn from_slice<A: Accumulator<Item = f64>>(xs: &[f64]) -> A {
     let mut a = A::empty();
     for &x in xs {
-        if !x.is_nan() { a.update(x); }
+        if !x.is_nan() {
+            a.update(x);
+        }
     }
     a
 }
@@ -46,11 +48,15 @@ pub fn from_slice<A: Accumulator<Item = f64>>(xs: &[f64]) -> A {
 /// Shared by `descriptive::describe` and the bootstrap-CI percentiles.
 pub(crate) fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
     let n = sorted.len();
-    if n == 0 { return f64::NAN; }
-    if n == 1 { return sorted[0]; }
+    if n == 0 {
+        return f64::NAN;
+    }
+    if n == 1 {
+        return sorted[0];
+    }
     let h = (n as f64 - 1.0) * q;
-    let lo = h.floor() as usize;
-    let hi = h.ceil() as usize;
+    let lo = libm::floor(h) as usize;
+    let hi = libm::ceil(h) as usize;
     let frac = h - lo as f64;
     sorted[lo] + (sorted[hi] - sorted[lo]) * frac
 }
