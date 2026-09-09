@@ -105,7 +105,7 @@ fn measure_tail_bands() {
 fn logsumexp_grid() {
     // Three-source grid (mpmath truth + scipy + R stable logsumexp). Each row's
     // args is the full input slice: logsumexp(&[a0, a1, a2]).
-    check_grid("logsumexp", VAL, |a| special::logsumexp(a));
+    check_grid("logsumexp", VAL, special::logsumexp);
 }
 #[test]
 fn logsumexp_is_stable() {

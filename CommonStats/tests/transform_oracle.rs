@@ -393,11 +393,11 @@ fn quantile_normalize_both_cols_map_to_reference() {
     let col1 = [4.0f64, 5.0, 6.0];
     let got = quantile_normalize(&[&col0, &col1]).unwrap();
     let want = [2.5, 3.5, 4.5];
-    for j in 0..2 {
+    for (j, col) in got.iter().enumerate() {
         for i in 0..3 {
             assert_close(
                 &format!("qn_shape/col{j}[{i}]"),
-                got[j][i],
+                col[i],
                 want[i],
                 Tol {
                     rel: 1e-12,
