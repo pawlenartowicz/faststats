@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+title: "FastStats — fast-computing ecosystem for statistics"
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+authors:
+  - family-names: Lenartowicz
+    given-names: Paweł
+repository-code: "https://github.com/pawlenartowicz/faststats"
+url: "https://github.com/pawlenartowicz/faststats"
+abstract: "Ecosystem of fast computing engines for statistics."
+keywords:
+  - statistics
+  - hypothesis testing
+  - permutation testing
+  - neuroimaging
+  - Rust
+  - WebAssembly
+license: LGPL-3.0-or-later
+version: 0.1.0

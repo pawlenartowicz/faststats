@@ -1,0 +1,149 @@
+name: Release faststats
+
+# Builds and publishes the faststats wheel (the python/ binding crate,
+# faststats-py) to PyPI via Trusted Publishing (OIDC) — no API token stored
+# in the repo. Triggered by a PY-v<version> tag; the wheel version is the
+# repo version in python/pyproject.toml. `maturin sdist` bundles the path
+# dependencies (NeuroStats, CommonStats) into the sdist, so it builds
+# standalone without the rest of the monorepo present.
+#
+# One-time bootstrap (Trusted Publishing can't do a new project's first
+# publish):
+#   1. build and upload 0.1.0 manually with an API token
+#      (`maturin publish` from python/, or `twine upload` after
+#      `maturin build --release`),
+#   2. on PyPI configure the trusted publisher for `faststats`
+#      (owner: pawlenartowicz, repo: faststats, workflow:
+#      release-faststats.yml, environment: none).
+# After that, pushing PY-vX.Y.Z runs this and publishes automatically.
+
+on:
+  push:
+    tags: ['PY-v*']
+
+jobs:
+  linux:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-22.04
+            target: x86_64
+          - runner: ubuntu-22.04
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+          manylinux: auto
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.platform.target }}
+          path: python/dist
+
+  musllinux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: x86_64
+          args: --release --out dist
+          manylinux: musllinux_1_2
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-musllinux-x86_64
+          path: python/dist
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          architecture: x64
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: x64
+          args: --release --out dist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-x64
+          path: python/dist
+
+  macos:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: macos-13
+            target: x86_64
+          - runner: macos-14
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.platform.target }}
+          path: python/dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          command: sdist
+          args: --out dist
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: python/dist
+
+  release:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [linux, musllinux, windows, macos, sdist]
+    permissions:
+      id-token: write   # mint the short-lived OIDC token for PyPI Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
