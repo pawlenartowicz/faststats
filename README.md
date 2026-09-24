@@ -3,6 +3,7 @@
 [![CI](https://github.com/pawlenartowicz/faststats/actions/workflows/ci.yml/badge.svg)](https://github.com/pawlenartowicz/faststats/actions/workflows/ci.yml)
 [![commonstats](https://img.shields.io/crates/v/commonstats.svg?label=commonstats)](https://crates.io/crates/commonstats)
 [![License](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue.svg)](#license)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22729417.svg)](https://doi.org/10.5281/zenodo.22729417)
 
 FastStats aims at an ecosystem for statistical computing that is fast, and easy
 to use and to install. Rust gives the speed and general safety in memory management. 
@@ -48,7 +49,24 @@ Each ships on its own schedule and is used from here like any other library.
 
 ## Citation
 
-Citation metadata for this project lives in [CITATION.cff](CITATION.cff).
+If you use FastStats in your research, please cite it:
+
+> Lenartowicz, P. (2026). *FastStats — fast-computing ecosystem for statistics*
+> (Version v0.1.0) [Computer software]. Zenodo.
+> https://doi.org/10.5281/zenodo.22729418
+
+```bibtex
+@software{lenartowicz_2026_faststats,
+  author    = {Lenartowicz, Paweł},
+  title     = {FastStats — fast-computing ecosystem for statistics},
+  month     = sep,
+  year      = 2026,
+  publisher = {Zenodo},
+  version   = {v0.1.0},
+  doi       = {10.5281/zenodo.22729417},
+  url       = {https://doi.org/10.5281/zenodo.22729417}
+}
+```
 
 ## License
 
