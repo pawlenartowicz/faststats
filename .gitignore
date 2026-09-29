@@ -15,3 +15,4 @@ venv/
 __pycache__/
 .pytest_cache/
 /python/dist/
+CommonStats/scripts/.accuracy_cache/

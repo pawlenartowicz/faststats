@@ -3,18 +3,24 @@
 //! `(seed, draw_id)` with zero stored state — the property the dependency-graph
 //! cache and 1-vs-N-thread bit-identity both ride on.
 //!
-//! The [`philox`] core is the Philox4x32-10 counter-based PRNG (Random123); [`CommonStatsRng`] is the
-//! draw-addressable adaptation (the within-draw position and the draw id are
-//! encoded into the Philox counter, not a streaming state); [`CommonStatsRng::bounded`]
-//! is the Lemire unbiased `[0, n)` integer the resample index path needs.
+//! The Philox4x32-10 counter-based PRNG (Random123) comes from `rand_philox`;
+//! [`CommonStatsRng`] is the draw-addressable adaptation (the within-draw
+//! position and the draw id are encoded into the Philox counter, not a streaming
+//! state); [`CommonStatsRng::bounded`] is the Lemire unbiased `[0, n)` integer the
+//! resample index path needs.
 //! Float/unit-interval sampling is deferred to the `dist` feature — this module
 //! (integer-only path) generates indices and bounded integers.
-pub mod philox;
 
-use philox::philox4x32_10;
+/// The Philox4x32-10 block function, re-exported from `rand_philox`.
+pub mod philox {
+    pub use rand_philox::philox4x32_10;
+}
+
+use rand_philox::{Philox, splitmix64};
 
 /// Domain-separation tag XOR'd into `draw_id` so the resample stream never
-/// collides with the base-data or (later) synthetic-generation streams.
+/// collides with the other tagged streams (sign flips, the RLRT null,
+/// simulated responses).
 /// The bytes spell `RESAMPLE`.
 pub const STREAM_TAG_RESAMPLE: u64 = 0x5245_5341_4D50_4C45;
 
@@ -25,35 +31,32 @@ pub const STREAM_TAG_RESAMPLE: u64 = 0x5245_5341_4D50_4C45;
 /// [`gen_sign_flips`]: crate::resample::gen_sign_flips
 pub const STREAM_TAG_SIGNFLIP: u64 = 0x5349_474E_464C_4950;
 
-/// David Stafford's "Mix13" SplitMix64 finalizer (avalanche function). Mixes a
-/// raw `u64` seed into the two Philox key words so low-entropy standalone seeds
-/// (0, 1, 2, …) still produce well-separated streams. Consumers that already
-/// seed from a node hash pass an already-mixed value and pay only this one
-/// extra avalanche.
-#[inline]
-fn splitmix64(mut z: u64) -> u64 {
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
+/// Domain-separation tag for the simulated null distribution of the exact
+/// restricted likelihood-ratio test, so its draws never share random bits with
+/// the resample or sign-flip streams of the same `draw_id`. The bytes spell
+/// `RLRTNULL`.
+pub const STREAM_TAG_RLRT: u64 = 0x524C_5254_4E55_4C4C;
+
+/// Domain-separation tag for simulated responses (draws from a fitted or
+/// assumed model), so they never share random bits with the resampling indices
+/// of the same `(seed, draw_id)`. The bytes spell `SIMULATE`.
+pub const STREAM_TAG_SIMULATE: u64 = 0x5349_4D55_4C41_5445;
 
 /// Draw-addressable Philox RNG: the crate's resampling randomness surface.
 ///
 /// Unlike a streaming PRNG, every word is a pure function of `(seed, draw_id,
 /// within-draw position)` with no carried entropy — re-running draw *k* with the
 /// same `(seed, draw_id)` reproduces it exactly, independent of how many draws
-/// ran before it or on which thread. The key derives from `seed` (mixed); the
-/// counter carries `(position_block, draw_id ^ tag)`, tag `STREAM_TAG_RESAMPLE`
-/// by default, so distinct draws are independent Philox sub-streams. Yields
-/// `u32` words and Lemire unbiased bounded integers; float sampling is P3.
+/// ran before it or on which thread. The key is `splitmix64(seed)`, so
+/// low-entropy standalone seeds (0, 1, 2, …) still give well-separated streams;
+/// the counter carries `(position_block, draw_id ^ tag)`, tag
+/// `STREAM_TAG_RESAMPLE` by default, so distinct draws are independent Philox
+/// sub-streams. Yields `u32` words and Lemire unbiased bounded integers; with
+/// the `dist` feature, also open-interval uniform floats in `(0, 1)`
+/// (`uniform`, `uniform52`).
 #[derive(Debug, Clone)]
 pub struct CommonStatsRng {
-    key: [u32; 2],
-    draw_lo: u32,
-    draw_hi: u32,
-    block: u64, // counter block within this draw; 4 words per block
-    buf: [u32; 4],
-    buf_pos: usize, // 0..=4; 4 = exhausted, refill on next draw
+    inner: Philox,
 }
 
 impl CommonStatsRng {
@@ -72,34 +75,18 @@ impl CommonStatsRng {
     /// tags and the same `(seed, draw_id)` are independent Philox sub-streams.
     pub fn new_tagged(seed: u64, draw_id: u64, tag: u64) -> Self {
         let k = splitmix64(seed);
-        let eff = draw_id ^ tag;
+        // Philox splits the u128 counter into its four words little-endian: the
+        // within-draw block index lands in words 0–1, `draw_id ^ tag` in words 2–3.
+        let counter = u128::from(draw_id ^ tag) << 64;
         Self {
-            key: [k as u32, (k >> 32) as u32],
-            draw_lo: eff as u32,
-            draw_hi: (eff >> 32) as u32,
-            block: 0,
-            buf: [0; 4],
-            buf_pos: 4,
+            inner: Philox::new([k as u32, (k >> 32) as u32], counter),
         }
     }
 
-    /// Next pseudo-random 32-bit word in this draw's stream. Refills a 4-word
-    /// Philox block when the buffer is exhausted; the block index sits in counter
-    /// words 0–1, the draw id in words 2–3.
+    /// Next pseudo-random 32-bit word in this draw's stream.
     #[inline]
     pub fn next_u32(&mut self) -> u32 {
-        if self.buf_pos == 4 {
-            let b = self.block;
-            self.buf = philox4x32_10(
-                [b as u32, (b >> 32) as u32, self.draw_lo, self.draw_hi],
-                self.key,
-            );
-            self.block = self.block.wrapping_add(1);
-            self.buf_pos = 0;
-        }
-        let w = self.buf[self.buf_pos];
-        self.buf_pos += 1;
-        w
+        self.inner.next_u32()
     }
 
     /// Unbiased uniform integer in `[0, n)` via Lemire's method (no modulo bias,
@@ -107,24 +94,10 @@ impl CommonStatsRng {
     /// zone, so it stays integer-only and reproducible. `n` must be ≥ 1; `n == 1`
     /// always returns 0.
     ///
-    /// Lemire (2019), "Fast Random Integer Generation in an Interval": form the
-    /// 64-bit product `m = word · n`; its high 32 bits are the candidate. Reject
-    /// only when the low 32 bits fall below the threshold `t = 2³² mod n`, which
-    /// is exactly the set that would otherwise bias the result.
+    /// Lemire (2019), "Fast Random Integer Generation in an Interval".
     #[inline]
     pub fn bounded(&mut self, n: u32) -> u32 {
-        debug_assert!(n >= 1, "bounded: n must be >= 1");
-        let n64 = n as u64;
-        let mut m = self.next_u32() as u64 * n64;
-        let mut lo = m as u32; // low 32 bits of the product
-        if lo < n {
-            let t = (1u64 << 32).wrapping_rem(n64) as u32; // 2^32 mod n
-            while lo < t {
-                m = self.next_u32() as u64 * n64;
-                lo = m as u32;
-            }
-        }
-        (m >> 32) as u32
+        self.inner.bounded(n)
     }
 }
 
@@ -142,6 +115,23 @@ impl CommonStatsRng {
     /// A `f64` strictly inside `(0, 1)`.
     pub fn uniform(&mut self) -> f64 {
         (self.next_u32() as f64 + 0.5) / 4_294_967_296.0
+    }
+
+    /// Open-interval uniform in `(0, 1)` with 52 random bits, for samplers
+    /// whose output resolves finer than `uniform`'s 2⁻³² grid.
+    ///
+    /// Returns `(x + 0.5) / 2^52` for `x` the 32 bits of one fresh Philox word
+    /// followed by the top 20 bits of the next: the odd multiples of 2⁻⁵³,
+    /// each exact in f64, so the result lies in `[2⁻⁵³, 1 − 2⁻⁵³]`. Consumes
+    /// two words.
+    ///
+    /// # Returns
+    /// A `f64` strictly inside `(0, 1)`.
+    pub fn uniform52(&mut self) -> f64 {
+        let hi = self.next_u32() as u64;
+        let lo = self.next_u32() as u64;
+        let x = (hi << 20) | (lo >> 12);
+        (x as f64 + 0.5) / 4_503_599_627_370_496.0
     }
 }
 
@@ -275,5 +265,22 @@ mod tests {
         let n = 200_000;
         let mean: f64 = (0..n).map(|_| rng.uniform()).sum::<f64>() / n as f64;
         assert!((mean - 0.5).abs() < 1e-2, "mean {mean} far from 0.5");
+    }
+
+    // `uniform52` is `(x + 0.5)/2⁵²` for `x` = first word ‖ top 20 bits of the
+    // second, and takes exactly two words.
+    #[cfg(feature = "dist")]
+    #[test]
+    fn uniform52_bits_and_word_count() {
+        let mut words = CommonStatsRng::new(9, 4);
+        let mut rng = CommonStatsRng::new(9, 4);
+        for _ in 0..10_000 {
+            let (w0, w1) = (words.next_u32() as u64, words.next_u32() as u64);
+            let x = (w0 << 20) | (w1 >> 12);
+            let u = rng.uniform52();
+            assert_eq!(u, (x as f64 + 0.5) / 4_503_599_627_370_496.0);
+            assert!(u > 0.0 && u < 1.0, "uniform52 out of (0,1): {u}");
+        }
+        assert_eq!(rng.next_u32(), words.next_u32(), "word count differs");
     }
 }

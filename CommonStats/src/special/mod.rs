@@ -4,6 +4,7 @@ pub mod elementary;
 pub mod incomplete;
 pub mod inverse;
 pub mod misc;
+pub(crate) mod saddle;
 
 pub use elementary::{beta, erf, erfc, gamma, lbeta, lgamma};
 pub use incomplete::{betai, gammp, gammq};

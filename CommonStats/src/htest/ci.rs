@@ -167,6 +167,24 @@ mod tests {
         );
     }
     #[test]
+    fn t_crit_extreme_level_matches_mpmath() {
+        // At df = 1 the root x = I⁻¹(½, ½, 1 − level) = 1/(1 + t²) is 2.5e-24
+        // and 2.5e-30, so `t` comes out right only if the inverse resolves x
+        // to relative, not absolute, precision. Truth: mpmath at 50 dps, root
+        // t of ½·I_{df/(df+t²)}(df/2, ½) = (1 − level)/2 at the exact f64 level.
+        for (level, df, want) in [
+            (0.999_999_999_999, 1.0, 636_633_855_803.559_3),
+            (0.999_999_999_999_999, 1.0, 637_129_015_469_184.3),
+            (0.999_999_999_999_999, 2.0, 31_635_421.874_750_494),
+        ] {
+            let got = t_crit(level, df);
+            assert!(
+                ((got - want) / want).abs() < 3e-15,
+                "t_crit({level}, {df}) = {got:e}, want {want:e}"
+            );
+        }
+    }
+    #[test]
     fn ci_mean_known() {
         // [1..5]: mean 3, s = √2.5; half-width = t_{0.975,4}·s/√5 = 1.96324316
         // (scipy t.ppf(0.975,4)). Pins the width, not just that it brackets the mean.

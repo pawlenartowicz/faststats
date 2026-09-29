@@ -148,7 +148,7 @@ impl Kde {
     /// Formula: (1/(n·h)) · Σᵢ K((x − xᵢ)/h).
     /// NaN `x` → returns 0.0 (not meaningful; use `evaluate` for grids).
     ///
-    /// Convention: identical to scipy.stats.gaussian_kde.evaluate([x])[0]
+    /// Convention: identical to `scipy.stats.gaussian_kde.evaluate([x])[0]`
     /// at the same bandwidth.
     pub fn density(&self, x: f64) -> f64 {
         if !x.is_finite() {

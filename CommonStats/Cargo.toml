@@ -15,20 +15,34 @@ categories = ["mathematics", "science", "wasm"]
 
 [dependencies]
 libm = "0.2"      # erf/erfc/tgamma — pure-Rust, WASM-clean float math
+# Philox4x32-10 block function, splitmix64 and Philox (counter-addressable
+# stream + Lemire bounded) behind `CommonStatsRng`. The 0.1.x line is KAT-frozen;
+# the caret stops below 0.2.0 so an output-changing bump is never picked up
+# silently. default-features = false drops the rand_core impls: no_std, zero deps.
+rand_philox = { version = "0.1", default-features = false, optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"  # read tests/fixtures/*.json oracle grids
+# 1.11 (newest) needs rustc 1.85 per its crates.io rust-version, matching the
+# crate's own 1.85 floor exactly. default-features off + "std" only skips
+# "fork"/"timeout" (rusty-fork, tempfile) and "bit-set" (bit-set, bit-vec),
+# none of which the property suite uses.
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 
 [features]
 default = []
-rng = []           # P2 — declared now so phase boundaries are clean feature seams
-resample = ["rng"] # P2
-dist = []          # P2/P3
-rand-interop = []  # P2
+rng = ["dep:rand_philox"]
+resample = ["rng"]
+dist = []
 
 [lib]
 name = "commonstats"
+
+# Evaluator of `scripts/accuracy_sweep.py`; needs the distributions.
+[[example]]
+name = "accuracy_probe"
+required-features = ["dist"]
 
 # Mirrors the CI gate (`clippy --all-features -- -D warnings`) for local builds.
 # `unsafe_code`/`missing_docs` stay in lib.rs as the owning site. Pedantic is left

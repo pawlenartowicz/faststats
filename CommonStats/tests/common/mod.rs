@@ -81,8 +81,12 @@ fn graceful(name: &str, args: &[f64], got: f64, want: f64) {
     }
 }
 
-fn rel_err(got: f64, want: f64) -> f64 {
-    if want == 0.0 {
+/// Relative error `|got − want|/|want|`: 0 where `got == want` (including
+/// ±∞), `|got|` where `want` is 0.
+pub fn rel_err(got: f64, want: f64) -> f64 {
+    if got == want {
+        0.0
+    } else if want == 0.0 {
         got.abs()
     } else {
         ((got - want) / want).abs()

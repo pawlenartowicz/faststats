@@ -37,7 +37,7 @@ pub struct TestResult {
     /// For F-var: d1 = nA − 1.
     pub df: f64,
     /// Secondary degrees of freedom. `Some(d2)` for two-df tests only:
-    /// [`anova_one_way`] sets `Some(N − k)` (within-groups df). All single-df
+    /// [`anova_one_way`](crate::htest::anova_one_way) sets `Some(N − k)` (within-groups df). All single-df
     /// tests (t, χ², F-var, correlation) set `None`.
     pub df2: Option<f64>,
     /// p-value; see the producing function for sidedness.

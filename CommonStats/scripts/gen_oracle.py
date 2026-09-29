@@ -62,6 +62,7 @@ TAIL_BANDS = {
     "dist_weibull_ppf":     1.7e-8,   # 1.41e-8
     "dist_lognormal_ppf":   2.5e-10,  # 2.16e-10
     "dist_gamma_ppf":       1.1e-15,  # 9.61e-16
+    "dist_inversegaussian_ppf": 1.8e-15,  # 1.51e-15
     "dist_beta_ppf":        1.5e-15,  # 9.42e-16
     # isf tail bands. Newton/closed-form dists sit at ~1e-15 in both tails (each
     # residual is formed on the smaller tail mass, never on `1 − near-1`); truth is
@@ -77,6 +78,7 @@ TAIL_BANDS = {
     "dist_weibull_isf":     1.0e-15,  # 2.86e-16
     "dist_lognormal_isf":   2.5e-10,  # 2.16e-10
     "dist_gamma_isf":       1.0e-15,  # 8.57e-16
+    "dist_inversegaussian_isf": 3.9e-15,  # 3.39e-15 (upper tail: sf is Φ(−a) minus a near-equal reflected term)
     "dist_beta_isf":        1.4e-15,  # 1.19e-15
 }
 
@@ -721,6 +723,24 @@ def gen_dist():
     def g_ppf(p): return _mp_ppf_lo(g_cdf, p)
     add_cont("gamma", [3.5, 2.0], g_pdf, g_cdf, g_ppf, st.gamma(3.5, scale=1.0 / 2.0),
              list(np.linspace(0.01, 8.0, 40)), "dgamma", "pgamma_d")
+
+    # ---- InverseGaussian(mean=1.5, shape=2.0) ; scipy invgauss(mu/lam, scale=lam)
+    im, il = mp.mpf('1.5'), mp.mpf('2.0')
+    def ig_pdf(x):
+        x = mp.mpf(x)
+        if x <= 0:
+            return mp.mpf(0)
+        return mp.sqrt(il / (2 * mp.pi * x**3)) * mp.e**(-il * (x - im)**2 / (2 * im**2 * x))
+    def ig_cdf(x):
+        x = mp.mpf(x)
+        if x <= 0:
+            return mp.mpf(0)
+        r = mp.sqrt(il / x)
+        return mp.ncdf(r * (x / im - 1)) + mp.e**(2 * il / im) * mp.ncdf(-r * (x / im + 1))
+    def ig_ppf(p): return _mp_ppf_lo(ig_cdf, p)
+    add_cont("inversegaussian", [1.5, 2.0], ig_pdf, ig_cdf, ig_ppf,
+             st.invgauss(1.5 / 2.0, scale=2.0),
+             list(np.linspace(0.01, 8.0, 40)), "dinvgauss", "pinvgauss")
 
     # ---- Beta(alpha=2.5, beta=4.0) -----------------------------------------
     ba, bb = mp.mpf('2.5'), mp.mpf('4.0')

@@ -17,6 +17,12 @@ density + auto-histograms, and distribution-free transforms (rank, normal-scores
 PIT, power, quantile-normalize). Feature-gated: `rng` (Philox), `resample`
 (null/bootstrap), and `dist` (continuous + discrete distribution objects).
 
+The sweep in `scripts/accuracy_sweep.py` checks every `dist::continuous` and
+`dist::discrete` distribution, `gammp`/`gammq`/`betai` and their `ln_*` forms,
+`lgamma`, `lbeta`, and `inv_beta_reg` against mpmath; the crate root docs state
+the accuracy policy and the `dist::continuous`, `dist::discrete`, and
+`special::incomplete` module docs carry the per-function tables.
+
 ## Example
 
 ```rust
@@ -94,6 +100,17 @@ root). Each constructor returns `Result<Self>`. All implement `.cdf(x)`, `.sf(x)
 upper-tail critical value solved on `q` directly), the moment accessors (`.mean()`, `.variance()`,
 `.std_dev()`, `.skewness()`, `.kurtosis()`, `.entropy()`), plus `.density(x)` /
 `.log_density(x)` (continuous) or `.mass(k)` / `.log_mass(k)` (discrete).
+With feature `rng` also on, continuous distributions implement
+`Sampler::sample(&mut rng) -> f64` and discrete ones
+`DiscreteSampler::sample(&mut rng) -> i64`. Sampling is inverse-CDF (one uniform
+per draw) by default, with named fast paths: Bernoulli (`u < p`), Poisson
+(sequential inversion below λ = 10, PTRS rejection above), Binomial (sequential
+inversion below n·min(p, 1−p) = 10, BTRS rejection above), NegBinomial
+(Gamma–Poisson mixture), Hypergeometric (inversion searched outward from the
+mode, one uniform), Gamma and ChiSquared (Marsaglia–Tsang rejection), and
+InverseGaussian (Michael–Schucany–Haas). Rejection samplers use a variable number
+of uniforms per draw; every draw is still a deterministic function of the
+`(seed, draw_id)` stream.
 
 ```rust
 // continuous
@@ -108,6 +125,7 @@ dist::Weibull::new(shape: f64, scale: f64)     // Weibull
 dist::LogNormal::new(mu: f64, sigma: f64)      // Log-normal
 dist::Gamma::new(shape: f64, rate: f64)        // Γ(α, β)
 dist::Beta::new(alpha: f64, beta: f64)         // Beta on [0, 1]
+dist::InverseGaussian::new(mean: f64, shape: f64) // IG(μ, λ), variance μ³/λ
 
 // discrete
 dist::Bernoulli::new(p: f64)                   // Bernoulli(p)
@@ -115,6 +133,7 @@ dist::Binomial::new(n: i64, p: f64)            // Binom(n, p)
 dist::Poisson::new(lambda: f64)                // Poisson(λ)
 dist::Geometric::new(p: f64)                   // trials until first success
 dist::NegBinomial::new(r: f64, p: f64)         // negative binomial
+dist::NegBinomial::from_mean_size(mu: f64, size: f64) // R's (size, mu): variance μ + μ²/size
 dist::Hypergeometric::new(big_n: i64, k: i64, n: i64) // hypergeometric
 ```
 
@@ -157,6 +176,6 @@ Histogram::new(lo: f64, hi: f64, n_bins: usize) -> Result<Histogram> // fixed-bi
 
 | Flag       | Adds                                                                   |
 |------------|------------------------------------------------------------------------|
-| `dist`     | continuous + discrete distribution objects (CDF/SF/PDF/quantile) and PIT |
+| `dist`     | continuous + discrete distribution objects (CDF/SF/PDF/quantile), PIT, and samplers (with `rng`) |
 | `rng`      | counter-based Philox RNG (`CommonStatsRng`)                            |
 | `resample` | permutation/bootstrap index generation + `NullDist` / `BootDist` (implies `rng`) |

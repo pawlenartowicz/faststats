@@ -1,0 +1,20 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8d7c00c6eb5ad300f7c1c79a3643fe672da324c160825ecf2c4ede60204eb9d2 # shrinks to 1e-17
+cc 8d7c00c6eb5ad300f7c1c79a3643fe672da324c160825ecf2c4ede60204eb9d2 # shrinks to (57, 0.001)
+cc 8d7c00c6eb5ad300f7c1c79a3643fe672da324c160825ecf2c4ede60204eb9d2 # shrinks to (1e-12, 0.001)
+cc 077dbcb6959fd5b86e68b27b04e5f48504f6f687b2c37cd4da5cb0bb7a1947d9 # shrinks to (1.0, 64.0)
+cc 238ad925841cd25ed2ea48532dac33ec12a0f0a53bfb65caeca988c5efa91441 # shrinks to ((1, 0.0029968029825776163), 0.001)
+cc 480c719ee6d67f588625abc602281467086ae72ce502e6f83a016374930aa3c9 # shrinks to ((0.0, 1.0), 1e-5)
+cc 8a78b9cdefeb074d6e1275e95a1481262da34f57bf359f699fe87bb992597f54 # shrinks to ((0.0, 3.5895753072751724), 3.1813647914796025e-272)
+cc 708bec4e676a8b6cad50e61dd54d33bf307a1541d2fcc54b97494452adab3eba # shrinks to ((1.0, 1.0), 0.00012289770403974888)
+cc 4ae83e0058823eb51e9c7a3ed09d972b5d99fc900b0770a5588c2039752f2cdf # shrinks to ((7.62939453125e-6, 65536.0), 0.75)
+cc 708bec4e676a8b6cad50e61dd54d33bf307a1541d2fcc54b97494452adab3eba # shrinks to ((1.0, 1.0), 1e-17)
+cc 7b53f5535f4d56ff8ef3e3ef2d4c52c1194f1d25f5f092b246cb294ef9d97e2c # shrinks to ((7565433.305605904, 0.9999999999993723), 0.9991882616511067)
+cc ffb5ec060765bc54672733c83f967ffb88c59873b070506999e43cc3367c4693 # shrinks to ((1.0, 0.000244140625), 0.155)
+cc 97553f616b3d31cb974c5b7521796677732f921e8779fa1dede18ac1db1ee2bd # shrinks to (3.9828425526044864, 0.9999999999997522)
+cc c786cff6c46cbbaf50f768be484c5a347b1de88d320b034ec74efdde41016d60 # shrinks to ((12531.387738085223, 0.44), 0.399)

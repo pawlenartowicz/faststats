@@ -13,6 +13,33 @@
 //! This crate ships only user-facing docs; design notes and specs live in the
 //! umbrella dev repo.
 //!
+//! ## Accuracy policy
+//!
+//! Every function in `special::incomplete`, `dist::continuous`, and
+//! `dist::discrete` is checked against mpmath by `scripts/accuracy_sweep.py`
+//! and scored by an error ratio r = observed relative error / (max(κ, 1) · ε),
+//! where κ is the function's condition number over its real inputs and
+//! ε = 2⁻⁵² ≈ 2.2e-16. κ·ε is the error of a backward-stable algorithm, so r
+//! counts how many times worse than that this implementation is: r ≤ 10 is
+//! `limit` (at the accuracy the problem allows), 10 to 1000 is `review` (fixed
+//! when cheap), and above 1000 is `bug` (a structural error such as
+//! cancellation, a subnormal intermediate, or a coarse grid).
+//!
+//! Also a bug regardless of r: a probability outside [0, 1]; a NaN or error
+//! for a valid input (a discrete quantile past `i64::MAX` is an error by
+//! contract, not a bug); a quantile outside its support; and `quantile(1)` on
+//! a bounded support other than its largest point of positive mass. A cdf
+//! that decreases (an sf that increases) between two points of one parameter
+//! set is a bug once the drop exceeds 10 · max(κ, 1) · ε relative; smaller
+//! drops are reported as seam steps, where two branches each accurate to
+//! about ε meet, not as violations.
+//!
+//! Where κ is huge because the function is near a zero of its own (a
+//! location-family quantile landing near 0), r hides errors; the harness
+//! also reports the absolute error there. Per-function results are in the
+//! accuracy tables at the top of `special::incomplete`, `dist::continuous`,
+//! and `dist::discrete`.
+//!
 //! ```
 //! let g1 = [89., 88., 97., 92.];
 //! let g2 = [84., 79., 81., 83.];
@@ -55,7 +82,9 @@ pub use resample::{
     BootDist, NullDist, Scheme, Sidedness, gen_resample_indices, gen_sign_flips, run_serial,
 };
 #[cfg(feature = "rng")]
-pub use rng::{CommonStatsRng, STREAM_TAG_RESAMPLE, STREAM_TAG_SIGNFLIP};
+pub use rng::{
+    CommonStatsRng, STREAM_TAG_RESAMPLE, STREAM_TAG_RLRT, STREAM_TAG_SIGNFLIP, STREAM_TAG_SIMULATE,
+};
 
 pub use descriptive::{
     Ddof, Describe, count, cov, describe, kurtosis, max, mean, median, min, pearson, range, sd,

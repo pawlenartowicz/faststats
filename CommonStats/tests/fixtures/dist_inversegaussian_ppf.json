@@ -1,0 +1,344 @@
+[
+{
+"args": [
+1e-09
+],
+"expected": 0.05014329449390594,
+"tier": "tail",
+"band": 1.8e-15,
+"xcheck": {
+"scipy": {
+"val": 0.050143294493905935,
+"rel": 1.389796734714415e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+1e-07
+],
+"expected": 0.06471261048840757,
+"tier": "tail",
+"band": 1.8e-15,
+"xcheck": {
+"scipy": {
+"val": 0.06471261048840757,
+"rel": 9.850803397632104e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+1e-06
+],
+"expected": 0.07564638921178968,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.07564638921178965,
+"rel": 3.0089982762462775e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.001
+],
+"expected": 0.15150417930885887,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.15150417930885887,
+"rel": 1.7779056637153285e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.01
+],
+"expected": 0.22499879187018362,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.22499879187018362,
+"rel": 5.233146795349065e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.05
+],
+"expected": 0.3370644405716127,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.33706444057161267,
+"rel": 2.256088340237563e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.1
+],
+"expected": 0.42720484009000054,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.42720484009000054,
+"rel": 2.3445006350743436e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.25
+],
+"expected": 0.6561675335886479,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.6561675335886479,
+"rel": 4.253390479534935e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.4
+],
+"expected": 0.9029928321195118,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 0.9029928321195116,
+"rel": 1.8063861849669897e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.5
+],
+"expected": 1.1013488264498321,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.1013488264498321,
+"rel": 9.470104340768905e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.6
+],
+"expected": 1.347658504322261,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.3476585043222606,
+"rel": 3.044804949058285e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.75
+],
+"expected": 1.8902777087793852,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 1.8902777087793845,
+"rel": 3.6086043627867823e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9
+],
+"expected": 3.054744222100876,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 3.054744222100876,
+"rel": 3.517692317839893e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.95
+],
+"expected": 4.02225819133265,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 4.02225819133265,
+"rel": 9.792314450864425e-17
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.99
+],
+"expected": 6.496128069642977,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 6.496128069642978,
+"rel": 1.9178672121152349e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999
+],
+"expected": 10.423379205639774,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 10.423379205639772,
+"rel": 1.81030808055138e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999999
+],
+"expected": 23.58588592721677,
+"tier": "bulk",
+"band": null,
+"xcheck": {
+"scipy": {
+"val": 23.585885927216776,
+"rel": 2.693146759966398e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.9999999
+],
+"expected": 28.21670547489334,
+"tier": "tail",
+"band": 1.8e-15,
+"xcheck": {
+"scipy": {
+"val": 28.21670547489332,
+"rel": 7.5207921395067e-16
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+},
+{
+"args": [
+0.999999999
+],
+"expected": 37.675687460731766,
+"tier": "tail",
+"band": 1.8e-15,
+"xcheck": {
+"scipy": {
+"val": 37.67568746073195,
+"rel": 4.851907036646177e-15
+},
+"r": {
+"val": null,
+"rel": null
+}
+}
+}
+]

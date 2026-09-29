@@ -38,7 +38,7 @@ pub fn eta_squared(groups: &[&[f64]]) -> Result<f64, StatError> {
 
 /// Cramér's V for an r×c contingency table: √(χ² / (N · min(r−1, c−1))); range
 /// [0, 1]. Uncorrected (Cramér 1946), no bias adjustment. Recomputes χ² via the
-/// shared [`contingency_chi2`] helper (pure, no shared state) so it stays
+/// shared `contingency_chi2` helper (pure, no shared state) so it stays
 /// independent of the test fn.
 ///
 /// `table`: a rectangular ≥2×2 grid of non-negative counts (shape validated by the

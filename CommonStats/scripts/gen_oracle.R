@@ -61,6 +61,9 @@ dispatch <- function(func, a) {
     "pgamma_d" = pgamma(a[1], shape = a[2], rate = a[3]),
     "dbeta"    = dbeta(a[1], a[2], a[3]),
     "pbeta_d"  = pbeta(a[1], a[2], a[3]),
+    # Inverse Gaussian has no base-R d/p; statmod's (mean, shape) is the match.
+    "dinvgauss" = statmod::dinvgauss(a[1], mean = a[2], shape = a[3]),
+    "pinvgauss" = statmod::pinvgauss(a[1], mean = a[2], shape = a[3]),
     "dbinom"   = dbinom(a[1], size = a[2], prob = a[3]),
     "pbinom"   = pbinom(a[1], size = a[2], prob = a[3]),
     "dpois"    = dpois(a[1], lambda = a[2]),

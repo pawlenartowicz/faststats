@@ -18,7 +18,7 @@ crate README: [`../../../CommonStats/README.md`](../../../CommonStats/README.md)
 | `htest`        | (base)       | hypothesis tests, effect sizes, confidence intervals               |
 | `error`        | (base)       | `StatError`                                                       |
 | `nan`          | (base)       | `NanPolicy`                                                        |
-| `dist`         | `dist`       | continuous + discrete distribution objects (CDF/SF/PDF/quantile) and PIT |
+| `dist`         | `dist`       | continuous + discrete distribution objects (CDF/SF/PDF/quantile), PIT, and samplers (with `rng`) |
 | `rng`          | `rng`        | counter-based Philox RNG (`CommonStatsRng`)                        |
 | `resample`     | `resample`   | permutation/bootstrap index generation, `NullDist`/`BootDist` (implies `rng`) |
 
