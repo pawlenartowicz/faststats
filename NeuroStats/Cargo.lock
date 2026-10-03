@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "commonstats"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libm",
  "rand_philox",
@@ -90,9 +90,9 @@ dependencies = [
 
 [[package]]
 name = "rand_philox"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fd5ca897f8b5e3e5bc0d388d9a408605ec8ac3615ff79f556177c1e473b48e4"
+checksum = "58bdd129512111be1936edc001113ba844f0fd1aa58b34b2752af62454788805"
 
 [[package]]
 name = "rayon"

@@ -110,10 +110,17 @@ pub fn gen_sign_flips(n: usize, draw_id: u64, seed: u64, out: &mut [f64]) -> Res
         return Err(StatError::MismatchedLengths { a: n, b: out.len() });
     }
     let mut rng = CommonStatsRng::new_tagged(seed, draw_id, STREAM_TAG_SIGNFLIP);
-    for chunk in out.chunks_mut(32) {
-        let word = rng.next_u32();
-        for (i, slot) in chunk.iter_mut().enumerate() {
-            *slot = if (word >> i) & 1 == 1 { -1.0 } else { 1.0 };
+    // Words come from `fill_u32` one stack buffer at a time. 64 words are 16
+    // Philox blocks, the widest step `fill_u32` generates at once; a shorter
+    // request (n < 2048) is served block by block.
+    let mut words = [0u32; 64];
+    for block in out.chunks_mut(32 * words.len()) {
+        let words = &mut words[..block.len().div_ceil(32)];
+        rng.fill_u32(words);
+        for (chunk, &word) in block.chunks_mut(32).zip(&*words) {
+            for (i, slot) in chunk.iter_mut().enumerate() {
+                *slot = if (word >> i) & 1 == 1 { -1.0 } else { 1.0 };
+            }
         }
     }
     Ok(())

@@ -1,6 +1,6 @@
 [package]
 name = "commonstats"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"  # edition 2024 floor; verified to compile --all-features on 1.85
 license = "LGPL-3.0-or-later"
@@ -15,11 +15,12 @@ categories = ["mathematics", "science", "wasm"]
 
 [dependencies]
 libm = "0.2"      # erf/erfc/tgamma — pure-Rust, WASM-clean float math
-# Philox4x32-10 block function, splitmix64 and Philox (counter-addressable
-# stream + Lemire bounded) behind `CommonStatsRng`. The 0.1.x line is KAT-frozen;
-# the caret stops below 0.2.0 so an output-changing bump is never picked up
-# silently. default-features = false drops the rand_core impls: no_std, zero deps.
-rand_philox = { version = "0.1", default-features = false, optional = true }
+# Philox4x32-10 streams (`from_u64_seed_stream`), multi-block `fill_u32`
+# (0.2.1 is its floor), Lemire `bounded` and `u32_to_unit_f64` behind
+# `CommonStatsRng`. The caret stops below 0.3.0 so an output-changing bump is
+# never picked up silently. default-features = false drops the rand_core impls:
+# no_std, zero deps.
+rand_philox = { version = "0.2.1", default-features = false, optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -39,9 +40,12 @@ dist = []
 [lib]
 name = "commonstats"
 
-# Evaluator of `scripts/accuracy_sweep.py`; needs the distributions.
+# Evaluator of `scripts/accuracy_sweep.py`; needs the distributions. Kept beside
+# the sweep in `scripts/` rather than in `examples/`: it is a test harness, not
+# a usage example.
 [[example]]
 name = "accuracy_probe"
+path = "scripts/accuracy_probe.rs"
 required-features = ["dist"]
 
 # Mirrors the CI gate (`clippy --all-features -- -D warnings`) for local builds.

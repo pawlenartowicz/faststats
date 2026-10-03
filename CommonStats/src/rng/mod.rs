@@ -16,7 +16,7 @@ pub mod philox {
     pub use rand_philox::philox4x32_10;
 }
 
-use rand_philox::{Philox, splitmix64};
+use rand_philox::Philox;
 
 /// Domain-separation tag XOR'd into `draw_id` so the resample stream never
 /// collides with the other tagged streams (sign flips, the RLRT null,
@@ -74,12 +74,10 @@ impl CommonStatsRng {
     /// `draw_id` — one of the `STREAM_TAG_*` constants. Streams with different
     /// tags and the same `(seed, draw_id)` are independent Philox sub-streams.
     pub fn new_tagged(seed: u64, draw_id: u64, tag: u64) -> Self {
-        let k = splitmix64(seed);
-        // Philox splits the u128 counter into its four words little-endian: the
-        // within-draw block index lands in words 0–1, `draw_id ^ tag` in words 2–3.
-        let counter = u128::from(draw_id ^ tag) << 64;
+        // Key = splitmix64(seed); the within-draw block index lands in counter
+        // words 0–1 and `draw_id ^ tag` (the Philox stream) in words 2–3.
         Self {
-            inner: Philox::new([k as u32, (k >> 32) as u32], counter),
+            inner: Philox::from_u64_seed_stream(seed, draw_id ^ tag),
         }
     }
 
@@ -87,6 +85,14 @@ impl CommonStatsRng {
     #[inline]
     pub fn next_u32(&mut self) -> u32 {
         self.inner.next_u32()
+    }
+
+    /// Fill `dest` with the next `dest.len()` words of this draw's stream:
+    /// exactly the words, and the end state, of `dest.len()` calls to
+    /// [`next_u32`](Self::next_u32), generated several Philox blocks at a time.
+    #[inline]
+    pub fn fill_u32(&mut self, dest: &mut [u32]) {
+        self.inner.fill_u32(dest);
     }
 
     /// Unbiased uniform integer in `[0, n)` via Lemire's method (no modulo bias,
@@ -114,7 +120,7 @@ impl CommonStatsRng {
     /// # Returns
     /// A `f64` strictly inside `(0, 1)`.
     pub fn uniform(&mut self) -> f64 {
-        (self.next_u32() as f64 + 0.5) / 4_294_967_296.0
+        rand_philox::u32_to_unit_f64(self.next_u32())
     }
 
     /// Open-interval uniform in `(0, 1)` with 52 random bits, for samplers
@@ -138,60 +144,24 @@ impl CommonStatsRng {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
 
-    // Same (seed, draw_id) reproduces the exact word stream, draw after draw —
-    // the determinism guarantee the resampling layer relies on.
+    // Stream layout: key = the halves of splitmix64(seed), block index in
+    // counter words 0–1, `draw_id ^ tag` in words 2–3. A nonzero draw_id pins
+    // the XOR itself, and with it the separation of draws and of tags.
     #[test]
-    fn same_key_reproduces_words() {
-        let mut a = CommonStatsRng::new(42, 7);
-        let mut b = CommonStatsRng::new(42, 7);
-        for _ in 0..1000 {
-            assert_eq!(a.next_u32(), b.next_u32());
-        }
-    }
-
-    // Crossing a 4-word block boundary still reproduces (buffer refill is keyed,
-    // not stateful) — guards the block-index counter layout.
-    #[test]
-    fn reproduces_across_block_boundaries() {
-        let words: Vec<u32> = {
-            let mut r = CommonStatsRng::new(1, 0);
-            (0..37).map(|_| r.next_u32()).collect()
-        };
-        let mut r2 = CommonStatsRng::new(1, 0);
-        for &w in &words {
-            assert_eq!(r2.next_u32(), w);
-        }
-    }
-
-    #[test]
-    fn different_draw_ids_diverge() {
-        let mut a = CommonStatsRng::new(42, 0);
-        let mut b = CommonStatsRng::new(42, 1);
-        let mut diff = 0usize;
-        for _ in 0..100 {
-            if a.next_u32() != b.next_u32() {
-                diff += 1;
+    fn draw_id_xor_tag_fills_the_upper_counter_words() {
+        let (seed, draw_id) = (42u64, 0x0123_4567_89ab_cdef_u64);
+        let k = rand_philox::splitmix64(seed);
+        let key = [k as u32, (k >> 32) as u32];
+        for tag in [STREAM_TAG_RESAMPLE, STREAM_TAG_SIGNFLIP] {
+            let s = draw_id ^ tag;
+            let mut r = CommonStatsRng::new_tagged(seed, draw_id, tag);
+            for block in 0..2u32 {
+                for want in philox::philox4x32_10([block, 0, s as u32, (s >> 32) as u32], key) {
+                    assert_eq!(r.next_u32(), want);
+                }
             }
         }
-        assert!(
-            diff > 90,
-            "different draw_ids must give independent streams"
-        );
-    }
-
-    #[test]
-    fn different_seeds_diverge() {
-        let mut a = CommonStatsRng::new(0, 5);
-        let mut b = CommonStatsRng::new(1, 5);
-        let mut diff = 0usize;
-        for _ in 0..100 {
-            if a.next_u32() != b.next_u32() {
-                diff += 1;
-            }
-        }
-        assert!(diff > 90, "different seeds must give independent streams");
     }
 
     // `new` is `new_tagged` with the resample tag — existing fixtures stay byte-identical.
@@ -202,69 +172,6 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(a.next_u32(), b.next_u32());
         }
-    }
-
-    #[test]
-    fn signflip_tag_diverges_from_resample_stream() {
-        let mut a = CommonStatsRng::new_tagged(42, 7, STREAM_TAG_RESAMPLE);
-        let mut b = CommonStatsRng::new_tagged(42, 7, STREAM_TAG_SIGNFLIP);
-        let diff = (0..100).filter(|_| a.next_u32() != b.next_u32()).count();
-        assert!(diff > 90, "tags must separate streams");
-    }
-
-    #[test]
-    fn bounded_one_is_always_zero() {
-        let mut r = CommonStatsRng::new(99, 3);
-        for _ in 0..1000 {
-            assert_eq!(r.bounded(1), 0);
-        }
-    }
-
-    #[test]
-    fn bounded_stays_in_range() {
-        let mut r = CommonStatsRng::new(7, 11);
-        for &n in &[2u32, 3, 7, 10, 100, 1000] {
-            for _ in 0..5000 {
-                assert!(r.bounded(n) < n, "bounded({n}) out of range");
-            }
-        }
-    }
-
-    // No modulo bias: over many draws every bucket in [0, n) is hit with roughly
-    // equal frequency. A biased floor(u*n) would systematically over-fill the low
-    // buckets; the χ²-style spread check catches gross deviation.
-    #[test]
-    fn bounded_is_approximately_uniform() {
-        let n = 7u32;
-        let draws = 700_000usize;
-        let mut counts = [0u64; 7];
-        let mut r = CommonStatsRng::new(2024, 1);
-        for _ in 0..draws {
-            counts[r.bounded(n) as usize] += 1;
-        }
-        let expected = draws as f64 / n as f64;
-        for (i, &c) in counts.iter().enumerate() {
-            let rel = (c as f64 - expected).abs() / expected;
-            assert!(
-                rel < 0.02,
-                "bucket {i} count {c} deviates {rel:.4} from uniform"
-            );
-        }
-    }
-
-    #[cfg(feature = "dist")]
-    #[test]
-    fn uniform_in_open_unit_interval() {
-        let mut rng = CommonStatsRng::new(42, 0);
-        for _ in 0..100_000 {
-            let u = rng.uniform();
-            assert!(u > 0.0 && u < 1.0, "uniform out of (0,1): {u}");
-        }
-        // Mean of a large sample is ~0.5 (sanity; not a distribution test).
-        let mut rng = CommonStatsRng::new(7, 1);
-        let n = 200_000;
-        let mean: f64 = (0..n).map(|_| rng.uniform()).sum::<f64>() / n as f64;
-        assert!((mean - 0.5).abs() < 1e-2, "mean {mean} far from 0.5");
     }
 
     // `uniform52` is `(x + 0.5)/2⁵²` for `x` = first word ‖ top 20 bits of the

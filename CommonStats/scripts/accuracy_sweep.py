@@ -7,7 +7,7 @@
 Covers every function and distribution method of `src/special/incomplete.rs`,
 `src/dist/continuous.rs` and `src/dist/discrete.rs` (with the crate-private log
 variants the quantile solvers use), plus `lgamma`, `lbeta` and `inv_beta_reg`.
-The crate is evaluated by `examples/accuracy_probe.rs` (built here with
+The crate is evaluated by `scripts/accuracy_probe.rs` (built here with
 `cargo build --release --example accuracy_probe --features dist`, a no-op when
 current); mpmath is a development tool only, never a crate or CI dependency.
 

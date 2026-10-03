@@ -1,6 +1,6 @@
 //! Evaluates a crate function by the name the accuracy harness
 //! (`scripts/accuracy_sweep.py`) gives it, at exact inputs. Shared by
-//! `examples/accuracy_probe.rs` (the sweep's evaluator) and
+//! `scripts/accuracy_probe.rs` (the sweep's evaluator) and
 //! `tests/accuracy.rs` (the replay of exported points), so both read the same
 //! names.
 //!
