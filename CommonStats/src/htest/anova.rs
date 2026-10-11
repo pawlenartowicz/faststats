@@ -11,6 +11,20 @@ fn f_sf(f: f64, d1: f64, d2: f64) -> f64 {
     betai(d2 / 2.0, d1 / 2.0, x)
 }
 
+/// Lower-tail probability for an F statistic: betai(d1/2, d2/2, d1*F/(d1*F + d2)),
+/// evaluated directly so a small cdf keeps its relative accuracy (1 − sf would
+/// keep only ε absolute). The argument is set to 1 where d1*F is ∞ (F = ∞ or
+/// an overflowing product), where the quotient would be ∞/∞.
+fn f_cdf(f: f64, d1: f64, d2: f64) -> f64 {
+    let num = d1 * f;
+    let x = if num == f64::INFINITY {
+        1.0
+    } else {
+        num / (num + d2)
+    };
+    betai(d1 / 2.0, d2 / 2.0, x)
+}
+
 /// ANOVA sums for `groups`: (grand_n, SSB, SSW). Each group is NaN-omitted and
 /// needs ≥ 2 finite values. Shared by [`anova_one_way`] and
 /// [`eta_squared`](crate::htest::effect::eta_squared).
@@ -71,7 +85,7 @@ pub fn anova_one_way(groups: &[&[f64]]) -> Result<TestResult, StatError> {
 
 /// Two-sided F-test for equality of two variances, F = var(`a`)/var(`b`).
 ///
-/// p = 2·min(sf, 1 − sf); the `df` field carries d1 = nA − 1 (d2 = nB − 1). Each
+/// p = min(1, 2·min(cdf, sf)), each tail evaluated directly; the `df` field carries d1 = nA − 1 (d2 = nB − 1). Each
 /// group NaN dropped under Omit, needs ≥ 2 finite values.
 /// [`StatError::TooFewObservations`]. Matches R `var.test(a, b)$p.value`
 /// (`tests/fixtures/ftest.json`).
@@ -79,9 +93,16 @@ pub fn f_test_var(a: &[f64], b: &[f64]) -> Result<TestResult, StatError> {
     let (sa, sb) = (checked_variance(a)?, checked_variance(b)?);
     let (d1, d2) = (sa.count() as f64 - 1.0, sb.count() as f64 - 1.0);
     let f = sa.var_sample() / sb.var_sample();
-    // two-sided: 2*min(sf, 1-sf)
-    let sf = f_sf(f, d1, d2);
-    let p = 2.0 * sf.min(1.0 - sf);
+    // Two-sided: twice the smaller tail, each from its own betai so the lower
+    // tail is not formed as 1 − sf.
+    // `f64::min` drops a NaN, so a NaN tail (F = 0/0 for two constant
+    // samples) is passed on explicitly, as R does.
+    let (lo, hi) = (f_cdf(f, d1, d2), f_sf(f, d1, d2));
+    let p = if lo.is_nan() || hi.is_nan() {
+        f64::NAN
+    } else {
+        (2.0 * lo.min(hi)).min(1.0)
+    };
     Ok(TestResult {
         statistic: f,
         df: d1,

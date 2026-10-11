@@ -13,7 +13,7 @@
 //! ## Accuracy
 //!
 //! Worst error ratio `r` measured by `scripts/accuracy_sweep.py` against
-//! mpmath (81453 points): `r` = relative error / (max(κ, 1)·ε), κ the
+//! mpmath (82477 points): `r` = relative error / (max(κ, 1)·ε), κ the
 //! condition number over all real inputs, ε = 2⁻⁵²; for a log output the
 //! absolute error over the sensitivity of the log. `r ≤ 10`: at the accuracy
 //! the problem allows; `(review)` up to 1000; `(bug)` above it, a structural error;
@@ -25,22 +25,22 @@
 //! |---|---|---|---|---|---|---|
 //! | Normal | 0.54 | 0.58 | 0.96 | 1.1 | 1.1 | 0.97 |
 //! | StudentT | 2.2 | 2.2 | 2.3e2 (review) | 6.2 | 4.2 | 4.2 |
-//! | ChiSquared | 1.8 | 3.1 | 5.8e2 (review) | 2.0e2 (review) | 1.1 | 2.7 |
-//! | FisherF | 1.8e298 (hard) | 1.8e298 (hard) | 2.0e3 (bug) | 1.7e2 (review) | inf (bug) | inf (bug) |
+//! | ChiSquared | 1.8 | 3.1 | 6.3 | 5.4 | 1.1 | 2.2 |
+//! | FisherF | 5.8 | 5.8 | 5.6 | 6.2 | 9.9 | 14 (review) |
 //! | Uniform | 0.46 | 0.63 | 0.44 | 0.32 | 0.47 | 0.71 |
 //! | Exponential | 0.43 | 0.46 | 0.63 | 0.77 | 0.5 | 0.57 |
 //! | Cauchy | 0.57 | 0.84 | 1.1 | 1 | 0.51 | 0.51 |
 //! | Weibull | 0.55 | 0.36 | 1.3e2 (review) | 2.8 | 0.61 | 0.69 |
 //! | LogNormal | 0.77 | 0.55 | 1.4 | 0.95 | 0.76 | 0.76 |
-//! | Gamma | 1.3 | 3.8 | 5.4e2 (review) | 6.8 | 1.8 | 0.98 |
-//! | Beta | 3.3 | 14 (review) | 2.0e2 (review) | 13 (review) | 5.5 | 2.7 |
-//! | InverseGaussian | 1.1 | 2.5 | 1.5e2 (review) | 3.3 | 22 (review) | 32 (review) |
+//! | Gamma | 1.3 | 3.8 | 6.1 | 5.7 | 1.8 | 1.3 |
+//! | Beta | 3.3 | 4.2 | 1.5e2 (review) | 1.5e2 (review) | 5.5 | 1.8 |
+//! | InverseGaussian | 1.1 | 2.5 | 1.5e2 (review) | 3.3 | 2.1 | 2.2 |
 //! <!-- accuracy:end -->
 
 #[cfg(feature = "rng")]
 use crate::dist::Sampler;
 use crate::dist::{
-    Bound, ContinuousCdf, ContinuousDensity, Distribution, gamma_log_density,
+    Bound, ContinuousCdf, ContinuousDensity, Distribution, gamma_density, gamma_log_density,
     gamma_log_density_consts, gamma_log_density_with, norm_quantile,
 };
 use crate::error::StatError;
@@ -496,11 +496,13 @@ impl Distribution for ChiSquared {
 }
 
 impl ContinuousDensity for ChiSquared {
+    /// `Gamma(k/2, ½)`'s density, from the incomplete gamma prefactor
+    /// (`gamma_density`).
     fn density(&self, x: f64) -> f64 {
         if x < 0.0 {
             return 0.0;
         }
-        libm::exp(self.log_density(x))
+        gamma_density(0.5 * self.k, 0.5, x)
     }
     fn log_density(&self, x: f64) -> f64 {
         // χ²(k) = Gamma(shape k/2, rate 1/2).
@@ -566,22 +568,39 @@ impl Sampler for ChiSquared {
 /// multiplies a step by `e^{100}` and more. So every evaluated `x` tightens a
 /// bracket `lo < root < hi` (`lo = 0`, `hi = ∞` until found). A step that
 /// leaves the bracket or is not finite is replaced by the geometric midpoint
-/// `√lo·√hi`, bisection in `ln x`: ~57 halvings narrow the whole f64 range to
-/// the stopping tolerance. Once both ends are found, so is a step longer than
+/// `√lo·√hi`, bisection in `ln x` (the plain midpoint once `hi < 2·lo`, where
+/// the two agree to `(hi/lo − 1)²` and the plain one stays inside the
+/// bracket): ~62 halvings narrow the whole f64 range to adjacent floats. Once
+/// both ends are found, so is a step longer than
 /// half the step before the last one (Numerical Recipes §9.4, `rtsafe`), which
 /// stops Newton cycling where the mass carries rounding noise, as `betai` does
 /// at large shapes.
 /// While one side is open, `x` jumps to 1 or squares away from it, doubling
 /// `|ln x|`, which reaches either end of the range in ~12 steps.
 ///
-/// Stops on a Newton step, or a bisection step, below 1e-14 relative to `x`
-/// (not to `1 + x`: roots sit many decades below 1); the result never leaves
-/// the bracket. Returns ∞ when `f64::MAX` still lies below the root and 0 when
-/// the smallest subnormal still lies above it, and NaN when, with a side still
-/// open, the mass is NaN at the point the next jump would go to (so at every
-/// point it would try). That test, like every residual,
-/// reads `ln_mass`, so callers form it in logs where the mass or its argument
-/// leaves the normal range: the t, χ², F and Gamma tails through `ln_betai`,
+/// Stops on a Newton step below 1e-14 relative to `x` (not to `1 + x`: roots
+/// sit many decades below 1) from a residual below 1e-8, the result kept
+/// inside the bracket. The residual test matters where the mass is so steep
+/// that 1e-14 is many ulp of change in it: at `InverseGaussian(8.3e-34, 2.81)`
+/// one ulp moves the cdf from 2e-33 to 2e-127, and a 26-ulp step from a
+/// residual of 249 lands 24 ulp off. A converged step leaves a residual of at
+/// most the slope `d ln mass/d ln x` times 1e-14, under 1e-8 for slopes to
+/// 1e6. Above that no float may meet the residual test, so a step below 1e-14
+/// from a larger residual reads the adjacent float on the root side and, where
+/// the residual changes sign there, returns the one of the two with the
+/// smaller residual (one evaluation, in place of bisecting down to adjacent
+/// floats). A Newton step that rounds to no change goes to bisection. Where
+/// Newton keeps failing, the solver stops once bisection has closed the bracket
+/// to adjacent floats and returns the end with the smaller residual. A fixed
+/// stop for bisection too would leave the root up to that tolerance off where
+/// the mass jumps across it, as for a distribution narrower than it
+/// (`InverseGaussian(7.5e-47, 35204)`, spread 5e-26: 26 ulp). Returns ∞
+/// when `f64::MAX` still lies below the root and 0 when the smallest subnormal
+/// still lies above it, and NaN when, with a side still open, the mass is NaN
+/// at the point the next jump would go to (so at every point it would try).
+/// That test, like every residual, reads `ln_mass`, so callers form it in
+/// logs where the mass or its argument leaves the normal range: the t, χ², F
+/// and Gamma tails through `ln_betai`,
 /// `ln_gammp` and `ln_gammq`, and `InverseGaussian::ln_cdf` and `ln_sf`.
 /// `ln` of a mass rounded to the subnormal grid keeps only its remaining bits
 /// (~12 at 1e-320) and moves in steps, and a mass that underflows to 0 puts
@@ -596,8 +615,12 @@ fn bracketed_newton(
 ) -> f64 {
     const MIN_SUBNORMAL: f64 = 5e-324;
     const TOL: f64 = 1e-14;
+    const RESID_TOL: f64 = 1e-8;
     let ln_target = libm::log(target);
     let (mut lo, mut hi) = (0.0, f64::INFINITY);
+    // Residuals at `lo` and `hi`, for the end returned from a bracket closed
+    // to adjacent floats.
+    let (mut resid_lo, mut resid_hi) = (f64::NAN, f64::NAN);
     // Relative sizes of the last two steps, for the `rtsafe` progress test.
     let (mut step_last, mut step_before) = (f64::INFINITY, f64::INFINITY);
     let mut x = if seed > 0.0 && seed < f64::INFINITY {
@@ -616,9 +639,9 @@ fn bracketed_newton(
         // bracket alone.
         if !resid.is_nan() {
             if (resid < 0.0) != upper {
-                lo = x;
+                (lo, resid_lo) = (x, resid);
             } else {
-                hi = x;
+                (hi, resid_hi) = (x, resid);
             }
         }
         let ln_scale = ln_m - ln_pdf(x) - if in_ln_x { libm::log(x) } else { 0.0 };
@@ -630,16 +653,42 @@ fn bracketed_newton(
             x + step
         };
         let newton_step = libm::fabs(newton - x) / x;
-        if newton_step <= TOL {
+        if newton_step <= TOL && libm::fabs(resid) <= RESID_TOL {
             return if newton >= lo && newton <= hi {
                 newton
             } else {
                 x
             };
         }
+        // A step that small from a larger residual: the mass is too steep for
+        // any float to meet the residual test. If the residual changes sign
+        // at the adjacent float on the root side, the root lies between the
+        // two, and the closer of them is the answer.
+        if newton_step <= TOL && resid.is_finite() {
+            let below = (resid < 0.0) != upper;
+            let nb = if below {
+                f64::from_bits(x.to_bits() + 1)
+            } else {
+                f64::from_bits(x.to_bits() - 1)
+            };
+            if nb > 0.0 && nb < f64::INFINITY {
+                let resid_nb = ln_mass(nb) - ln_target;
+                if !resid_nb.is_nan() && (resid_nb < 0.0) != (resid < 0.0) {
+                    return if libm::fabs(resid_nb) < libm::fabs(resid) {
+                        nb
+                    } else {
+                        x
+                    };
+                }
+            }
+        }
         let closed = lo > 0.0 && hi < f64::INFINITY;
         // False for a NaN step.
-        let next = if newton > lo && newton < hi && !(closed && newton_step > 0.5 * step_before) {
+        let next = if newton > lo
+            && newton < hi
+            && newton != x
+            && !(closed && newton_step > 0.5 * step_before)
+        {
             newton
         } else if hi == f64::INFINITY {
             if lo == f64::MAX {
@@ -659,6 +708,8 @@ fn bracketed_newton(
             } else {
                 (hi * hi.min(0.5)).max(MIN_SUBNORMAL)
             }
+        } else if hi < 2.0 * lo {
+            lo + 0.5 * (hi - lo)
         } else {
             libm::sqrt(lo) * libm::sqrt(hi)
         };
@@ -669,14 +720,71 @@ fn bracketed_newton(
             return f64::NAN;
         }
         (step_before, step_last) = (step_last, libm::fabs(next - x) / x);
-        // Only a closed bracket makes a small step mean convergence: an
-        // open-side jump to 1 from an `x` within 1e-14 of 1 is also small.
-        if step_last <= TOL && closed {
-            return next;
+        // The midpoint of two adjacent floats rounds onto one of them: the
+        // bracket can narrow no further.
+        if closed && (next <= lo || next >= hi) {
+            return if libm::fabs(resid_lo) <= libm::fabs(resid_hi) {
+                lo
+            } else {
+                hi
+            };
         }
         x = next;
     }
     x
+}
+
+/// One Newton step on `mass(x) − target` in `ln x` from the root `x` of
+/// `bracketed_newton`, `mass` the cdf (sf for `upper`) and `ln_pdf` the log
+/// density. That solver's residual `ln mass − ln target` carries `|ln
+/// target|·ε/2` absolute, so it fixes the root only to `|ln target|·ε/(2·s)`
+/// relative, `s = |d ln mass/d ln x|` (r 13 at `F(16, 1e-100).quantile(1e-100)`,
+/// `s = 0.46`, up to ~70 there). The linear mass has no `|ln target|` in its
+/// residual, so where it is more precise than that, one step on it moves `x`
+/// within that band: `(mass − target)/mass` times `mass/(x·pdf) = 1/s`, the
+/// latter from logs (the pdf underflows in a far tail:
+/// `F(1e-300, 15.99).isf(1e-300)`) and needed only to a few digits.
+///
+/// The step is kept only where it lowers the linear residual, `|mass(x′) −
+/// target| < |mass(x) − target|`, at one more evaluation of the mass: where
+/// the mass's own error is the larger (the bulk at a small slope:
+/// `F(0.072, 0.020).isf(0.065)`, 63ε kept from 161ε) or the mass jumps by more
+/// than that between adjacent floats (an `InverseGaussian` of spread `√(μ/λ)`
+/// below 1e-15: `IG(3.2e-22, 3.9e10).isf(0.54)` moved 4e4 ulp unchecked), the
+/// step does not lower it. In the bulk it also corrects the log solve's own
+/// `ln` mass errors (`F(5.3e11, 6.9).isf(0.5)`: r 36 → 1). And only for a step
+/// below 1e-10 relative, the band's width at most, which also leaves `x` where
+/// the log density is NaN or infinite (`IG(1e300, 1e-300).quantile(1e-300)`,
+/// `IG(1, 5e-324).isf(1e-100)`), and for a subnormal mass, which has no bits
+/// to compare.
+fn polish_root(
+    x: f64,
+    target: f64,
+    upper: bool,
+    mass: impl Fn(f64) -> f64,
+    ln_pdf: impl Fn(f64) -> f64,
+) -> f64 {
+    if !(x > 0.0 && x < f64::INFINITY) {
+        return x;
+    }
+    let m0 = mass(x);
+    if m0.is_nan() || m0 < f64::MIN_POSITIVE {
+        return x;
+    }
+    let d = (m0 - target) / m0 * libm::exp(libm::log(m0) - libm::log(x) - ln_pdf(x));
+    if d.is_nan() || libm::fabs(d) > 1e-10 {
+        return x;
+    }
+    let x1 = if upper { x + x * d } else { x - x * d };
+    if !(x1 > 0.0 && x1 < f64::INFINITY) {
+        return x;
+    }
+    // False for a NaN mass at `x1`.
+    if libm::fabs(mass(x1) - target) < libm::fabs(m0 - target) {
+        x1
+    } else {
+        x
+    }
 }
 
 /// `ln I_z(a, b)` from the leading term of
@@ -834,30 +942,102 @@ impl Distribution for FisherF {
 }
 
 impl ContinuousDensity for FisherF {
+    /// `y^a·z^b/(x·B(a, b))` with `(y, z)` from `beta_args`, `a = dfn/2`, `b =
+    /// dfd/2`: the incomplete beta prefactor `y^a·z^b/B(a, b) = m·e^{e}`
+    /// (`brcomp`, with `λ = a − (a + b)·y = a·(1 − x)·z`), as
+    /// `value_of_parts(m/x, e)`. `exp` of `log_density` would carry the
+    /// rounding of that log's terms and of `ln x`. Where `y` or `z` is
+    /// subnormal (their bits are lost) or `m/x` is not normal, the log
+    /// density's own split `q·e^{t}`, `q` the factor `1/x` (`s/x` for the
+    /// half-df `s < 1` whose `ln s` cancels against `−ln x`) that `exp` of the
+    /// log would round with the size of `ln x`: for `dfn, dfd < 16`,
+    /// `small_df_upper` or `small_df_lower`; for one `≥ 16`, `mixed_parts`.
+    /// With both `≥ 16`, and where `q` is not normal, `exp` of `log_density`.
     fn density(&self, x: f64) -> f64 {
         if x <= 0.0 {
             return 0.0;
         }
-        libm::exp(self.log_density(x))
+        if let Some((m, e)) = self.prefactor(x) {
+            let s = m / x;
+            if (f64::MIN_POSITIVE..f64::INFINITY).contains(&s) {
+                return crate::special::incomplete::value_of_parts(s, e);
+            }
+        }
+        let consts = self.ln_density_consts();
+        if x < f64::INFINITY {
+            let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
+            let u = self.dfn / self.dfd * x;
+            let split = if a < 8.0 && b < 8.0 {
+                Some(if u >= 1.0 {
+                    self.small_df_upper(consts.2, x, u, self.ln_1pu(x, u))
+                } else {
+                    self.small_df_lower(x, u)
+                })
+            } else if a < 8.0 || b < 8.0 {
+                let (small, t) = self.mixed_parts(consts.0, x, u);
+                Some((small.min(1.0) / x, t))
+            } else {
+                None
+            };
+            if let Some((q, t)) = split {
+                if (f64::MIN_POSITIVE..f64::INFINITY).contains(&q) {
+                    return crate::special::incomplete::value_of_parts(q, t);
+                }
+            }
+        }
+        libm::exp(self.log_density_with(consts, x))
     }
     fn log_density(&self, x: f64) -> f64 {
+        // One evaluation: form only the constants the small-df branch at `x`
+        // reads (`c₂` for `u ≥ 1`, else `k` and `c₁`), not all three as the
+        // solvers do once per solve.
+        let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
+        if a < 8.0 && b < 8.0 && x > 0.0 && x < f64::INFINITY {
+            let u = self.dfn / self.dfd * x;
+            if u >= 1.0 {
+                let (q, t) = self.small_df_upper(small_df_c2(a, b), x, u, self.ln_1pu(x, u));
+                return libm::log(q) + t;
+            }
+            let k = -crate::special::lbeta(a, b);
+            return self.log_density_with((k, a * libm::log(self.dfn / self.dfd), f64::NAN), x);
+        }
         self.log_density_with(self.ln_density_consts(), x)
     }
 }
 
 impl FisherF {
+    /// `(m, e)` with `y^a·z^b/B(a, b) = m·e^{e}` at `x > 0` (`brcomp`, see
+    /// `density`); `None` at `x = ∞` and where `y` or `z` is subnormal.
+    fn prefactor(&self, x: f64) -> Option<(f64, f64)> {
+        if x == f64::INFINITY {
+            return None;
+        }
+        let (y, z) = self.beta_args(x);
+        if y < f64::MIN_POSITIVE || z < f64::MIN_POSITIVE {
+            return None;
+        }
+        let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
+        // `(1 − x)·z` first: it is about `−dfd/dfn` where `a·(1 − x)` overflows.
+        let lambda = a * ((1.0 - x) * z);
+        Some(crate::special::incomplete::brcomp(a, b, y, z, lambda, true))
+    }
     /// The `x`-free terms of `log_density`, formed once per quantile solve:
     /// `(k, c₁, c₂)` for the branch `log_density_with` takes, with `a = dfn/2`,
-    /// `b = dfd/2`. Both `< 8`: `(−ln B(a, b), a·ln(dfn/dfd), 0)`. Both `≥ 8`:
+    /// `b = dfd/2`. Both `< 8`: `(−ln B(a, b), a·ln(dfn/dfd), −ln B(a, b) −
+    /// ln b)`, the last as `ln(Γ(1 + a + b)/(Γ(1 + a)·Γ(1 + b))) −
+    /// ln(1 + b/a)` (from `Γ(s) = Γ(1 + s)/s`), which does not cancel where a
+    /// tiny `b` makes `−ln B ≈ ln b` large. Both `≥ 8`:
     /// `(½·ln(ab/((a + b)·2π)) − bcorr(a, b), ln x₀, ln y₀)`, `x₀ = a/(a + b)`,
-    /// `y₀ = b/(a + b)`. One `≥ 8`: `(fisherf_mixed_const(small, large), 0, 0)`.
+    /// `y₀ = b/(a + b)`. One `≥ 8`: `(fisherf_mixed_const(small, large), 0, 0)`,
+    /// which leaves out the small half-df's `ln s` where `s < 1` (see
+    /// `log_density_with`).
     fn ln_density_consts(&self) -> (f64, f64, f64) {
         let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
         if a < 8.0 && b < 8.0 {
             (
                 -crate::special::lbeta(a, b),
                 a * libm::log(self.dfn / self.dfd),
-                0.0,
+                small_df_c2(a, b),
             )
         } else {
             self.ln_density_consts_large_df()
@@ -887,8 +1067,14 @@ impl FisherF {
     /// sum carries `ε·a·|ln|` (2e5 absolute at `dfn = 1e20`). Hence, by the
     /// sizes of `a` and `b`:
     ///
-    /// - both `< 8`: `a·ln(dfn/dfd) + (a − 1)·ln x − (a + b)·ln(1 + u) − ln B`,
-    ///   whose cancellation is bounded by `8·ε·|ln|`;
+    /// - both `< 8`, `u ≥ 1`: `ln(b/x) + a·ln y + b·ln z + c₂` (`small_df_upper`).
+    ///   With `b/x = a/u ≤ a`, every term but the bounded `c₂` is at most
+    ///   `ln 8`, so none cancels: the sum of the next item's terms does where a
+    ///   tiny `dfd` makes `a·ln(dfn/dfd)`, `(a − 1)·ln x` and `−ln B` each
+    ///   thousands (`F(15.99, 1e-300)`, `x = 6e-294`, `ln f = −16.3`);
+    /// - both `< 8`, `u < 1`: `a·ln(dfn/dfd) + (a − 1)·ln x − (a + b)·ln(1 +
+    ///   u) − ln B`; where those terms exceed 16 in size, `ln m + e − ln x`
+    ///   with `m·e^{e}` the `brcomp` prefactor `density` uses, if formed;
     /// - both `≥ 8`: the saddle-point form of `brcomp` (DiDonato & Morris 1992):
     ///   `k + a·(ln(1 + e₁) − e₁) + b·(ln(1 + e₂) − e₂) − ln x` with
     ///   `1 + e₁ = y/x₀`, `1 + e₂ = z/y₀`. `a·e₁ + b·e₂ = 0`, and both are
@@ -899,7 +1085,10 @@ impl FisherF {
     ///   (`fisherf_mixed_const`), so the density is written with `a·z` in place
     ///   of `z`, which is `dfn/(2(1 + u))`, the scale-free `dfd/(2x)` as
     ///   `dfn → ∞` (the `dfd/χ²_dfd` limit). `a·ln y` is `−a·ln(1 + 1/u)`, and
-    ///   `−dfd/(2x)` where `u ≥ 1e17`. The mirror for large `b`.
+    ///   `−dfd/(2x)` where `u ≥ 1e17`. The mirror for large `b`. For `b < 1` the
+    ///   `−ln Γ(b) = ln b − ln Γ(1 + b)` of `ln B` is split so that `ln b` and
+    ///   `−ln x` enter as one `ln(b/x)`: at a tiny `b` they are each hundreds
+    ///   and cancel (`F(16, 1e-100)`, `x = 5.7e-100`, `ln f = −2.5`).
     #[inline(always)]
     fn log_density_with(&self, (k, c1, c2): (f64, f64, f64), x: f64) -> f64 {
         if x <= 0.0 || x == f64::INFINITY {
@@ -910,47 +1099,76 @@ impl FisherF {
         let r = m / n;
         let u = r * x;
         if a < 8.0 && b < 8.0 {
-            // ln(1 + u). Where `u` overflows it is `ln u + log1p(1/u)`, and the
-            // last term is below 1e-308.
-            let ln_kernel = if u.is_finite() {
-                libm::log1p(u)
-            } else {
-                libm::log(m) - libm::log(n) + libm::log(x)
-            };
-            return c1 + (a - 1.0) * libm::log(x) - (a + b) * ln_kernel + k;
+            let ln_kernel = self.ln_1pu(x, u);
+            if u >= 1.0 {
+                let (q, t) = self.small_df_upper(c2, x, u, ln_kernel);
+                return libm::log(q) + t;
+            }
+            let terms = [c1, (a - 1.0) * libm::log(x), k];
+            let sum = terms[0] + terms[1] - (a + b) * ln_kernel + terms[2];
+            if terms.iter().map(|t| t.abs()).sum::<f64>() > 16.0 {
+                if let Some((m, e)) = self.prefactor(x) {
+                    return libm::log(m) - libm::log(x) + e;
+                }
+            }
+            return sum;
         }
         self.log_density_large_df((k, c1, c2), x, r, u)
+    }
+    /// `ln(1 + u)` for `u = dfn·x/dfd` at finite `x > 0`. Where `u` overflows
+    /// it is `ln u + log1p(1/u)`, and the last term is below 1e-308.
+    fn ln_1pu(&self, x: f64, u: f64) -> f64 {
+        if u.is_finite() {
+            libm::log1p(u)
+        } else {
+            libm::log(self.dfn) - libm::log(self.dfd) + libm::log(x)
+        }
+    }
+    /// `(q, t)` with the density `q·e^{t}` for `dfn, dfd < 16` at `u ≥ 1`,
+    /// given `c₂ = −ln B(a, b) − ln b` (`ln_density_consts`) and
+    /// `ln_1pu = ln(1 + u)`: `y^a·z^b/(x·B) = (b/x)·e^{c₂ + a·ln y + b·ln z}`
+    /// with `ln y = −log1p(1/u)` and `ln z = −ln(1 + u)`; `q` is `b/x` where
+    /// that is normal, else 1 with `ln(b/x)` moved to `t`.
+    fn small_df_upper(&self, c2: f64, x: f64, u: f64, ln_1pu: f64) -> (f64, f64) {
+        let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
+        let t = c2 - a * libm::log1p(1.0 / u) - b * ln_1pu;
+        let q = b / x;
+        if q >= f64::MIN_POSITIVE {
+            (q, t)
+        } else {
+            (
+                1.0,
+                t + libm::log(self.dfd) - core::f64::consts::LN_2 - libm::log(x),
+            )
+        }
+    }
+    /// `(q, t)` with the density `q·e^{t}` for `dfn, dfd < 16` at `u < 1`, the
+    /// mirror of `small_df_upper`: `y^a·z^b/(x·B) = (a/x)·e^{c₂' + a·ln u −
+    /// (a + b)·ln(1 + u)}`, `c₂' = −ln B(a, b) − ln a` (`small_df_c2(b, a)`),
+    /// with `ln y = ln u − ln(1 + u)` and `ln z = −ln(1 + u)`. `a·ln u` is the
+    /// density's own sensitivity to `dfn`, so its rounding stays within the
+    /// conditioning; `exp` of the whole log would add that of `ln x`. `q` is
+    /// `a/x` where that is normal, else 1 with `ln(a/x)` moved to `t`.
+    fn small_df_lower(&self, x: f64, u: f64) -> (f64, f64) {
+        let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
+        let t = small_df_c2(b, a) + a * self.ln_u(x, u) - (a + b) * libm::log1p(u);
+        let q = a / x;
+        if q >= f64::MIN_POSITIVE {
+            (q, t)
+        } else {
+            (
+                1.0,
+                t + libm::log(self.dfn) - core::f64::consts::LN_2 - libm::log(x),
+            )
+        }
     }
     /// `log_density_with` where `dfn` or `dfd` is `≥ 16`, given `r = dfn/dfd`
     /// and `u = r·x`; kept out of line so the small-df branch stays small.
     #[inline(never)]
     fn log_density_large_df(&self, (k, c1, c2): (f64, f64, f64), x: f64, r: f64, u: f64) -> f64 {
-        let (m, n) = (self.dfn, self.dfd);
-        let (a, b) = (0.5 * m, 0.5 * n);
-        // ln u where `u` is subnormal, underflows or overflows.
-        let ln_u = || {
-            if (f64::MIN_POSITIVE..f64::INFINITY).contains(&u) {
-                libm::log(u)
-            } else {
-                libm::log(m) - libm::log(n) + libm::log(x)
-            }
-        };
-        // ln(1 + u), as above.
-        let ln_1pu = || {
-            if u < f64::INFINITY {
-                libm::log1p(u)
-            } else {
-                ln_u()
-            }
-        };
-        // ln y.
-        let ln_y = || {
-            if u >= 1.0 {
-                -libm::log1p(1.0 / u)
-            } else {
-                ln_u() - libm::log1p(u)
-            }
-        };
+        let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
+        let ln_y = || self.ln_y(x, u);
+        let ln_1pu = || self.ln_1pu(x, u);
         let ln_x = libm::log(x);
         if a >= 8.0 && b >= 8.0 {
             // `ρ = e/(2 + e)` and `1/(1 − ρ) = 1 + e/2` for each `e`, from
@@ -977,9 +1195,34 @@ impl FisherF {
             };
             return k + a * t1 + b * t2 - ln_x;
         }
+        let (small, t) = self.mixed_parts(k, x, u);
+        // `−ln x` plus, for a small half-df `s < 1`, the `ln s` that
+        // `fisherf_mixed_const` leaves out, as ln(s/x) (from the two logs where
+        // the quotient is not normal).
+        if small >= 1.0 {
+            return t - ln_x;
+        }
+        let q = small / x;
+        if (f64::MIN_POSITIVE..f64::INFINITY).contains(&q) {
+            t + libm::log(q)
+        } else {
+            t + (libm::log(small) - ln_x)
+        }
+    }
+    /// The mixed branch of `log_density_large_df` (one half-df `≥ 8`) as `(s,
+    /// t)`, `s` the small half-df: the log density is `t − ln x`, or `t +
+    /// ln(s/x)` for `s < 1` (`k = fisherf_mixed_const(s, ·)` leaves `ln s` out
+    /// there).
+    fn mixed_parts(&self, k: f64, x: f64, u: f64) -> (f64, f64) {
+        let (m, n) = (self.dfn, self.dfd);
+        let (a, b) = (0.5 * m, 0.5 * n);
         if a >= 8.0 {
             // a·ln y = −a·log1p(1/u); a/u = dfd/(2x) exactly.
-            let a_ln_y = if u >= 1e17 { -0.5 * n / x } else { a * ln_y() };
+            let a_ln_y = if u >= 1e17 {
+                -0.5 * n / x
+            } else {
+                a * self.ln_y(x, u)
+            };
             // ln(a·z) = ln(dfn/(2(1 + u))), or ln(dfd/(2x)) where `1 + u`
             // overflows.
             let d = 1.0 + u;
@@ -990,16 +1233,16 @@ impl FisherF {
                 if q >= f64::MIN_POSITIVE {
                     libm::log(q)
                 } else {
-                    libm::log(0.5 * n) - ln_x
+                    libm::log(0.5 * n) - libm::log(x)
                 }
             };
-            return k + a_ln_y + b * ln_az - ln_x;
+            return (b, k + a_ln_y + b * ln_az);
         }
         // b·ln z = −b·log1p(u); b·u = dfn·x/2 exactly.
         let b_ln_z = if u <= 1e-17 {
             -0.5 * m * x
         } else {
-            -b * ln_1pu()
+            -b * self.ln_1pu(x, u)
         };
         // ln(b·y) = ln(dfn·x/(2(1 + u))), from logs where that is not normal;
         // `ln b + ln y` for `u ≥ 1`, where `y ≥ ½`.
@@ -1008,25 +1251,64 @@ impl FisherF {
             if by >= f64::MIN_POSITIVE {
                 libm::log(by)
             } else {
-                libm::log(0.5 * m) + ln_x - libm::log1p(u)
+                libm::log(0.5 * m) + libm::log(x) - libm::log1p(u)
             }
         } else {
-            libm::log(b) + ln_y()
+            libm::log(b) + self.ln_y(x, u)
         };
-        k + a * ln_by + b_ln_z - ln_x
+        (a, k + a * ln_by + b_ln_z)
+    }
+    /// `ln u` for `u = dfn·x/dfd` at finite `x > 0`, from the logs of its
+    /// factors where `u` is subnormal, underflows or overflows.
+    fn ln_u(&self, x: f64, u: f64) -> f64 {
+        if (f64::MIN_POSITIVE..f64::INFINITY).contains(&u) {
+            libm::log(u)
+        } else {
+            libm::log(self.dfn) - libm::log(self.dfd) + libm::log(x)
+        }
+    }
+    /// `ln y = ln(u/(1 + u))` at finite `x > 0`.
+    fn ln_y(&self, x: f64, u: f64) -> f64 {
+        if u >= 1.0 {
+            -libm::log1p(1.0 / u)
+        } else {
+            self.ln_u(x, u) - libm::log1p(u)
+        }
     }
 }
 
-/// `−ln B(s, l) − s·ln l` for `l ≥ 8`, `s > 0`:
+/// `−ln B(s, l) − s·ln l` for `l ≥ 8`, `0 < s < 8`, less `ln s` where `s < 1`:
 /// `−ln Γ(s) + (s + l − ½)·ln(1 + s/l) − s − (δ(l) − δ(s + l))` with the
-/// Stirling correction `δ` (from `algdiv`, DiDonato & Morris 1992). `O(s²/l)` apart from `ln Γ(s)`, where `ln B` and
-/// `s·ln l` are each `~s·ln l`. The constant of `FisherF::log_density_with`
-/// when only one half-df is `≥ 8`.
+/// Stirling correction `δ` (from `algdiv`, DiDonato & Morris 1992), and
+/// `−ln Γ(1 + s)` in place of `−ln Γ(s) = ln s − ln Γ(1 + s)` for `s < 1`.
+/// `O(s²/l)` apart from `ln Γ(s)`, where `ln B` and `s·ln l` are each
+/// `~s·ln l`. The constant of `FisherF::log_density_with` when only one
+/// half-df is `≥ 8`, which adds a left-out `ln s` as part of `ln(s/x)`.
 fn fisherf_mixed_const(s: f64, l: f64) -> f64 {
     use crate::special::elementary::stirling_del;
-    -crate::special::lgamma(s) + (s + l - 0.5) * libm::log1p(s / l)
-        - s
-        - (stirling_del(l) - stirling_del(s + l))
+    let ln_gamma = if s < 1.0 {
+        lgamma_1p(s)
+    } else {
+        crate::special::lgamma(s)
+    };
+    -ln_gamma + (s + l - 0.5) * libm::log1p(s / l) - s - (stirling_del(l) - stirling_del(s + l))
+}
+
+/// `c₂ = −ln B(a, b) − ln b` of FisherF's small-df density, as
+/// `ln(Γ(1 + a + b)/(Γ(1 + a)·Γ(1 + b))) − ln(1 + b/a)`, which does not cancel
+/// where a tiny `b` makes `−ln B ≈ ln b` large.
+fn small_df_c2(a: f64, b: f64) -> f64 {
+    lgamma_1p(a + b) - lgamma_1p(a) - lgamma_1p(b) - libm::log1p(b / a)
+}
+
+/// `ln Γ(1 + s)` for `0 < s < 16`, at full relative precision next to its zero
+/// `s = 0` (`ln_gamma_1p` up to 1.25, `lgamma(1 + s)` above).
+fn lgamma_1p(s: f64) -> f64 {
+    if s <= 1.25 {
+        crate::special::elementary::ln_gamma_1p(s)
+    } else {
+        crate::special::lgamma(1.0 + s)
+    }
 }
 
 /// Below this, `FisherF` hands the incomplete-beta kernel the small one of
@@ -1210,7 +1492,8 @@ impl FisherF {
     }
     /// Root of `cdf(x) = target` (`upper = false`) or `sf(x) = target`
     /// (`upper = true`), `target ∈ (0, ½]`: Wilson–Hilferty seed on `χ²(dfn)/dfn`,
-    /// then `bracketed_newton` in `ln x`.
+    /// then `bracketed_newton` in `ln x`, then one Newton step on the mass
+    /// itself (`polish_root`).
     fn solve(&self, target: f64, upper: bool) -> f64 {
         let dfn = self.dfn;
         let z = if upper {
@@ -1249,9 +1532,19 @@ impl FisherF {
             }
         };
         let consts = self.ln_density_consts();
-        bracketed_newton(x, target, upper, true, ln_mass, |x| {
+        let x = bracketed_newton(x, target, upper, true, ln_mass, |x| {
             self.log_density_with(consts, x)
-        })
+        });
+        polish_root(
+            x,
+            target,
+            upper,
+            |x| {
+                let (cdf, sf) = self.cdf_sf(x);
+                if upper { sf } else { cdf }
+            },
+            |x| self.log_density(x),
+        )
     }
 }
 
@@ -2046,11 +2339,13 @@ impl Distribution for Gamma {
 }
 
 impl ContinuousDensity for Gamma {
+    /// From the incomplete gamma prefactor at `β·x` (`gamma_density`), not
+    /// as `exp` of `log_density`.
     fn density(&self, x: f64) -> f64 {
         if x < 0.0 {
             return 0.0;
         }
-        libm::exp(gamma_log_density(self.shape, self.rate, x))
+        gamma_density(self.shape, self.rate, x)
     }
     fn log_density(&self, x: f64) -> f64 {
         gamma_log_density(self.shape, self.rate, x)
@@ -2270,6 +2565,12 @@ impl Distribution for Beta {
 }
 
 impl ContinuousDensity for Beta {
+    /// For `0 < x < 1`, the incomplete beta prefactor `x^α·y^β/B(α, β) =
+    /// m·e^{e}` (`brcomp`, DiDonato & Morris 1992), `y = 1 − x`, as
+    /// `value_of_parts(m/(x·y), e)`: `exp` of `log_density` would carry the
+    /// rounding of that log's terms, `−ln B(α, β)` of size `ln(1/α)` at a
+    /// small `α` and `(α − 1)·ln x` against it. Elsewhere, and where
+    /// `m/(x·y)` leaves the normal range, `exp` of `log_density`.
     fn density(&self, x: f64) -> f64 {
         // `(0.0..=1.0).contains(&NaN)` is false, so the range check alone
         // would read a NaN `x` as out of support and return the constant 0.
@@ -2278,6 +2579,16 @@ impl ContinuousDensity for Beta {
         }
         if !(0.0..=1.0).contains(&x) {
             return 0.0;
+        }
+        if 0.0 < x && x < 1.0 {
+            let (a, b) = (self.alpha, self.beta);
+            let y = 1.0 - x;
+            let (m, e) =
+                crate::special::incomplete::brcomp(a, b, x, y, beta_lambda(a, b, x, y), true);
+            let s = m / x / y;
+            if (f64::MIN_POSITIVE..f64::INFINITY).contains(&s) {
+                return crate::special::incomplete::value_of_parts(s, e);
+            }
         }
         libm::exp(self.log_density(x))
     }
@@ -2455,9 +2766,17 @@ impl ContinuousDensity for InverseGaussian {
 
 impl InverseGaussian {
     /// `½·ln(λ/2π)`, the `x`-free term of `log_density`, formed once per
-    /// quantile solve.
+    /// quantile solve. From the two logs where the quotient is not normal (it
+    /// underflows to 0 for a subnormal `λ`); elsewhere from the quotient,
+    /// which keeps one rounding where `ln λ − ln 2π` would keep that of `ln λ`.
     fn ln_norm_const(&self) -> f64 {
-        0.5 * libm::log(self.shape / (2.0 * core::f64::consts::PI))
+        let two_pi = 2.0 * core::f64::consts::PI;
+        let q = self.shape / two_pi;
+        if q >= f64::MIN_POSITIVE {
+            0.5 * libm::log(q)
+        } else {
+            0.5 * (libm::log(self.shape) - libm::log(two_pi))
+        }
     }
     /// `log_density` given `c = ln_norm_const()`.
     fn log_density_with(&self, c: f64, x: f64) -> f64 {
@@ -2690,9 +3009,16 @@ impl InverseGaussian {
             if upper { self.ln_sf(x) } else { self.ln_cdf(x) }
         };
         let c = self.ln_norm_const();
-        bracketed_newton(x, target, upper, false, ln_mass, |x| {
+        let x = bracketed_newton(x, target, upper, false, ln_mass, |x| {
             self.log_density_with(c, x)
-        })
+        });
+        polish_root(
+            x,
+            target,
+            upper,
+            |x| if upper { self.sf(x) } else { self.cdf(x) },
+            |x| self.log_density_with(c, x),
+        )
     }
 }
 

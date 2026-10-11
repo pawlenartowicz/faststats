@@ -231,6 +231,14 @@ mod tests {
         }
         acc.merge(&configured);
         assert!((acc.finalize() - configured.finalize()).abs() < 1e-15);
+        // Draws after the merge are counted against the adopted `observed` and
+        // `side`: 3 is extreme, −3 is not (it would be under `TwoSided`).
+        for x in [3.0, -3.0] {
+            acc.update(x);
+            configured.update(x);
+        }
+        assert!((acc.finalize() - configured.finalize()).abs() < 1e-15);
+        assert!((acc.finalize() - 4.0 / 6.0).abs() < 1e-15);
     }
 
     // numpy.percentile(arange(101), [2.5, 97.5]) == [2.5, 97.5] exactly: pos =

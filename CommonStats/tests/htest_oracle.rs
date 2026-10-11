@@ -191,3 +191,35 @@ fn f_test_var_matches_scipy() {
     assert_close("df1", r.df, fx.df1, DF);
     assert_close("p", r.p_value, fx.p, PVAL);
 }
+
+#[test]
+fn f_test_var_lower_tail_keeps_relative_accuracy() {
+    // var(a)/var(b) ≈ 2.1e-8 puts the two-sided p in the lower tail, where
+    // 2·(1 − sf) would keep only ε absolute. Truth: mpmath (50 digits)
+    // 2·I_x(2, 5/2) at the crate's F, x = 4F/(4F + 5); R `var.test(a, b)$p.value`
+    // gives 2.5861855301152691e-15.
+    let a = [1.0, 1.001, 1.002, 0.999, 1.0005];
+    let b = [0.0, 10.0, 20.0, 5.0, 15.0, 3.0];
+    let r = f_test_var(&a, &b).unwrap();
+    // Relative only: PVAL's absolute floor exceeds the value itself.
+    let rel = Tol {
+        rel: 1e-12,
+        abs: 0.0,
+    };
+    assert_close("p", r.p_value, 2.586_185_530_115_264_8e-15, rel);
+}
+
+#[test]
+fn f_test_var_constant_samples_give_nan() {
+    // F = 0/0; R `var.test(c(5, 5, 5), c(5, 5, 5))$p.value` is NaN, not 1.
+    let r = f_test_var(&[5.0, 5.0, 5.0], &[5.0, 5.0, 5.0]).unwrap();
+    assert!(r.p_value.is_nan(), "p = {}", r.p_value);
+}
+
+#[test]
+fn f_test_var_zero_variance_denominator_gives_zero() {
+    // F = ∞; R `var.test(c(1, 2, 3), c(5, 5, 5))$p.value` is 0, not NaN.
+    let r = f_test_var(&[1.0, 2.0, 3.0], &[5.0, 5.0, 5.0]).unwrap();
+    assert_eq!(r.statistic, f64::INFINITY);
+    assert_eq!(r.p_value, 0.0);
+}

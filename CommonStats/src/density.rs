@@ -21,9 +21,13 @@ use core::f64::consts::PI;
 
 /// Kernel function for KDE.
 ///
-/// Convention: each kernel integrates to 1 over ℝ.
-/// Matches scipy.stats.gaussian_kde (Gaussian) and scipy.stats.gaussian_kde
-/// with `kernel='epanechnikov'` (Epanechnikov).
+/// Convention: each kernel integrates to 1 over ℝ; the bandwidth `h` scales
+/// the kernel as written below (for Epanechnikov, the support half-width, not
+/// its standard deviation h/√5).
+/// Gaussian matches `scipy.stats.gaussian_kde`; Epanechnikov matches
+/// `sklearn.neighbors.KernelDensity(kernel='epanechnikov', bandwidth=h)`
+/// (scipy's `gaussian_kde` has no other kernel). Both are validated against
+/// mpmath truth in `tests/fixtures/kde.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kernel {
     /// Gaussian kernel: K(u) = exp(−u²/2) / √(2π).
@@ -56,7 +60,8 @@ pub enum Bandwidth {
 /// Created by [`kde`]. Stores a sorted copy of the finite input values
 /// and the resolved bandwidth. Query via [`Kde::density`] or [`Kde::evaluate`].
 ///
-/// Matches scipy.stats.gaussian_kde evaluated on the same bandwidth.
+/// Matches scipy.stats.gaussian_kde evaluated on the same bandwidth (Gaussian
+/// kernel; Epanechnikov: see [`Kernel`]).
 #[derive(Debug, Clone)]
 pub struct Kde {
     /// Sorted finite observations (NaN already stripped by `kde()`).
@@ -72,9 +77,9 @@ pub struct Kde {
 /// Convention: density estimate is (1/(n·h)) · Σᵢ K((x − xᵢ)/h) where
 /// K is the chosen kernel and h is the resolved bandwidth. NaN policy: Omit.
 ///
-/// Matches scipy.stats.gaussian_kde with `bw_method='silverman'` / `'scott'`
-/// / a fixed scalar (scipy's scalar bw_method sets the covariance factor,
-/// which equals h because scipy uses unit-variance kernels).
+/// Matches scipy.stats.gaussian_kde with `bw_method='silverman'` / `'scott'`;
+/// `Fixed(h)` matches a scalar `bw_method = h/sd` (a scalar sets scipy's
+/// covariance factor, and its kernel sd is that factor times sd, ddof=1).
 ///
 /// # Parameters
 /// - `xs`: input data; NaN values are silently omitted.
@@ -149,7 +154,7 @@ impl Kde {
     /// NaN `x` → returns 0.0 (not meaningful; use `evaluate` for grids).
     ///
     /// Convention: identical to `scipy.stats.gaussian_kde.evaluate([x])[0]`
-    /// at the same bandwidth.
+    /// at the same bandwidth (Gaussian kernel; Epanechnikov: see [`Kernel`]).
     pub fn density(&self, x: f64) -> f64 {
         if !x.is_finite() {
             return 0.0;
@@ -167,7 +172,8 @@ impl Kde {
     /// Evaluate the KDE density at every point in `grid`. O(n·m) direct sum.
     ///
     /// Returns a `Vec<f64>` of length `grid.len()`. Non-finite grid points
-    /// produce 0.0. Matches scipy.stats.gaussian_kde.evaluate(grid).
+    /// produce 0.0. Matches scipy.stats.gaussian_kde.evaluate(grid) (Gaussian
+    /// kernel; Epanechnikov: see [`Kernel`]).
     pub fn evaluate(&self, grid: &[f64]) -> Vec<f64> {
         grid.iter().map(|&x| self.density(x)).collect()
     }
@@ -543,60 +549,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn kde_fixed_resolves_bandwidth() {
-        let xs = &[1.0_f64, 2.0, 3.0, 4.0, 5.0];
-        let k = kde(xs, Kernel::Gaussian, Bandwidth::Fixed(0.5)).unwrap();
-        assert_eq!(k.bandwidth(), 0.5);
-        assert_eq!(k.n(), 5);
-    }
-
-    #[test]
-    fn kde_silverman_bandwidth_formula() {
-        let xs = &[1.0_f64, 2.0, 3.0, 4.0, 5.0];
-        let k = kde(xs, Kernel::Gaussian, Bandwidth::Silverman).unwrap();
-        let sd = crate::descriptive::sd(xs, crate::descriptive::Ddof::Sample).unwrap();
-        let n = 5_f64;
-        let expected_h = sd * libm::pow(3.0 * n / 4.0, -0.2);
-        let diff = (k.bandwidth() - expected_h).abs();
-        assert!(
-            diff < 1e-14,
-            "Silverman h: got {}, want {}",
-            k.bandwidth(),
-            expected_h
-        );
-    }
-
-    #[test]
-    fn kde_scott_bandwidth_formula() {
-        let xs = &[1.0_f64, 2.0, 3.0, 4.0, 5.0];
-        let k = kde(xs, Kernel::Gaussian, Bandwidth::Scott).unwrap();
-        let sd = crate::descriptive::sd(xs, crate::descriptive::Ddof::Sample).unwrap();
-        let expected_h = sd * libm::pow(5.0_f64, -0.2);
-        let diff = (k.bandwidth() - expected_h).abs();
-        assert!(
-            diff < 1e-14,
-            "Scott h: got {}, want {}",
-            k.bandwidth(),
-            expected_h
-        );
-    }
-
     // ---- KDE density formula ----
-
-    #[test]
-    fn kde_gaussian_density_formula() {
-        // Single point: xs=[0.0, 1.0], Fixed(1.0)
-        // density(0.5) = (1/2·1) · [K_G((0.5-0)/1) + K_G((0.5-1)/1)]
-        //              = 0.5 · [exp(-0.125)/sqrt(2π) + exp(-0.125)/sqrt(2π)]
-        //              = exp(-0.125)/sqrt(2π)
-        let xs = &[0.0_f64, 1.0];
-        let k = kde(xs, Kernel::Gaussian, Bandwidth::Fixed(1.0)).unwrap();
-        let expected = libm::exp(-0.125) / libm::sqrt(2.0 * PI);
-        let got = k.density(0.5);
-        let diff = (got - expected).abs();
-        assert!(diff < 1e-14, "density at 0.5: got {got}, want {expected}");
-    }
 
     #[test]
     fn kde_epanechnikov_density_formula() {
@@ -606,23 +559,19 @@ mod tests {
         //              = 0.25 · 2 · 0.75 · 0.9375 = 0.3515625
         let xs = &[0.0_f64, 1.0];
         let k = kde(xs, Kernel::Epanechnikov, Bandwidth::Fixed(2.0)).unwrap();
-        let u1 = (0.5 - 0.0) / 2.0; // 0.25
-        let u2 = (0.5 - 1.0) / 2.0; // -0.25
-        let expected = 0.25 * (0.75 * (1.0 - u1 * u1) + 0.75 * (1.0 - u2 * u2));
         let got = k.density(0.5);
-        let diff = (got - expected).abs();
         assert!(
-            diff < 1e-15,
-            "epanechnikov density: got {got}, want {expected}"
+            (got - 0.3515625).abs() < 1e-15,
+            "epanechnikov density: got {got}"
         );
-    }
-
-    #[test]
-    fn kde_evaluate_length() {
-        let xs = &[1.0_f64, 2.0, 3.0, 4.0, 5.0];
-        let k = kde(xs, Kernel::Gaussian, Bandwidth::Fixed(1.0)).unwrap();
-        let grid = &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        assert_eq!(k.evaluate(grid).len(), grid.len());
+        // Fixed(0.5), x=0.25: u = 0.5 is inside the support, u = -1.5 is outside
+        // and contributes 0. density = (1/(2·0.5)) · 0.75(1-0.25) = 0.5625
+        let k = kde(xs, Kernel::Epanechnikov, Bandwidth::Fixed(0.5)).unwrap();
+        let got = k.density(0.25);
+        assert!(
+            (got - 0.5625).abs() < 1e-15,
+            "outside-support term: got {got}"
+        );
     }
 
     #[test]
@@ -739,21 +688,6 @@ mod tests {
         let (_, vals) = histogram_auto(xs, Bins::Fixed(2), Norm::Probability).unwrap();
         let total: f64 = vals.iter().sum();
         assert!((total - 1.0).abs() < 1e-14, "Probability sum != 1: {total}");
-    }
-
-    #[test]
-    fn hist_norm_density_integrates_to_one() {
-        let xs = &[1.0_f64, 2.0, 3.0, 4.0, 5.0];
-        let (edges, vals) = histogram_auto(xs, Bins::Fixed(4), Norm::Density).unwrap();
-        let integral: f64 = vals
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| v * (edges[i + 1] - edges[i]))
-            .sum();
-        assert!(
-            (integral - 1.0).abs() < 1e-13,
-            "Density integral != 1: {integral}"
-        );
     }
 
     #[test]

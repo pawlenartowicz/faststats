@@ -16,11 +16,12 @@
 //! their exponent as a double-double (Dekker 1971), so its size adds ≈ ε
 //! relative to `e^{exponent}` however large it is, where one rounded f64
 //! exponent carries `|exponent|·ε`. The error of the exponent's own terms
-//! remains: `stirlerr` at a real `NegBinomial` size below 1e-50 adds tens of
-//! ε (143ε relative at 1e-307).
+//! remains, a few ε: at a real `NegBinomial` size `r < 1` the `−½·ln r` of
+//! `δ(r)` (354 at 1e-307) is cancelled against `f` before rounding
+//! (`stirlerr_scaled`), where an f64 `δ(r)` kept 143ε relative at 1e-307.
 #![cfg_attr(not(feature = "dist"), allow(dead_code))]
 
-use crate::special::elementary::{LN_SQRT_2PI, bcorr, stirling_del};
+use crate::special::elementary::{LN_SQRT_2PI, bcorr, ln_gamma_1p, stirling_del};
 
 /// `ln 2π`.
 pub(crate) const LN_2PI: f64 = 2.0 * LN_SQRT_2PI;
@@ -282,7 +283,10 @@ pub(crate) fn ln_beta_saddle_const(a: f64, b: f64) -> f64 {
 /// (Loader's `stirlerr`; it is `stirling_del(x)`, since `lnΓ(x+1) = ln x +
 /// lnΓ(x)`). `stirling_del` from 8, where its fit holds; integers 1–7 from a
 /// table (mpmath); other `x < 8` (a real `NegBinomial` size) as the `lgamma`
-/// difference itself, whose terms are ≤ 17 there, so ≈ 4e-15 absolute.
+/// difference itself, whose terms are ≤ 17 for `x ≥ 1e-7`, so ≈ 4e-15
+/// absolute. Below, the result is ≈ `−½·ln x` (354 at `x = 1e-307`) and keeps
+/// ε relative to that, ε·|ln x|/4 absolute; `binom_saddle` takes `x < 1`
+/// through `stirlerr_scaled` instead.
 pub(crate) fn stirlerr(x: f64) -> f64 {
     const SMALL: [f64; 8] = [
         0.0,
@@ -301,6 +305,14 @@ pub(crate) fn stirlerr(x: f64) -> f64 {
     } else {
         crate::special::lgamma(x + 1.0) - (x + 0.5) * libm::log(x) + x - LN_SQRT_2PI
     }
+}
+
+/// `δ(x) + ½·ln x = lnΓ(1+x) − x·ln x + x − ½·ln 2π` for `0 < x < 1`: the
+/// Stirling error without its `−½·ln x`, which `binom_saddle` cancels against
+/// the factor `x` of `f` instead. Every term is below 1, so ≈ 2ε absolute at
+/// any `x`, where `stirlerr` keeps ε·|ln x|/4.
+fn stirlerr_scaled(x: f64) -> f64 {
+    ln_gamma_1p(x) - x * libm::log(x) + x - LN_SQRT_2PI
 }
 
 /// Deviance term `bd0(x, m) = x·ln(x/m) + m − x ≥ 0` (Loader 2000) as a
@@ -392,6 +404,23 @@ pub(crate) fn bd0_f64(x: f64, m: f64, d: f64) -> f64 {
     x * ln_r - d
 }
 
+/// Double-double `l·c` for `|l.0| ≤ 745` and finite `c > 0`. From `c = 1e290`
+/// (a `NegBinomial` size) `two_prod`'s split of `c` would overflow, from ≈
+/// 1.34e300, into NaN: there the factors are `c·2⁻⁶⁰⁰` and `l·2⁶⁰⁰`, both
+/// exact, and a product past the f64 range is its f64 `−∞` (or `+∞`).
+fn mul_large(l: Dd, c: f64) -> Dd {
+    if c < 1e290 {
+        return dd_mul(l, (c, 0.0));
+    }
+    const SCALE: f64 = f64::from_bits((1023 + 600) << 52); // 2⁶⁰⁰
+    let p = dd_mul((l.0 * SCALE, l.1 * SCALE), (c / SCALE, 0.0));
+    if p.0.is_finite() && p.1.is_finite() {
+        p
+    } else {
+        (l.0 * c, 0.0)
+    }
+}
+
 /// `ln[Γ(a+b+1)/(Γ(a+1)·Γ(b+1)) · s^a·(1−s)^b]` for real `a, b ≥ 0` and `s ∈
 /// (0, ½]`: the binomial log pmf of `a` successes in `n = a + b` trials, with
 /// `1 − s` taken as exact, in Loader's saddle-point form (R's `dbinom_raw`),
@@ -402,19 +431,33 @@ pub(crate) fn bd0_f64(x: f64, m: f64, d: f64) -> f64 {
 /// and `d = a − n·s` are exact double-doubles (`two_prod`), so `d` keeps its
 /// digits near the mode, where it is only ≈ √n against `a ≈ n·s`; `n·(1−s)
 /// = b + d`. `a = 0` / `b = 0` are `E = b·ln(1−s)` / `a·ln s`, `f = 1`. For
-/// `n ≥ 1e290` (beyond the split of `two_prod`) `d` and `E` are f64.
+/// `n ≥ 1e290` (beyond the split of `two_prod`) `d` and `E` are f64. An
+/// argument `x < 1` (a real `NegBinomial` size) is left out of both `δ(x) ≈
+/// −½·ln x` and `f`, which cancel (`stirlerr_scaled`): `f = 2π·a'·b'/n'`, `x'
+/// = max(x, 1)`, and `E − ½·ln f` is unchanged.
 pub(crate) fn binom_saddle(a: f64, b: f64, s: f64) -> (Dd, f64) {
     if a == 0.0 {
-        return (dd_mul(ln_dd(two_sum(1.0, -s)), (b, 0.0)), 1.0);
+        return (mul_large(ln_dd(two_sum(1.0, -s)), b), 1.0);
     }
     if b == 0.0 {
-        return (dd_mul(ln_dd((s, 0.0)), (a, 0.0)), 1.0);
+        return (mul_large(ln_dd((s, 0.0)), a), 1.0);
     }
     let n = a + b;
-    // 2π·a·b/n = 2π·lo/(1 + lo/hi): no overflow for either order.
     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-    let f = 2.0 * core::f64::consts::PI * lo / (1.0 + lo / hi);
-    let delta = stirlerr(n) - stirlerr(a) - stirlerr(b);
+    let f = if hi >= 1.0 {
+        // 2π·lo'·hi/n = 2π·lo'/(1 + lo/hi): no overflow for either order.
+        core::f64::consts::TAU * lo.max(1.0) / (1.0 + lo / hi)
+    } else {
+        core::f64::consts::TAU / n.max(1.0)
+    };
+    let del = |x: f64| {
+        if x < 1.0 {
+            stirlerr_scaled(x)
+        } else {
+            stirlerr(x)
+        }
+    };
+    let delta = del(n) - del(a) - del(b);
     if n >= 1e290 {
         let d = a - n * s;
         let e = delta - bd0_f64(a, n * s, d) - bd0_f64(b, n * (1.0 - s), -d);

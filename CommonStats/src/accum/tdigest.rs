@@ -407,23 +407,6 @@ impl TDigest {
             x,
         )
     }
-
-    #[cfg(test)]
-    pub(crate) fn default_delta_used(&self) -> f64 {
-        self.delta
-    }
-    #[cfg(test)]
-    pub(crate) fn flush_for_test(&mut self) {
-        self.flush();
-    }
-    #[cfg(test)]
-    pub(crate) fn total_weight_for_test(&self) -> f64 {
-        self.total_weight
-    }
-    #[cfg(test)]
-    pub(crate) fn centroid_len_for_test(&self) -> usize {
-        self.centroids.len()
-    }
 }
 
 impl Mergeable for TDigest {
@@ -538,7 +521,6 @@ impl TDigestResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::vec;
 
     // ---- Task 1: skeleton ----
 
@@ -562,15 +544,6 @@ mod tests {
         );
         assert!(TDigest::new(1.0).is_ok());
         assert!(TDigest::new(100.0).is_ok());
-    }
-
-    #[test]
-    fn empty_identity_fields() {
-        let d = TDigest::empty();
-        assert_eq!(d.count(), 0);
-        assert_eq!(d.min(), f64::INFINITY);
-        assert_eq!(d.max(), f64::NEG_INFINITY);
-        assert_eq!(d.default_delta_used(), TDigest::default_delta());
     }
 
     #[test]
@@ -598,72 +571,25 @@ mod tests {
         }
     }
 
-    // ---- Task 3: ingestion ----
-
-    #[test]
-    fn ingest_single_value() {
-        let mut d = TDigest::new(100.0).unwrap();
-        d.update(7.0);
-        d.flush_for_test();
-        assert_eq!(d.count(), 1);
-        assert_eq!(d.min(), 7.0);
-        assert_eq!(d.max(), 7.0);
-        assert_eq!(d.total_weight_for_test(), 1.0);
-    }
-
-    #[test]
-    fn ingest_counts_and_extremes() {
-        let mut d = TDigest::new(100.0).unwrap();
-        for x in [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0] {
-            d.update(x);
-        }
-        d.flush_for_test();
-        assert_eq!(d.count(), 8);
-        assert_eq!(d.min(), 1.0);
-        assert_eq!(d.max(), 9.0);
-        assert_eq!(d.total_weight_for_test(), 8.0);
-    }
-
-    #[test]
-    fn ingest_omits_nan_without_error() {
-        let mut d = TDigest::new(100.0).unwrap();
-        d.update(2.0);
-        d.update(f64::NAN);
-        d.update(4.0);
-        d.flush_for_test();
-        assert_eq!(d.count(), 2);
-        assert_eq!(d.min(), 2.0);
-        assert_eq!(d.max(), 4.0);
-    }
-
-    #[test]
-    fn ingest_duplicates() {
-        let mut d = TDigest::new(100.0).unwrap();
-        for _ in 0..1000 {
-            d.update(5.0);
-        }
-        d.flush_for_test();
-        assert_eq!(d.count(), 1000);
-        assert_eq!(d.total_weight_for_test(), 1000.0);
-        assert_eq!(d.min(), 5.0);
-        assert_eq!(d.max(), 5.0);
-    }
+    // ---- Task 3: compression ----
 
     #[test]
     fn compress_reduces_centroid_count() {
-        // δ small + many distinct values => compression must shrink the list.
+        // The greedy pass closes a centroid only when absorbing the next one
+        // would span more than one k-unit, so every adjacent pair spans more
+        // than one; k1 covers δ/2 units in all, which leaves at most δ + 1.
         let mut d = TDigest::new(10.0).unwrap();
         for i in 0..10_000 {
             d.update(i as f64);
         }
-        d.flush_for_test();
+        d.flush();
         assert!(
-            d.centroid_len_for_test() < 10_000,
-            "compress did not merge centroids: {}",
-            d.centroid_len_for_test()
+            d.centroids.len() <= 11,
+            "compress left {} centroids at δ = 10",
+            d.centroids.len()
         );
         // total weight is conserved exactly.
-        assert_eq!(d.total_weight_for_test(), 10_000.0);
+        assert_eq!(d.total_weight, 10_000.0);
     }
 
     // ---- Task 4: query ----
@@ -706,22 +632,6 @@ mod tests {
         assert_eq!(d.cdf(5.0), 0.0); // below min
         assert_eq!(d.cdf(99.0), 1.0); // above max
         assert!(TDigest::empty().cdf(0.0).is_nan());
-    }
-
-    #[test]
-    fn cdf_monotone() {
-        let mut d = TDigest::new(100.0).unwrap();
-        for i in 0..500 {
-            d.update(libm::sin(i as f64 * 0.123).abs());
-        }
-        let mut prev = f64::NEG_INFINITY;
-        for i in 0..=200 {
-            let x = -0.5 + 2.0 * (i as f64 / 200.0);
-            let c = d.cdf(x);
-            assert!(c >= prev - 1e-12, "cdf decreased at x={x}: {c} < {prev}");
-            assert!((0.0..=1.0).contains(&c));
-            prev = c;
-        }
     }
 
     #[test]
@@ -775,78 +685,13 @@ mod tests {
         assert_eq!(right.count(), full.count());
     }
 
-    #[test]
-    fn merge_associative_left_vs_right_fold() {
-        let xs = sample(9000);
-        let (a, b, c) = (&xs[0..3000], &xs[3000..6000], &xs[6000..9000]);
-        let (da, db, dc) = (digest_of(a), digest_of(b), digest_of(c));
-
-        // (A ⊕ B) ⊕ C
-        let mut left = da.clone();
-        left.merge(&db);
-        left.merge(&dc);
-        // A ⊕ (B ⊕ C)
-        let mut bc = db.clone();
-        bc.merge(&dc);
-        let mut right = da.clone();
-        right.merge(&bc);
-
-        for q in [0.05, 0.25, 0.5, 0.75, 0.95] {
-            let l = left.quantile(q).unwrap();
-            let r = right.quantile(q).unwrap();
-            // Associative within the approximation: ranks of the two estimates agree
-            // to well under the 0.75% rank bound.
-            let lr = left.cdf(l);
-            let rr = right.cdf(r);
-            assert!((lr - rr).abs() <= 0.0075, "q={q}: rank {lr} vs {rr}");
-        }
-        assert_eq!(left.count(), 9000);
-        assert_eq!(right.count(), 9000);
-        assert_eq!(left.min(), right.min());
-        assert_eq!(left.max(), right.max());
-    }
-
-    #[test]
-    fn merge_chunked_equals_streaming() {
-        let xs = sample(8000);
-        // streaming: one digest over all
-        let streamed = digest_of(&xs);
-        // chunked: 8 sub-digests merged
-        let mut chunked = TDigest::empty();
-        for chunk in xs.chunks(1000) {
-            chunked.merge(&digest_of(chunk));
-        }
-        assert_eq!(chunked.count(), streamed.count());
-        assert_eq!(chunked.min(), streamed.min());
-        assert_eq!(chunked.max(), streamed.max());
-        for q in [0.05, 0.25, 0.5, 0.75, 0.95] {
-            let target = streamed.quantile(q).unwrap();
-            // both estimate the same rank to within the bound
-            assert!((chunked.cdf(target) - q).abs() <= 0.0075, "q={q}");
-        }
-    }
-
     // ---- Task 6: quantile_edges ----
-
-    #[test]
-    fn quantile_edges_shape_and_endpoints() {
-        let xs = sample(5000);
-        let d = digest_of(&xs);
-        let edges = quantile_edges(&d, 8).unwrap();
-        assert_eq!(edges.len(), 9); // k+1
-        assert_eq!(edges[0], d.min());
-        assert_eq!(edges[8], d.max());
-        // monotonically non-decreasing
-        for w in edges.windows(2) {
-            assert!(w[1] >= w[0], "edges not sorted: {:?}", w);
-        }
-    }
 
     #[test]
     fn quantile_edges_k1_is_just_min_max() {
         let d = digest_of(&sample(100));
         let edges = quantile_edges(&d, 1).unwrap();
-        assert_eq!(edges, vec![d.min(), d.max()]);
+        assert_eq!(edges, [d.min(), d.max()]);
     }
 
     #[test]

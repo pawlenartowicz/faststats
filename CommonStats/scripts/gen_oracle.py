@@ -47,39 +47,41 @@ TAIL_LO, TAIL_HI = 1e-6, 1.0 - 1e-6  # bulk band for a probability arg
 # calibration and update here. Living in the generator keeps regeneration byte-stable
 # (a hand-edit into the fixtures would be wiped on regen) while tests never write files.
 TAIL_BANDS = {
-    "erfcinv":    8.0e-10,   # measured 7.39e-10 @ p=1e-9 (our impl ≈ scipy there)
-    "invbetareg": 2.0e-6,    # measured 1.87e-6 — inverse incomplete-beta deep-tail limit
-    # Continuous ppf tail bands (measure_tail_bands calibration, ~15% pad). uniform
-    # & cauchy & beta measure ≈0 (closed-form / atan inverse — exact to ~1 ulp); a
-    # 1e-15 floor keeps the slack·band assertion meaningful without demanding bit-exactness.
-    "dist_normal_ppf":      5.3e-11,  # 4.60e-11
-    "dist_studentt_ppf":    1.0e-15,  # 1.78e-16 (Newton on the tail mass, both tails)
-    "dist_chisquared_ppf":  1.3e-15,  # 1.07e-15 (Newton on the smaller tail mass)
-    "dist_fisherf_ppf":     2.3e-15,  # 1.96e-15
-    "dist_uniform_ppf":     1.0e-15,  # measured 0 (linear closed form)
-    "dist_exponential_ppf": 3.3e-8,   # 2.83e-8
+    "erfcinv":    1.0e-15,   # measured 0 @ p=1e-9 (truth at the exact complement 1 − p)
+    "invbetareg": 1.0e-15,   # measured 6.67e-16
+    # Continuous ppf/isf tail bands: the `measure_tail_bands` calibration (tests/
+    # dist_oracle.rs) on the current code, padded 15% and rounded up to two figures,
+    # with a 1e-15 floor so the slack·band assertion stays meaningful without
+    # demanding bit-exactness. Comments give the measured worst tail-row rel error.
+    "dist_normal_ppf":      1.0e-15,  # 3.59e-16
+    "dist_studentt_ppf":    1.0e-15,  # 5.35e-16 (Newton on the tail mass, both tails)
+    "dist_chisquared_ppf":  1.0e-15,  # 4.00e-16
+    "dist_fisherf_ppf":     1.0e-15,  # 4.15e-16
+    "dist_uniform_ppf":     1.0e-15,  # 0 (linear closed form)
+    "dist_exponential_ppf": 1.0e-15,  # 1.99e-16
     "dist_cauchy_ppf":      1.0e-15,  # 1.87e-16
-    "dist_weibull_ppf":     1.7e-8,   # 1.41e-8
-    "dist_lognormal_ppf":   2.5e-10,  # 2.16e-10
-    "dist_gamma_ppf":       1.1e-15,  # 9.61e-16
-    "dist_inversegaussian_ppf": 1.8e-15,  # 1.51e-15
-    "dist_beta_ppf":        1.5e-15,  # 9.42e-16
-    # isf tail bands. Newton/closed-form dists sit at ~1e-15 in both tails (each
-    # residual is formed on the smaller tail mass, never on `1 − near-1`); truth is
-    # taken at the exact f64 argument, so the argument itself is not a limit.
-    # normal/lognormal are bounded by erfc_inv at the mirror q = 1−1e-9 rows.
-    "dist_normal_isf":      5.8e-11,  # 5.00e-11
-    "dist_studentt_isf":    1.0e-15,  # 1.78e-16
+    "dist_weibull_ppf":     1.0e-15,  # 1.43e-16
+    "dist_lognormal_ppf":   1.1e-15,  # 8.73e-16
+    "dist_gamma_ppf":       1.0e-15,  # 6.41e-16
+    "dist_inversegaussian_ppf": 1.0e-15,  # 1.89e-16
+    "dist_beta_ppf":        1.0e-15,  # 1.57e-16
+    # isf tail bands. Each residual is formed on the smaller tail mass, never on
+    # `1 − near-1`; truth is taken at the exact f64 argument, so the argument itself
+    # is not a limit. The gamma worst row (lower tail, q = 1 − 1e-9) scores r = 0.77
+    # in the accuracy-sweep metric, within the backward-stable limit once the
+    # parameter sensitivity is counted.
+    "dist_normal_isf":      1.0e-15,  # 3.26e-16
+    "dist_studentt_isf":    1.0e-15,  # 5.35e-16
     "dist_chisquared_isf":  1.3e-15,  # 1.07e-15
-    "dist_fisherf_isf":     1.5e-15,  # 1.25e-15
+    "dist_fisherf_isf":     1.0e-15,  # 1.46e-16
     "dist_uniform_isf":     1.0e-15,  # 1.11e-16
     "dist_exponential_isf": 1.0e-15,  # 1.99e-16
     "dist_cauchy_isf":      1.0e-15,  # 1.87e-16
     "dist_weibull_isf":     1.0e-15,  # 2.86e-16
-    "dist_lognormal_isf":   2.5e-10,  # 2.16e-10
-    "dist_gamma_isf":       1.0e-15,  # 8.57e-16
-    "dist_inversegaussian_isf": 3.9e-15,  # 3.39e-15 (upper tail: sf is Φ(−a) minus a near-equal reflected term)
-    "dist_beta_isf":        1.4e-15,  # 1.19e-15
+    "dist_lognormal_isf":   1.0e-15,  # 4.16e-16
+    "dist_gamma_isf":       1.5e-15,  # 1.28e-15
+    "dist_inversegaussian_isf": 1.0e-15,  # 2.77e-16
+    "dist_beta_isf":        1.0e-15,  # 0
 }
 
 # --- mpmath truth helpers (delimited section; split to oracle_mp.py if it grows) ---
@@ -88,7 +90,14 @@ def mp_lbeta(a, b):  return mp.loggamma(a) + mp.loggamma(b) - mp.loggamma(a + b)
 def mp_gammp(a, x):  return mp.gammainc(a, 0, x, regularized=True)   # P(a,x)
 def mp_gammq(a, x):  return mp.gammainc(a, x, mp.inf, regularized=True)  # Q(a,x)
 def mp_betai(a, b, x): return mp.betainc(a, b, 0, x, regularized=True)   # I_x(a,b)
-def mp_erfcinv(p):   return mp.erfinv(1 - p)                     # erfc⁻¹ via erf⁻¹
+def mp_erfcinv(p):
+    """erfc⁻¹(p) at the exact f64 argument. 1 − p is formed in mpmath with enough
+    extra bits to be exact (53-bit significand plus the exponent span below 1), so
+    the truth is not taken at the f64-rounded complement."""
+    p = mp.mpf(p)
+    with mp.workprec(mp.mp.prec + 64 + max(0, -mp.mag(p))):
+        x = mp.erfinv(1 - p)
+    return +x
 
 def mp_invbetareg(a, b, p):
     """Inverse regularized incomplete beta by bisection (I_x is ↑ in x on (0,1));
@@ -897,8 +906,9 @@ def gen_density():
                 print(f"  {lbl}[{cl}][{i}]: {src}={got} vs mpmath={truth!r}")
             sys.exit(1)
 
-    def mp_kde_pt(x, h, data):
-        """Gaussian KDE density at x: (1/(n·h))·Σ φ((x−x_i)/h), φ(z)=e^(−z²/2)/√(2π).
+    def mp_kde_pt(x, h, data, kernel="gaussian"):
+        """KDE density at x: (1/(n·h))·Σ K((x−x_i)/h), K(z)=e^(−z²/2)/√(2π)
+        (gaussian) or 0.75·(1−z²) on |z| ≤ 1 (epanechnikov).
         `h` is scipy's resolved bandwidth (passed in) so mpmath and scipy use a
         bit-identical h — any residual difference is the kernel sum, not the bw."""
         x, h = mp.mpf(x), mp.mpf(h)
@@ -906,7 +916,10 @@ def gen_density():
         total = mp.mpf(0)
         for xi in data:
             z = (x - mp.mpf(xi)) / h
-            total += mp.e**(-z * z / 2) / mp.sqrt(2 * mp.pi)
+            if kernel == "gaussian":
+                total += mp.e**(-z * z / 2) / mp.sqrt(2 * mp.pi)
+            elif abs(z) <= 1:
+                total += mp.mpf(3) / 4 * (1 - z * z)
         return total / (n * h)
 
     data_small = [1.0, 2.0, 3.0, 4.0, 5.0]
@@ -915,10 +928,14 @@ def gen_density():
     grid_small = np.linspace(0.0, 6.0, 20).tolist()
     grid_large = np.linspace(-1.0, 12.0, 30).tolist()
 
-    def kde_case(label, data, bw_method, fixed_h, grid):
+    def kde_case(label, data, bw_method, fixed_h, grid, kernel="gaussian"):
         """Resolve scipy's bandwidth (unchanged from legacy), then compute mpmath
         truth at `h=resolved_h` plus scipy & R cross-checks. Returns a record with
-        an `_r_jobs` slice (one kde_manual job per grid point) batched by the caller."""
+        an `_r_jobs` slice (one kde_manual job per grid point) batched by the caller.
+        scipy's gaussian_kde has only the Gaussian kernel, and R's density() bins
+        and FFTs, so `kernel="epanechnikov"` is cross-checked against sklearn's
+        exact KernelDensity(kernel="epanechnikov", bandwidth=h) instead (same
+        K(u) = 0.75·(1−u²) on |u| ≤ 1 scaled by h); no R jobs."""
         data_arr = np.array(data)
         if bw_method in ('silverman', 'scott'):
             k = st_stats.gaussian_kde(data_arr, bw_method=bw_method)
@@ -930,13 +947,22 @@ def gen_density():
             k = st_stats.gaussian_kde(data_arr, bw_method=fixed_h / sd)
             resolved_h = fixed_h
 
-        scipy_density = k.evaluate(np.array(grid)).tolist()
-        mp_density = [mp_kde_pt(x, resolved_h, data) for x in grid]
-        r_jobs = [{"func": "kde_manual",
-                   "args": [float(x), resolved_h] + [float(d) for d in data]}
-                  for x in grid]
+        mp_density = [mp_kde_pt(x, resolved_h, data, kernel) for x in grid]
+        if kernel == "gaussian":
+            scipy_density = k.evaluate(np.array(grid)).tolist()
+            r_jobs = [{"func": "kde_manual",
+                       "args": [float(x), resolved_h] + [float(d) for d in data]}
+                      for x in grid]
+            xsrc = "scipy"
+        else:
+            from sklearn.neighbors import KernelDensity
+            kd = KernelDensity(kernel="epanechnikov", bandwidth=resolved_h)
+            kd.fit(data_arr.reshape(-1, 1))
+            scipy_density = np.exp(kd.score_samples(np.array(grid).reshape(-1, 1))).tolist()
+            r_jobs = []
+            xsrc = "sklearn"
         return {"label": label, "data": data, "bw_method": bw_method, "fixed_h": fixed_h,
-                "grid": grid, "bandwidth": resolved_h,
+                "grid": grid, "bandwidth": resolved_h, "kernel": kernel, "_xsrc": xsrc,
                 "_mp": mp_density, "_scipy": scipy_density, "_r_jobs": r_jobs}
 
     raw = [
@@ -946,6 +972,10 @@ def gen_density():
         kde_case("small_fixed_1.2", data_small, None, 1.2, grid_small),
         kde_case("large_silverman", data_large, "silverman", None, grid_large),
         kde_case("large_scott",     data_large, "scott",     None, grid_large),
+        kde_case("small_silverman_epa", data_small, "silverman", None, grid_small, "epanechnikov"),
+        kde_case("small_fixed_0.5_epa", data_small, None, 0.5, grid_small, "epanechnikov"),
+        kde_case("small_fixed_1.2_epa", data_small, None, 1.2, grid_small, "epanechnikov"),
+        kde_case("large_scott_epa",     data_large, "scott",     None, grid_large, "epanechnikov"),
     ]
 
     # One batched R invocation for all KDE grid points.
@@ -958,16 +988,20 @@ def gen_density():
     gate_rows, kde_records = [], []
     for case, r_start in zip(raw, r_starts):
         n_pts = len(case["grid"])
-        r_slice = r_all[r_start:r_start + n_pts]
-        mp_dens, sp_dens = case["_mp"], case["_scipy"]
+        mp_dens, sp_dens, xsrc = case["_mp"], case["_scipy"], case["_xsrc"]
+        if case["_r_jobs"]:
+            r_slice = r_all[r_start:r_start + n_pts]
+        else:
+            r_slice = [None] * n_pts
         for i, (t, sv, rv) in enumerate(zip(mp_dens, sp_dens, r_slice)):
-            gate_rows.append((case["label"], i, t, {"scipy": sv, "r": rv}))
-        xcheck = [{"scipy": {"val": sv, "rel": _rel_err(sv, t)},
-                   "r":     {"val": rv, "rel": _rel_err(rv, t)}}
+            gate_rows.append((case["label"], i, t, {xsrc: sv, "r": rv}))
+        xcheck = [{xsrc: {"val": sv, "rel": _rel_err(sv, t)},
+                   "r":  {"val": rv, "rel": _rel_err(rv, t)}}
                   for sv, rv, t in zip(sp_dens, r_slice, mp_dens)]
         kde_records.append({
             "label": case["label"], "data": case["data"],
             "bw_method": case["bw_method"], "fixed_h": case["fixed_h"],
+            "kernel": case["kernel"],
             "grid": case["grid"], "bandwidth": case["bandwidth"],
             "density": [_f64(t) for t in mp_dens],
             "xcheck_density": xcheck,
@@ -1262,6 +1296,117 @@ def gen_transform():
         print("wrote quantile_normalize.json")
 
     write_quantile_normalize()
+
+    def write_quantile_normalize_missing():
+        # Missing values (null here, NaN in the crate), recomputed in mpmath with
+        # preprocessCore's missing-at-random scheme (normalize.quantiles,
+        # qnorm.c): a column with m < n observed values is stretched onto the
+        # n-point target by linear interpolation at 0-based position
+        # (m − 1)·i/(n − 1); an observed value of average rank r (1..m) is mapped
+        # back to the target at (n − 1)·(r − 1)/(m − 1). Cross-checked against
+        # preprocessCore (gen_oracle.R `qn_ppc`, optional) except where the crate
+        # departs from it on purpose: a column with one observed value maps to
+        # the target's middle, (n − 1)/2 (preprocessCore divides 0/0 there and
+        # lands on the maximum), and an all-missing column is left out of the
+        # target (preprocessCore averages in a stale buffer).
+        from scipy.stats import rankdata
+
+        def at(s, pos):
+            lo = int(mp.floor(pos))
+            frac = pos - lo
+            return s[lo] if frac == 0 else s[lo] * (1 - frac) + s[lo + 1] * frac
+
+        def qn_mp(matrix):
+            n = len(matrix[0])
+            obs = [sorted(mp.mpf(x) for x in col if x is not None) for col in matrix]
+            used = [s for s in obs if s]
+            target = []
+            for i in range(n):
+                tot = mp.mpf(0)
+                for s in used:
+                    m = len(s)
+                    tot += s[i] if m == n else at(s, mp.mpf(m - 1) * i / (n - 1))
+                target.append(tot / len(used))
+            out = []
+            for col in matrix:
+                vals = [x for x in col if x is not None]
+                m = len(vals)
+                ranks = iter(rankdata(vals, method='average')) if m else iter(())
+                out_col = []
+                for x in col:
+                    if x is None:
+                        out_col.append(None)
+                        continue
+                    r = mp.mpf(next(ranks))
+                    if m == n:
+                        pos = r - 1
+                    elif m == 1:
+                        pos = mp.mpf(n - 1) / 2
+                    else:
+                        pos = mp.mpf(n - 1) * (r - 1) / (m - 1)
+                    out_col.append(at(target, pos))
+                out.append(out_col)
+            return out
+
+        N = None
+        cases = [  # (label, columns, cells (col, row) not cross-checked, reason)
+            ("nan_order", [[1.0, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, N]], [], None),
+            ("nan_ties", [[1.0, 2.0, 2.0, 4.0, 5.0], [3.0, 3.0, N, 1.0, 9.0],
+                          [2.0, 8.0, 6.0, 4.0, 0.0]], [], None),
+            ("nan_two_columns", [[4.1, 2.2, N, 8.0, 5.5, 1.0], [3.0, N, 7.5, N, 2.0, 9.0],
+                                 [6.0, 1.5, 2.5, 4.0, 8.5, 3.5]], [], None),
+            ("nan_ties_reduced", [[5.0, 5.0, N, 2.0, 2.0, 7.0, N],
+                                  [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+                                  [9.0, N, 3.0, 3.0, 3.0, 1.0, 2.0]], [], None),
+            ("single_observed", [[1.0, 2.0, 3.0, 4.0], [N, N, 10.0, N], [5.0, 6.0, 7.0, 8.0]],
+             [(1, 2)], "one observed value: target middle, preprocessCore its maximum"),
+            ("all_missing_column", [[1.0, 2.0, 3.0, 4.0], [N, N, N, N], [5.0, 6.0, 7.0, 8.0]],
+             "all", "all-missing column left out of the target; preprocessCore averages a stale buffer"),
+        ]
+
+        jobs, slots = [], []
+        for ci, (label, matrix, skip, _) in enumerate(cases):
+            nr, nc = len(matrix[0]), len(matrix)
+            flat = [x for col in matrix for x in col]
+            mask = [1.0 if x is None else 0.0 for x in flat]
+            vals = [0.0 if x is None else x for x in flat]
+            for j, col in enumerate(matrix):
+                for i, x in enumerate(col):
+                    if x is None or skip == "all" or (j, i) in skip:
+                        continue
+                    slots.append((ci, j, i))
+                    jobs.append({"func": "qn_ppc",
+                                 "args": [nr, nc, i + 1, j + 1] + mask + vals})
+        r_vals = _run_r(jobs)
+        if all(v is None for v in r_vals):
+            print("  note: preprocessCore unavailable to Rscript (set R_LIBS_USER); "
+                  "quantile_normalize_missing written without its cross-check")
+        ppc = {slot: v for slot, v in zip(slots, r_vals)}
+
+        records, gate_rows = [], []
+        for ci, (label, matrix, skip, reason) in enumerate(cases):
+            truth = qn_mp(matrix)
+            xcheck = []
+            for j, col in enumerate(truth):
+                xcol = []
+                for i, t in enumerate(col):
+                    v = ppc.get((ci, j, i))
+                    if t is not None:
+                        gate_rows.append(("quantile_normalize_missing", f"{label}[{j}][{i}]",
+                                          t, {"preprocessCore": v}))
+                    xcol.append(None if v is None else
+                                {"preprocessCore": {"val": v, "rel": _rel_err(v, t)}})
+                xcheck.append(xcol)
+            records.append({"label": label, "matrix": matrix,
+                            "expected": [[None if t is None else _f64(t) for t in col]
+                                         for col in truth],
+                            "xcheck": xcheck, "xcheck_skipped": reason})
+        _transform_gate(gate_rows)
+        with open(os.path.join(OUT, "quantile_normalize_missing.json"), "w") as f:
+            json.dump(records, f, indent=1)
+        print(f"wrote quantile_normalize_missing.json ({len(records)} cases)")
+
+    write_quantile_normalize_missing()
 
 
 def gen_descriptives():

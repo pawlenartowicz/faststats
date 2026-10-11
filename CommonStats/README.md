@@ -148,6 +148,7 @@ transform::normal_scores(v: &[f64])      -> Result<Vec<f64>> // Blom (1958) rank
 transform::box_cox(v: &[f64], lambda: f64)     -> Result<Vec<f64>> // Box–Cox power (positive data)
 transform::yeo_johnson(v: &[f64], lambda: f64) -> Result<Vec<f64>> // Yeo–Johnson power (all reals)
 transform::quantile_normalize(matrix: &[&[f64]]) -> Result<Vec<Vec<f64>>> // column rank-averaging
+transform::quantile_normalize_with(matrix: &[&[f64]], infinities: Infinities) -> Result<Vec<Vec<f64>>> // same, with a choice for ±∞: infinities = AsMissing|AsExtremes
 
 // PIT (requires feature `dist`)
 transform::pit(x: f64, dist: &D)                 -> f64         // probability-integral transform

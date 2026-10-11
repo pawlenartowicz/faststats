@@ -154,16 +154,7 @@ fn nan_omitted() {
     assert_eq!(d.max(), 3.0);
 }
 
-// (8) new rejects δ<1 / NaN.
-#[test]
-fn new_rejects_bad_delta() {
-    assert!(TDigest::new(0.5).is_err());
-    assert!(TDigest::new(0.0).is_err());
-    assert!(TDigest::new(f64::NAN).is_err());
-    assert!(TDigest::new(1.0).is_ok());
-}
-
-// (9) cdf monotone in [0,1].
+// (8) cdf monotone in [0,1].
 #[test]
 fn cdf_monotone() {
     let d = digest_of(&lcg_sample(5000, 123));

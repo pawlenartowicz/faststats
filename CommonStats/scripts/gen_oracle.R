@@ -130,6 +130,16 @@ dispatch <- function(func, a) {
     "cor_p"            = { n<-a[1]; x<-a[2:(1+n)]; y<-a[(2+n):(1+2*n)]; cor.test(x,y,method="pearson")$p.value },
     "vartest_f"        = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; unname(var.test(x,y)$statistic) },
     "vartest_p"        = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; var.test(x,y)$p.value },
+    # --- transform area: quantile normalization with missing values ---
+    # Bioconductor preprocessCore::normalize.quantiles (missing-at-random path,
+    # qnorm.c determine_target/using_target). Not a base-R package: optional;
+    # absent, the job errors to null and the gate skips it. One job per cell.
+    # Args: [nr, nc, i, j, mask (nr*nc, 1 = NA), vals (nr*nc)], column-major.
+    "qn_ppc" = {
+      nr <- a[1]; nc <- a[2]; k <- nr * nc
+      mask <- a[5:(4 + k)]; v <- a[(5 + k):(4 + 2 * k)]; v[mask == 1] <- NA
+      preprocessCore::normalize.quantiles(matrix(v, nr, nc))[a[3], a[4]]
+    },
     stop(paste("gen_oracle.R: unknown func", func))
   )
 }

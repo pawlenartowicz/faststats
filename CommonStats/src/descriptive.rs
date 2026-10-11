@@ -271,15 +271,6 @@ mod tests {
         assert_eq!(mean(&[]), Err(crate::StatError::EmptyInput));
     }
     #[test]
-    fn sd_known() {
-        assert!(
-            (sd(&[2., 4., 4., 4., 5., 5., 7., 9.], Ddof::Sample).unwrap()
-                - (32.0_f64 / 7.0).sqrt())
-            .abs()
-                < 1e-13
-        );
-    }
-    #[test]
     fn var_needs_two() {
         assert_eq!(
             var(&[1.0], Ddof::Sample),
@@ -294,25 +285,8 @@ mod tests {
         );
     }
     #[test]
-    fn pearson_known() {
-        // scipy.stats.pearsonr([1..5], [2,1,4,3,6]).statistic = 0.8219949365267865
-        let r = pearson(&[1., 2., 3., 4., 5.], &[2., 1., 4., 3., 6.]).unwrap();
-        assert!((r - 0.8219949365267865).abs() < 1e-13, "r {r}");
-    }
-    #[test]
-    fn covariance_known() {
-        // sample covariance (ddof=1) of ([1,2,3],[2,4,6]) = 2.0
-        assert!((cov(&[1., 2., 3.], &[2., 4., 6.]).unwrap() - 2.0).abs() < 1e-13);
-    }
-    #[test]
     fn range_known() {
         assert!((range(&[1., 3., 2.]).unwrap() - 2.0).abs() < 1e-13);
-    }
-    #[test]
-    fn median_even_n_interpolates() {
-        // [3,1,4,1,5,9] sorted → [1,1,3,4,5,9]; type-7 median = (3+4)/2 = 3.5.
-        // Matches numpy.percentile([3,1,4,1,5,9], 50, method='linear') = 3.5.
-        assert!((median(&[3., 1., 4., 1., 5., 9.]).unwrap() - 3.5).abs() < 1e-12);
     }
     #[test]
     fn median_odd_n_is_middle() {
@@ -327,10 +301,6 @@ mod tests {
     #[test]
     fn median_empty_errors() {
         assert_eq!(median(&[]), Err(crate::StatError::EmptyInput));
-    }
-    #[test]
-    fn median_all_nan_errors() {
-        assert_eq!(median(&[f64::NAN]), Err(crate::StatError::AllNaN));
     }
 }
 

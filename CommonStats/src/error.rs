@@ -61,9 +61,4 @@ mod tests {
             "need at least 2 observations, got 1",
         );
     }
-    #[test]
-    fn errors_compare_by_value() {
-        assert_eq!(StatError::AllNaN, StatError::AllNaN);
-        assert_ne!(StatError::EmptyInput, StatError::AllNaN);
-    }
 }

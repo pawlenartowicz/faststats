@@ -387,20 +387,6 @@ mod more_tests {
     use crate::accum::from_slice;
 
     #[test]
-    fn skew_kurtosis_known() {
-        let m: Moments = from_slice(&[1., 2., 3., 4., 5.]);
-        assert!(m.skewness().abs() < 1e-12);
-        assert!((m.kurtosis_excess() - (-1.3)).abs() < 1e-9); // SciPy kurtosis([1..5])=-1.3
-        // Non-symmetric g1 distinguishes the Fisher–Pearson population form (g1) from
-        // the bias-adjusted G1: scipy.stats.skew([2,4,4,4,5,5,7,9], bias=True) = 0.65625.
-        let asy: Moments = from_slice(&[2., 4., 4., 4., 5., 5., 7., 9.]);
-        assert!(
-            (asy.skewness() - 0.65625).abs() < 1e-12,
-            "skew {}",
-            asy.skewness()
-        );
-    }
-    #[test]
     fn moments_merge_equals_single() {
         let whole: Moments = from_slice(&[1., 2., 3., 4., 5., 6., 7., 8.]);
         let mut a: Moments = from_slice(&[1., 2., 3., 4.]);

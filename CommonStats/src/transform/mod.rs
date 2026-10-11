@@ -11,5 +11,5 @@ pub use normal_scores::normal_scores;
 #[cfg(feature = "dist")]
 pub use pit::{inv_pit, pit, quantile_map};
 pub use power::{box_cox, yeo_johnson};
-pub use quantile_normalize::quantile_normalize;
+pub use quantile_normalize::{Infinities, quantile_normalize, quantile_normalize_with};
 pub use rank::{Ties, rank};

@@ -10,7 +10,7 @@
 //! ## Accuracy
 //!
 //! Worst error ratio `r` measured by `scripts/accuracy_sweep.py` against
-//! mpmath (24800 points): `r` = relative error / (max(κ, 1)·ε), κ the
+//! mpmath (24854 points): `r` = relative error / (max(κ, 1)·ε), κ the
 //! condition number over all real inputs, ε = 2⁻⁵²; for a log output the
 //! absolute error over the sensitivity of the log. `r ≤ 10`: at the accuracy
 //! the problem allows; `(review)` up to 1000; `(bug)` above it, a structural error;
@@ -24,8 +24,8 @@
 //! | Binomial | 0.83 | 1 | 1.5 | 3.7 | 0.5 |
 //! | Poisson | 1 | 2.4 | 2.3 | 4 | 0.5 |
 //! | Geometric | 1.5 | 0.9 | 0.95 | 0.86 | 2.8e-14 |
-//! | NegBinomial | 6.3 | 0.73 | 0.86 | 1.9 | 0.5 |
-//! | NegBinomial (`from_mean_size`) | 2.5 | 2 | 2.9 | 11 (review) | 0.5 |
+//! | NegBinomial | 1.6 | 0.73 | 0.86 | 1.9 | 0.5 |
+//! | NegBinomial (`from_mean_size`) | 2.5 | 2 | 2.9 | 4.9 | 0.5 |
 //! | Hypergeometric | 1.9 | 6.7 | 1.7 | 1.3 | 1 |
 //! <!-- accuracy:end -->
 
@@ -316,8 +316,8 @@ impl DiscreteMass for Binomial {
         // `1 + E_lo` stands for `e^{E_lo}`. `E_lo ≤ −1` only where `|E_hi| ≥
         // 2⁵³`, the mass 0, which the clamp keeps from turning into −0. The
         // comparison form, unlike `max`, leaves a NaN `E_lo` as NaN rather
-        // than reading it as a 0 mass. `NegBinomial::mass` mirrors this —
-        // change together.
+        // than reading it as a 0 mass. `NegBinomial::mass` and
+        // `Hypergeometric::mass_with` mirror this — change together.
         let lo = 1.0 + e.1;
         let lo = if lo < 0.0 { 0.0 } else { lo };
         value_of_parts(lo / libm::sqrt(f), e.0)
@@ -1112,10 +1112,10 @@ impl DiscreteMass for NegBinomial {
     /// as `value_of_parts(r/(r + k)·(1 + E_lo)/√f, E_hi)`, so its size adds no
     /// error: `exp(log_mass)` would carry `|log_mass|·ε`, 1.2e-14
     /// relative at `NegBinomial::new(1, 2.2e-56).mass(1)`. What remains is the
-    /// error of `E`'s terms: a few ε for `r ≥ 8` and down to `r = 1e-50`
-    /// (≤ 7ε measured against mpmath); below that `stirlerr(r)`'s lgamma
-    /// difference adds up to ≈ ε·|ln r|/4 absolute, 51ε relative at `r = 1e-100`,
-    /// 143ε at `r = 1e-307`. The ratio `r/(r + k) ≤ 1` goes first: at `k = 0`
+    /// error of `E`'s terms: ≤ 7.7ε measured against mpmath, the most at a
+    /// non-integer `r` in `(1, 8)` (`stirlerr`'s lgamma difference); for `r <
+    /// 1` ≤ 4.4ε down to `r = 1e-307`, the `−½·ln r` of `δ(r)` being cancelled
+    /// in `binom_saddle` before rounding. The ratio `r/(r + k) ≤ 1` goes first: at `k = 0`
     /// and huge `r`, `E_lo` reaches ½ulp(`E_hi`) and `r·(1 + E_lo)` would
     /// overflow. `r + k` is finite for every finite `r`, so the ratio needs no
     /// `k/r` overflow guard.
@@ -1328,7 +1328,10 @@ impl Hypergeometric {
     /// rescales where `e^{E_hi}` alone would be subnormal.
     fn mass_with(&self, base: (f64, bool, Dd, f64), k: i64) -> f64 {
         let (e, f) = self.saddle(base, k);
-        value_of_parts(libm::sqrt(f) * (1.0 + e.1), e.0)
+        // The clamp of `Binomial::mass`; change together.
+        let lo = 1.0 + e.1;
+        let lo = if lo < 0.0 { 0.0 } else { lo };
+        value_of_parts(libm::sqrt(f) * lo, e.0)
     }
 }
 

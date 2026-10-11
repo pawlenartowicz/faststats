@@ -1,4 +1,4 @@
-//! Competitive ranking of a finite slice, configurable tie-breaking.
+//! Competitive ranking of a slice without its NaNs, configurable tie-breaking.
 
 use crate::error::StatError;
 use crate::nan::{NanPolicy, clean};
@@ -21,12 +21,13 @@ pub enum Ties {
     Ordinal,
 }
 
-/// 1-based competitive ranks of the finite values in `v`, with configurable tie-breaking.
+/// 1-based competitive ranks of the non-NaN values in `v`, with configurable tie-breaking.
 ///
-/// **Convention:** NaN values are omitted (Omit policy). Output length equals the
-/// number of finite values in `v`, not `v.len()`.
+/// **Convention:** NaN values are omitted (Omit policy); `±∞` are kept and rank
+/// as the smallest and largest values. Output length equals the number of
+/// non-NaN values in `v`, not `v.len()`.
 ///
-/// **Matches** `scipy.stats.rankdata(v, method=<ties>)` applied to the finite
+/// **Matches** `scipy.stats.rankdata(v, method=<ties>)` applied to the non-NaN
 /// subset of `v`.
 ///
 /// # Parameters
@@ -34,8 +35,8 @@ pub enum Ties {
 /// - `ties`: tie-breaking rule (see [`Ties`]).
 ///
 /// # Returns
-/// `Vec<f64>` of length = finite count, in the same order as the finite values
-/// of `v`. `Average` yields fractional values; all others are exact integers cast
+/// `Vec<f64>` of length = non-NaN count, in the same order as the non-NaN
+/// values of `v`. `Average` yields fractional values; all others are exact integers cast
 /// to `f64`.
 ///
 /// # Errors

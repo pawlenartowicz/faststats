@@ -127,11 +127,13 @@ mod tests {
     }
     #[test]
     fn merge_equals_fold() {
-        let a: Sum = crate::accum::from_slice(&[1.0, 2.0]);
-        let b: Sum = crate::accum::from_slice(&[3.0, 4.0]);
+        // The 1 sits in b's compensation term, not in its running sum, so the
+        // merged total is right only if merge carries that term across.
+        let a: Sum = crate::accum::from_slice(&[-1e16]);
+        let b: Sum = crate::accum::from_slice(&[1e16, 1.0]);
         let mut m = a;
         m.merge(&b);
-        assert_eq!(m.finalize(), 10.0);
+        assert_eq!(m.finalize(), 1.0);
     }
     #[test]
     fn minmax_empty_is_none() {

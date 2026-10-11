@@ -238,16 +238,36 @@ def beta_lower(a, b, x, y):
         return mpf(0)
     if y <= 0:
         return mpf(1)
+    if x > 0.5 and not _beta_mp_ok(a, b) and y * (a + b) > b and a * y >= 1:
+        # y past the mean of Beta(b, a), whose upper tail above y is then
+        # I_x(a, b) itself and decays within a few 1/a of y: integrated there
+        # directly. 1 − I_y(b, a) would need as many digits as that tail has
+        # decades (e^{−a·y}: FisherF at dfd = 1e300 and x ≳ 1e22).
+        return _beta_upper_tail(b, a, y, x)
     if x > 0.5 and y < mpf(10) ** -25:
         return difference(lambda: (mpf(1), _beta_direct(b, a, y, x)))
     return _beta_direct(a, b, x, y)
+
+
+def _beta_mp_ok(a, b):
+    """Whether mpmath's hypergeometric series serves I_x(a, b) (see `_beta_direct`)."""
+    return min(a, b) < 1000 and max(a, b) < 1e6
+
+
+def _ln_xy(x, y):
+    """(ln x, ln y) for y = 1 − x. The smaller of the two is the one known to
+    full relative precision (the larger can be rounded to 1, as FisherF's
+    n/(n + m·x) is at dfd = 1e300), so both logs are taken from it."""
+    if x <= y:
+        return mp.log(x), mp.log1p(-x)
+    return mp.log1p(-y), mp.log(y)
 
 
 def _beta_direct(a, b, x, y):
     # mpmath's hypergeometric series takes ~20 s (or fails) once the larger
     # shape passes ~1e6; there the quadrature (validated against mpmath to
     # 1e-46 at shapes up to 5e6) is used.
-    if min(a, b) < 1000 and max(a, b) < 1e6:
+    if _beta_mp_ok(a, b):
         try:
             return mp.betainc(a, b, 0, x, regularized=True)
         except (mpmath.libmp.NoConvergence, ValueError, ZeroDivisionError):
@@ -257,13 +277,15 @@ def _beta_direct(a, b, x, y):
     # in `_beta_quad` integrates I_x itself even where x is near 1, so `1 − x`
     # is never rebuilt from an x rounded to 1 (which the upper-tail form does).
     if x * (a + b) <= a or a <= 1:
-        return _beta_quad(a, b, x)
+        return _beta_quad(a, b, x, y)
     with mp.extradps(10):
-        return 1 - _beta_quad(b, a, y)
+        return 1 - _beta_quad(b, a, y, x)
 
 
-def _beta_quad(a, b, x):
-    """∫₀ˣ t^{a−1}(1−t)^{b−1} dt / B(a, b) by tanh-sinh. For a ≤ 1 through
+def _beta_quad(a, b, x, y):
+    """∫₀ˣ t^{a−1}(1−t)^{b−1} dt / B(a, b) by tanh-sinh, with y = 1 − x given
+    by the caller (exact, or to full relative precision), so 1 − x is never
+    rebuilt from an x near 1. For a ≤ 1 through
     t = x·v^{1/a} (t^{a−1}dt = (x^a/a)·dv), which removes the singularity at 0
     (and at a = 1 the mode at 0, where the relative form below reads
     0·log1p(−1)); else with breakpoints on the integrand's own scales: 1/slope
@@ -283,8 +305,8 @@ def _beta_quad(a, b, x):
 
     with mp.extradps(extra_digits([a, b]) + 15):
         lnb = mp.loggamma(a) + mp.loggamma(b) - mp.loggamma(a + b)
-        y = 1 - x
-        base = (a - 1) * mp.log(x) + (b - 1) * mp.log(y) - lnb
+        lx, ly = _ln_xy(x, y)
+        base = (a - 1) * lx + (b - 1) * ly - lnb
 
         def rel(t):
             return (a - 1) * mp.log1p((t - x) / x) + (b - 1) * mp.log1p((x - t) / y)
@@ -304,6 +326,36 @@ def _beta_quad(a, b, x):
                 peak = mode
         resolve = max(0, int(mp.ceil(mp.log10(x / min(w, sd))))) + 1
         return +_quad_log(rel, mpf(0), x, pts, peak, base, resolve)
+
+
+def _beta_upper_tail(a, b, x, y):
+    """1 − I_x(a, b) = ∫ₓ¹ t^{a−1}(1−t)^{b−1} dt / B(a, b), y = 1 − x, for an x
+    past the mean with b·x ≥ 1, where the integrand decays within a few 1/b
+    of x. Integrated in the offset u = t − x ∈ [0, y], on which the integrand
+    is x^{a−1}·y^{b−1}·e^{(a−1)·log1p(u/x) + (b−1)·log1p(−u/y)}: no node has to
+    be told apart from x, so no digits are added for a peak narrower than x,
+    and no 1 − t is formed."""
+    with mp.extradps(extra_digits([a, b]) + 15):
+        lnb = mp.loggamma(a) + mp.loggamma(b) - mp.loggamma(a + b)
+        lx, ly = _ln_xy(x, y)
+        base = (a - 1) * lx + (b - 1) * ly - lnb
+
+        def rel(u):
+            return (a - 1) * mp.log1p(u / x) + (b - 1) * mp.log1p(-u / y)
+        slope = abs((a - 1) / x - (b - 1) / y)
+        curv = abs((a - 1) / x ** 2 + (b - 1) / y ** 2)
+        w = min(1 / slope if slope else mp.inf, 1 / mp.sqrt(curv) if curv else mp.inf, y)
+        pts = [w * 2 ** k for k in range(-1, 17)]
+        peak = mpf(0)
+        if a > 1 and b > 1:
+            s = a + b
+            mode = (a - 1) / (s - 2)
+            if mode > x:
+                # The integrand rises to the mode first.
+                sd = mp.sqrt(a * b / (s * s * (s + 1)))
+                pts += [mode - x + sd * j for j in (-12, -6, -3, -1, 0, 1, 3, 6, 12)]
+                peak = mode - x
+        return +_quad_log(rel, mpf(0), y, pts, peak, base)
 
 
 def log_beta(a, b):
@@ -897,6 +949,10 @@ def _safe(g, z):
         v = g(z)
     except (ValueError, ZeroDivisionError, TypeError):
         return None
+    # A complex value (a log of a negative number past a support end) is not
+    # a value of the function either.
+    if isinstance(v, mpmath.mpc):
+        return None
     return v if mpmath.isfinite(v) else None
 
 
@@ -949,11 +1005,18 @@ def _z_deriv_loop(g, z, v0, h, extra, best):
     return best
 
 
-def sensitivity(f, P, x, real_idx, x_real, v0, dx=None):
+def sensitivity(f, P, x, real_idx, x_real, v0, dx=None, support=None, open_ends=False):
     """K = Σ |z·∂f/∂z| over the real inputs z: `dx` for x where given, else
-    `z_deriv`. v0 = f(P, x)."""
+    `z_deriv`. v0 = f(P, x). With `support` = (lo, hi), an x step that leaves
+    it is outside the domain, so the difference is one-sided there. At an end
+    of an open support (`open_ends`, OPEN_SUPPORT) the parameters are not
+    differentiated: the density there is a convention that jumps with a shape
+    (Beta's pdf at x = 1 is ∞, a or 0 for b <, =, > 1), so a step in b would
+    difference across the jump."""
     K = mpf(0)
     idx = range(len(P)) if real_idx is None else real_idx
+    if open_ends and support is not None and x in support:
+        idx = []
     slots = [("p", i) for i in idx if not isinstance(P[i], int)] + ([("x", 0)] if x_real else [])
     for kind, i in slots:
         z = P[i] if kind == "p" else x
@@ -969,6 +1032,8 @@ def sensitivity(f, P, x, real_idx, x_real, v0, dx=None):
                 return f(Q, x)
         else:
             def g(zz):
+                if support is not None and not support[0] <= zz <= support[1]:
+                    raise ValueError("outside the support")
                 return f(P, zz)
         d = z_deriv(g, z, v0)
         if d is not None:
@@ -1256,7 +1321,10 @@ def truth_job(job):
         else:
             f, real_idx, x_real, dx = value_fn(name)
             v = f(P, X)
-            K = sensitivity(f, P, X, real_idx, x_real, v, dx) if mpmath.isfinite(v) else mpf(0)
+            ty = name.split(".")[0]
+            support = CONT[ty].support(P) if ty in CONT else None
+            K = (sensitivity(f, P, X, real_idx, x_real, v, dx, support, ty in OPEN_SUPPORT)
+                 if mpmath.isfinite(v) else mpf(0))
             entry = {"t": mstr(v), "K": mstr(K)}
         if "K" in entry:
             entry["kv"] = K_VERSION
@@ -1388,13 +1456,23 @@ def beta_regime(a, b, x):
     y = 1.0 - x
     lam = (a + b) * y - b if a > b else a - (a + b) * x
     m = min(a, b)
+    if 0 < m < TINY:
+        # incomplete.rs `subnormal_shape`: both shapes subnormal, or the
+        # leading term in the subnormal one, by its argument (that shape's own
+        # argument subnormal, or the other's, or neither: the stand-in shape).
+        if max(a, b) < TINY:
+            return "subnormal shapes (both)"
+        own, other = (x, y) if a < b else (y, x)
+        arg = "own arg subnormal" if own < TINY else "other arg subnormal" if other < TINY else "stand-in"
+        return f"subnormal shape ({arg})"
     if m > 100 and abs(lam) <= 0.03 * m:
         return "basym (min>100, near mean)"
     lower = lam > 2 * x - 1
-    if m <= 1 and lower != (x > 0.5):
-        route = bratio_upper(a, b, x) if lower else bratio_upper(b, a, y)
+    if m <= 1 and (lower != (x > 0.5) or abs(lam) <= 6.0):
+        # 6.0: incomplete.rs `SAME_SIDE_LAMBDA`; change together.
+        route = bratio_upper(a, b, x) if x <= 0.5 else bratio_upper(b, a, y)
         if route:
-            return f"{route} (shape<=1, " + ("complement)" if lower else "direct)")
+            return f"{route} (shape<=1, " + ("complement)" if x <= 0.5 else "direct)")
     side = "bfrac" if lower else "bfrac complement"
     return f"{side}, min(a,b)" + ("<8" if m < 8 else ">=8")
 
@@ -1419,7 +1497,7 @@ DIST_REGIME = {
     "weibull": lambda P: "k<1" if P[0] < 1 else "k>=1",
     "lognormal": lambda P: "all",
     "gamma": lambda P: "shape " + shape_bucket(P[0]),
-    "beta": lambda P: "min " + shape_bucket(min(P), (8, 100)),
+    "beta": lambda P: "min " + ("subnormal" if min(P) < TINY else shape_bucket(min(P), (8, 100))),
     "inversegaussian": lambda P: "shape/mean<1" if P[1] < P[0] else "shape/mean>=1",
     "bernoulli": lambda P: "all",
     "binomial": lambda P: "n<1e6" if P[0] < 1e6 else "n>=1e6",
@@ -1489,7 +1567,7 @@ def cont_params(ty, rng):
                     [1e4, 1e20], [1e20, 1.0], [1.0, 1.0], [5.0, 10.0], [16.0, 16.0], [15.99, 16.01],
                     [1e-3, 1e-3], [0.01, 10.0], [10.0, 0.01], [1e20, 1e20],
                     [1e-5, 1e4], [1e-20, 5.0], [1e-100, 16.0], [1e-300, 15.99], [1.99, 5.0], [2.0, 5.0],
-                    [5.0, 1.99], [5.0, 2.0], [16.0, 1e-100], [15.99, 1e-300]],
+                    [5.0, 1.99], [5.0, 2.0], [16.0, 1e-100], [15.99, 1e-300], [1e-20, 1e300]],
         "uniform": [[-383.03635179613127, -304.1942570061313], [0.0, 1.0], [-1e300, 1e300], [1.0, 1.0 + 2.0 ** -40]],
         "exponential": [[1.0], [2.0], [1e-300], [1e300]],
         "cauchy": [[0.0, 1.0], [0.0, 1e-100], [1e10, 1.0], [0.0, 1e300], [-5.0, 1e-300]],
@@ -1500,7 +1578,7 @@ def cont_params(ty, rng):
                   [1e5, 1e5], [2.0, 1e300], [2.0, 1e-300]],
         "beta": [[2.0, 3.0], [1.0, 1.0], [0.5, 0.5], [1.0, 1e6], [0.0018300780372745866, 0.01999572019743655],
                  [0.598598177922815, 760412215611.1234], [8.0, 8.0], [7.99, 8.01], [100.0, 100.0],
-                 [1e-3, 5.0], [5.0, 1e-3], [0.01, 1.0], [1e5, 10.0]],
+                 [1e-3, 5.0], [5.0, 1e-3], [0.01, 1.0], [1e5, 10.0], [1e-310, 0.5], [3.0, 1e-315]],
         "inversegaussian": [[1.0, 1.0], [1.5, 2.0], [1.0, 1e-3], [1.0, 1e3], [1e-100, 1.0], [1.0, 1e100]],
     }[ty]
     return R + E
@@ -1593,7 +1671,8 @@ def disc_params(ty, rng):
                      [1000, 1 - 1e-10]],
         "poisson": [[64409.7283739895], [1e-300], [10.0], [9.99], [1e6], [1e15], [3.0]],
         "geometric": [[1.0], [0.5], [0.25], [1e-10], [1e-300]],
-        "negbinomial": [[1e15, 1e-20], [5.0, 0.4], [1e-10, 0.5], [1.0, 1 - 1e-9], [8.0, 0.3]],
+        "negbinomial": [[1e15, 1e-20], [5.0, 0.4], [1e-10, 0.5], [1.0, 1 - 1e-9], [8.0, 0.3], [1e-300, 0.5],
+                        [1e-100, 0.9]],
         "negbinomial_ms": [[0.37, 2.5e13], [1.0, 1e10], [0.004423702810547923, 830930.3407766076], [3.0, 0.5]],
         "hypergeometric": [[10 ** 7, 5 * 10 ** 6, 10 ** 5], [3543, 2298, 2770], [20, 7, 12], [10 ** 15, 5 * 10 ** 14, 1000],
                            [100, 100, 50], [10, 0, 5], [10 ** 6, 10, 10 ** 5]],
@@ -1640,7 +1719,11 @@ GAMMA_A_EXTREMES = [5e-324, 1e-300, 1e-10, 1e-3, 0.1, 0.5, 0.99, 1.0, 1.5, 2.5, 
 BETA_AB_EXTREMES = [[5.0, 1e-3], [1.0, 1e-3], [100.0, 1e-3], [1e-3, 5.0], [159137.46250199742, 149651.09756472873],
                     [1e9, 1e9], [1e9, 2e9], [2.0, 3.0], [1.0, 1.0], [0.5, 0.5], [8.0, 8.0], [7.99, 8.01],
                     [100.5, 100.5], [1e5, 10.0], [10.0, 1e5], [1e-3, 1e10], [1e10, 1e-3], [5e19, 5e3], [2.5, 3.5],
-                    [0.5, 1e6], [1e6, 0.5], [1e15, 1e15]]
+                    [0.5, 1e6], [1e6, 0.5], [1e15, 1e15],
+                    # incomplete.rs `subnormal_shape`, and two tiny normal
+                    # shapes (`brcomp_small`'s 1/B(a, b) order).
+                    [1e-310, 0.5], [0.5, 1e-310], [5e-324, 30.0], [1e-315, 3e5], [1e-310, 2e-310],
+                    [2.3e-308, 5e-324], [1e-300, 1e-20], [3e-308, 1e-300]]
 
 
 def special_params(fam, rng):
@@ -1678,7 +1761,10 @@ def beta_xbounds(a, b):
     """The incomplete beta kernel's thresholds in x: the reflection point, the
     mean, brcomp's 0.375 on x and y, the basym band |λ| = 0.03·min(a, b), and
     for a shape <= 1 the branch tests of `small_shape_upper` on x0 = min(x, y)
-    (0.1, 0.29, 0.3, (x0·b0)^a0 = 0.7, x0^a0 = 0.9) on both sides of 1/2."""
+    (0.1, 0.29, 0.3, (x0·b0)^a0 = 0.7, x0^a0 = 0.9) on both sides of 1/2 and
+    `betai_kernel`'s |λ| = SAME_SIDE_LAMBDA = 6 (change together); for a
+    subnormal shape, `subnormal_shape`'s subnormal argument (2^-1022 and
+    below; a subnormal y through the distribution's sf, which passes y = x)."""
     xs = []
     for t in [(a + 1) / (a + b + 2), a / (a + b), 0.375, 0.625]:
         xs += near(t)
@@ -1688,6 +1774,10 @@ def beta_xbounds(a, b):
             for t in [0.1, 0.29, 0.3, 0.7 ** (1 / a0) / b0, 0.9 ** (1 / a0)]:
                 if 0 < t < 0.5:
                     xs += near(1 - t if flip else t)
+        for lam in (6.0, -6.0):
+            xs += near((a - lam) / (a + b))
+    if m < TINY:
+        xs += near(TINY) + [5e-324, 1e-315]
     if m > 100:
         for lam in (0.03 * m, -0.03 * m):
             xs += near((a - lam) / (a + b))
@@ -1937,7 +2027,7 @@ def run_probe(reqs):
 K_VERSION = 2
 # Version of the truth code for timed-out points: one that timed out under an
 # earlier version is retried.
-TIMEOUT_VERSION = 2
+TIMEOUT_VERSION = 3
 
 
 def stale(e):
@@ -2219,13 +2309,6 @@ def _x(pt):
     return float(pt["x"])
 
 
-def _num(v):
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def _method(pt):
     return pt["fn"].split(".")[-1]
 
@@ -2276,68 +2359,8 @@ def _known_seam(pt):
     return False
 
 
-def _bgrat_underflow(pt):
-    """FisherF's small tail from the incomplete-beta kernel at a normal
-    argument with a tiny shape: sf/ln_sf at y with shape dfn/2, and the
-    mirror cdf/ln_cdf at z = 1 − y with shape dfd/2. The shape-≤-1 route's
-    `bgrat` gets z' = −ν·ln(1 − arg), ν = other/2 + 20 + (shape − 1)/2 after
-    `bup`, and returns None where `shape·z'` underflows to 0; the kernel then
-    gives that tail as 1 − I. A monotone step counts when either of its two
-    points is such a point."""
-    m = _method(pt)
-    if FN[pt["fn"]]["dist"] != "fisherf" or m not in ("sf", "ln_sf", "cdf", "ln_cdf"):
-        return False
-
-    def at(x):
-        dfn, dfd, x = _pf(pt, 0), _pf(pt, 1), float(x)
-        if m in ("sf", "ln_sf"):
-            a, b, t = dfn / 2, dfd / 2, dfn * x / (dfd + dfn * x)
-        else:
-            a, b, t = dfd / 2, dfn / 2, dfd / (dfd + dfn * x)
-        nu = b + 20 + (a - 1) / 2
-        return TINY <= t < 1e-8 and a * (-nu * math.log1p(-t)) == 0.0
-    hard = pt.get("hard") or ""
-    prev = hard.split(" from x=")[1].split(" ")[0] if " from x=" in hard else None
-    return at(pt["x"]) or (prev is not None and at(prev))
-
-
-def _fisherf_root_out_of_range(pt):
-    """FisherF isf (quantile) whose root lies below (above) the f64 range:
-    truth 0 (inf), the tail mass at every representable x is under the target,
-    and a finite positive x is returned instead."""
-    if pt["fn"] not in ("fisherf.isf", "fisherf.quantile"):
-        return False
-    want = 0.0 if pt["fn"] == "fisherf.isf" else math.inf
-    obs = _num(pt.get("obs"))
-    return _num(pt.get("truth")) == want and obs is not None and 0 < obs < math.inf
-
-
-def _fisherf_density_small_df_logs(pt):
-    """FisherF pdf/log_density on the both-halves-below-8 branch, which sums
-    `a·ln(dfn/dfd) + (a − 1)·ln x − (a + b)·ln(1 + u) − ln B(a, b)` directly:
-    where more than 2000 of the terms' total size C cancels (a tiny dfd makes
-    `a·ln(dfn/dfd)` ~5e3 against `(a − 1)·ln x`), their rounding survives:
-    ~C·ε/2 absolute in the log, so r up to ~C/2, the bug class from C = 2000."""
-    if pt["fn"] not in ("fisherf.pdf", "fisherf.log_density"):
-        return False
-    dfn, dfd, x = _pf(pt, 0), _pf(pt, 1), _x(pt)
-    a, b = dfn / 2, dfd / 2
-    if not (a < 8 and b < 8 and x > 0):
-        return False
-    u = dfn / dfd * x
-    ln1pu = math.log1p(u) if math.isfinite(u) else math.log(dfn) - math.log(dfd) + math.log(x)
-    terms = [a * (math.log(dfn) - math.log(dfd)), (a - 1) * math.log(x), -(a + b) * ln1pu,
-             math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)]
-    return sum(abs(t) for t in terms) - abs(sum(terms)) > 2000
-
-
 TRACKER = [
     ("non-monotone step beyond the limit at a kernel branch seam", _known_seam),
-    ("incomplete-beta bgrat returns None where tiny shape·z underflows; FisherF small tail becomes 1 − I",
-     _bgrat_underflow),
-    ("FisherF isf/quantile returns a finite x where the root is outside the f64 range",
-     _fisherf_root_out_of_range),
-    ("FisherF log_density small-df branch: over 2000 of its terms' size cancels", _fisherf_density_small_df_logs),
 ]
 
 

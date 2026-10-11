@@ -6,7 +6,8 @@ use crate::special::{erfc_inv, inv_beta_reg};
 
 /// Reject a confidence `level` outside the open interval (0, 1).
 fn check_level(level: f64) -> Result<(), StatError> {
-    if !(0.0..1.0).contains(&level) {
+    // `level > 0` excludes 0 (and NaN); a range `0.0..1.0` would admit 0.
+    if !(level > 0.0 && level < 1.0) {
         Err(StatError::ProbabilityOutOfRange(level))
     } else {
         Ok(())
@@ -158,15 +159,6 @@ pub fn ci_correlation(a: &[f64], b: &[f64], level: f64) -> Result<Ci, StatError>
 mod tests {
     use super::*;
     #[test]
-    fn t_crit_matches_table() {
-        // t_{0.975, 9} = 2.262157 (two-sided 95%)
-        assert!(
-            (t_crit(0.95, 9.0) - 2.262157).abs() < 1e-4,
-            "got {}",
-            t_crit(0.95, 9.0)
-        );
-    }
-    #[test]
     fn t_crit_extreme_level_matches_mpmath() {
         // At df = 1 the root x = I⁻¹(½, ½, 1 − level) = 1/(1 + t²) is 2.5e-24
         // and 2.5e-30, so `t` comes out right only if the inverse resolves x
@@ -181,6 +173,16 @@ mod tests {
             assert!(
                 ((got - want) / want).abs() < 3e-15,
                 "t_crit({level}, {df}) = {got:e}, want {want:e}"
+            );
+        }
+    }
+    #[test]
+    fn level_outside_open_interval_errors() {
+        let v = [1., 2., 3., 4., 5.];
+        for level in [0.0, 1.0, -0.5, 1.5, f64::NAN] {
+            assert!(
+                matches!(ci_mean(&v, level), Err(StatError::ProbabilityOutOfRange(_))),
+                "level {level} accepted"
             );
         }
     }

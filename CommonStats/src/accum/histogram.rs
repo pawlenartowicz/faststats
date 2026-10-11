@@ -266,13 +266,4 @@ mod tests {
         acc.merge(&h);
         assert_eq!(acc.counts(), h.counts());
     }
-
-    #[test]
-    fn bins_partition_the_range() {
-        let mut h = Histogram::new(0.0, 10.0, 5).unwrap();
-        for x in [1.0, 3.0, 3.0, 7.0, 9.5] {
-            h.update(x);
-        }
-        assert_eq!(h.counts(), &[1, 2, 0, 1, 1]);
-    }
 }

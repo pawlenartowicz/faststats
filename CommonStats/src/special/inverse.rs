@@ -5,6 +5,7 @@
 //! computing the inverse normal cumulative distribution function," archived at
 //! `http://home.online.no/~pjacklam/notes/invnorm/` (Wayback 2015-10-30).
 use crate::special::incomplete::{betai_parts, ln_betai, pq_from_parts};
+use crate::special::saddle::two_sum;
 use crate::special::{betai, lbeta};
 
 /// Inverse complementary error function, for p ∈ (0, 2):
@@ -163,7 +164,8 @@ fn norm_ppf_log_tail(ln_p: f64) -> f64 {
 /// sign-based bisection is immune to that. It runs on the f64 bit patterns
 /// (`bisect_bits`), so it reaches every root down to the smallest subnormal; for
 /// subnormal p it compares ln I with ln p, and a lower-tail root well below the
-/// mean is polished by one Newton step on ln I (`tail_newton`).
+/// mean is polished by one Newton step on ln I (`tail_newton`), and the root
+/// for a subnormal p by one more on the kernel's parts (`subnormal_target_polish`).
 ///
 /// `a`, `b`: shape parameters, > 0. `p`: probability; p ≤ 0 returns 0, p ≥ 1
 /// returns 1, and a root below half the smallest subnormal returns 0.
@@ -194,8 +196,15 @@ pub fn inv_beta_reg(a: f64, b: f64, p: f64) -> f64 {
     } else {
         bisect_bits(|x| betai(a, b, x), p, 0.0, 1.0)
     };
-    if x > 0.0 && x <= 0.125 && (a + b) * x <= 0.125 * (a + 1.0) {
-        tail_newton(a, b, p, x)
+    let tail = x > 0.0 && x <= 0.125 && (a + b) * x <= 0.125 * (a + 1.0);
+    let x = if tail { tail_newton(a, b, p, x) } else { x };
+    // `tail_newton`'s residual keeps the rounding of `ln B(a, b)`, the
+    // kernel's parts that of `a·ln x` (its `x^a` underflows to the log form):
+    // after the first, the second step is taken only where it is the more
+    // precise (r 23 → 1 at `I⁻¹(3, 1e-315)` for p = 5e-324, where `ln B ≈ 725`;
+    // 184ε kept off `I⁻¹(2, 0.5)` for p = 1.6e-314, where `a·ln x ≈ −720`).
+    if p < f64::MIN_POSITIVE && (!tail || libm::fabs(lbeta(a, b)) > libm::fabs(a * libm::log(x))) {
+        subnormal_target_polish(a, b, p, x, false)
     } else {
         x
     }
@@ -206,8 +215,9 @@ pub fn inv_beta_reg(a: f64, b: f64, p: f64) -> f64 {
 /// `−(1 − I_x(a, b))`, which increases with x, with the complement evaluated
 /// directly by the kernel (`betai_parts` with `y = 1 − x`, exact for x ≥ ½),
 /// so a small q is never formed as 1 − p. For subnormal q it compares
-/// `−ln(1 − I_x(a, b)) = −ln I_{1−x}(b, a)` with `−ln q`. q ≤ 0 returns 1,
-/// q ≥ 1 returns 0.
+/// `−ln(1 − I_x(a, b)) = −ln I_{1−x}(b, a)` with `−ln q`, and polishes that
+/// root by one Newton step on the kernel's parts (`subnormal_target_polish`).
+/// q ≤ 0 returns 1, q ≥ 1 returns 0.
 pub(crate) fn inv_beta_reg_upper(a: f64, b: f64, q: f64) -> f64 {
     if q <= 0.0 {
         return 1.0;
@@ -217,7 +227,8 @@ pub(crate) fn inv_beta_reg_upper(a: f64, b: f64, q: f64) -> f64 {
     }
     if q < f64::MIN_POSITIVE {
         let neg_ln_sf = |x: f64| -ln_betai(b, a, 1.0 - x, x);
-        return bisect_bits(neg_ln_sf, -libm::log(q), 0.0, f64::INFINITY);
+        let x = bisect_bits(neg_ln_sf, -libm::log(q), 0.0, f64::INFINITY);
+        return subnormal_target_polish(a, b, q, x, true);
     }
     let neg_sf = |x: f64| {
         let (m, e, complement) = betai_parts(a, b, x, 1.0 - x);
@@ -235,7 +246,13 @@ pub(crate) fn inv_beta_reg_upper(a: f64, b: f64, q: f64) -> f64 {
 /// binades and linearly within one, and ends on two adjacent floats after 52
 /// to 62 more steps. (Halving [0, 1] in x stalls at a width of 2^−80 ≈ 8e-25
 /// and cannot resolve a smaller root.) Of the two, the one whose `f` is nearer
-/// `target`.
+/// `target`; except between 0 and the smallest subnormal `h`, where `f0` is a
+/// limit that says nothing of where in `(0, h)` the root lies (in the `ln`
+/// mass forms it is reached only at `ln x = −∞`): there 0 for a root below
+/// `h/2` (`f(h/2) > target`), `h` otherwise, with `f(h/2)` extrapolated from
+/// `f(h)` and `f(2h)`, linear in `ln x` as the log masses are near 0 (and to
+/// first order in the shape the linear ones: `Beta(2e-320, 0.5).isf(2e-311)`,
+/// a root near `e^{−1e9}`, is 0, not `h`).
 fn bisect_bits(f: impl Fn(f64) -> f64, target: f64, f0: f64, f1: f64) -> f64 {
     let (mut lo, mut hi, mut f_lo, mut f_hi) = (0.0_f64, 1.0_f64, f0, f1);
     let mut x = 0.5_f64;
@@ -257,6 +274,14 @@ fn bisect_bits(f: impl Fn(f64) -> f64, target: f64, f0: f64, f1: f64) -> f64 {
         } else {
             (hi, f_hi) = (mid, fx);
         }
+    }
+    if lo == 0 && hi == 1 {
+        let h = f64::from_bits(1);
+        return if 2.0 * f_hi - f(2.0 * h) > target {
+            0.0
+        } else {
+            h
+        };
     }
     f64::from_bits(if target - f_lo < f_hi - target {
         lo
@@ -300,6 +325,47 @@ fn tail_newton(a: f64, b: f64, p: f64, x: f64) -> f64 {
         x * libm::exp(du)
     } else {
         x + x * libm::expm1(du)
+    }
+}
+
+/// One Newton step in `u = ln x` on `g(u) = ln mass − ln p` for a subnormal
+/// target `p`, `mass` = `I_x(a, b)` (or `1 − I_x(a, b)` for `upper`), from the
+/// root `x` of a bisection on `ln mass`. That bisection's `ln mass` keeps
+/// `|ln p|·ε/2` absolute (≥ 708·ε/2), so the root is off by that over the slope
+/// `s = |dg/du|` relative (r 87 at `Beta(1e-310, 0.5).isf(1e-310)`); a linear
+/// mass has no bits left to compare there. The kernel gives the mass as `m·e^{e}`
+/// with `e` kept to twice f64 precision in `m`, so `g` is formed from those parts
+/// against `ln p = hp + lp` (`ln_split`, `hp` exact): `e − hp` exactly by
+/// TwoSum, then `ln m` split the same way, its exact part cancelling against
+/// that difference. `s = x^a·y^{b−1}/(B(a, b)·mass)` from logs, needed only
+/// to a few digits. `x` unchanged where the kernel evaluated the other side
+/// (the mass is then `1 −` a value near 1, with nothing left of it) or the
+/// step exceeds 1e-10.
+fn subnormal_target_polish(a: f64, b: f64, p: f64, x: f64, upper: bool) -> f64 {
+    if !(x > 0.0 && x < 1.0) {
+        return x;
+    }
+    let (m, e, complement) = betai_parts(a, b, x, 1.0 - x);
+    if complement != upper || m.is_nan() || m <= 0.0 || m == f64::INFINITY {
+        return x;
+    }
+    let (hp, lp) = ln_split(p);
+    let (hm, lm) = ln_split(m);
+    let (s, s_err) = two_sum(e, -hp);
+    let g = (s + hm) + (s_err + (lm - lp));
+    let ln_slope =
+        a * libm::log(x) + (b - 1.0) * libm::log1p(-x) - lbeta(a, b) - (libm::log(m) + e);
+    let du = g / libm::exp(ln_slope);
+    let du = if upper { du } else { -du };
+    if du.is_nan() || libm::fabs(du) > 1e-10 {
+        return x;
+    }
+    // The root is at most 1: a root within the step of 1 is 1 (`Beta(8,
+    // 8).isf(1e-310)`, from `1 − 2⁻⁵³`).
+    if x < f64::MIN_POSITIVE {
+        x * libm::exp(du)
+    } else {
+        (x + x * libm::expm1(du)).min(1.0)
     }
 }
 

@@ -22,6 +22,7 @@ struct KdeRecord {
     data: Vec<f64>,
     bw_method: Option<String>,
     fixed_h: Option<f64>,
+    kernel: String,
     grid: Vec<f64>,
     bandwidth: f64,
     density: Vec<f64>,
@@ -39,7 +40,12 @@ fn kde_oracle_bandwidth_and_evaluate() {
             (None, Some(h)) => Bandwidth::Fixed(h),
             other => panic!("unexpected bw spec in fixture: {:?}", other),
         };
-        let k = kde(&rec.data, Kernel::Gaussian, bw)
+        let kernel = match rec.kernel.as_str() {
+            "gaussian" => Kernel::Gaussian,
+            "epanechnikov" => Kernel::Epanechnikov,
+            other => panic!("unexpected kernel in fixture: {other}"),
+        };
+        let k = kde(&rec.data, kernel, bw)
             .unwrap_or_else(|e| panic!("kde failed for {}: {e:?}", rec.label));
 
         // Bandwidth comes from scipy's resolved factor (not mpmath) — keep rel 1e-10.

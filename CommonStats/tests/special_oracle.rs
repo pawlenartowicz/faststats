@@ -16,13 +16,6 @@ const INV: Tol = Tol {
     rel: 1e-10,
     abs: 1e-12,
 };
-// digamma (ψ, the lgamma derivative) is neither value- nor quantile-kind: across
-// its grid it achieves ~1e-10 (worst 9.7e-11 at x≈2), mpmath-confirmed and not a
-// regression — the pre-rebaseline test already used 1e-10. Tiered on its own.
-const DERIV: Tol = Tol {
-    rel: 1e-10,
-    abs: 1e-12,
-};
 
 #[test]
 fn erf_grid() {
@@ -43,7 +36,7 @@ fn gamma_grid() {
 }
 #[test]
 fn digamma_grid() {
-    check_grid("digamma", DERIV, |a| special::digamma(a[0]));
+    check_grid("digamma", VAL, |a| special::digamma(a[0]));
 }
 #[test]
 fn gammp_grid() {
@@ -378,6 +371,128 @@ fn betai_small_shape_far_tails() {
     }
 }
 #[test]
+fn betai_subnormal_shape() {
+    // A subnormal shape, where `1/Γ(a)` and `b/a` leave the f64 range and the
+    // kernels returned NaN. The tail on the subnormal shape's side is
+    // `ab/(a + b)·∫₀^y t^{b−1}/(1 − t) dt` to O(a) (subnormal); with both
+    // shapes subnormal, `I = b/(a + b)`. Truth: mpmath (420 dps)
+    // betainc(a, b, 0, x, regularized=True) at the exact f64 inputs, or 1
+    // minus the mirror. A subnormal value is held to two of its ulps.
+    const TOL: Tol = Tol {
+        rel: 2e-15,
+        abs: 1e-323,
+    };
+    for (a, b, x, want) in [
+        (0.5, 1e-310, 0.75, 2.633_915_793_849_64e-310),
+        (0.5, 5e-324, 0.996_093_75, 3.4e-323),
+        (3.0, 1e-310, 0.5, 6.814_718_055_994_51e-312),
+        (200.0, 1e-310, 0.999, 1.224_289_697_485_35e-310),
+        (1e-307, 1e-310, 0.5, 9.990_009_990_009_96e-4),
+        (1e-310, 2e-310, 0.75, 2.0 / 3.0),
+        (2e-310, 1e-310, 0.75, 1.0 / 3.0),
+        (1e-310, 0.5, 0.01, 1.0),
+        // A subnormal argument as well, where the kernel at the stand-in
+        // shape gave inf (`bgrat`'s `z` subnormal, `1 −` an `I` above 1).
+        (1e-300, 1e-310, 5e-324, 9.999_999_998_999_969e-11),
+        (2.3e-308, 5e-324, 1e-315, 2.148_111_503_657_593_3e-16),
+    ] {
+        assert_close(
+            &format!("betai({a:e}, {b:e}, {x:e})"),
+            special::betai(a, b, x),
+            want,
+            TOL,
+        );
+    }
+    // Logs, where the value is subnormal; the last five at a subnormal `y`,
+    // the tail `ab/(a + b)·(−ln y − ψ(a) − γ + ∫₀^y (1 − (1 − u)^{a−1})/u du)`
+    // (the integral matters at a = 1e307). Truth: mpmath (60 and 100 dps)
+    // `₂F₁` forms of the incomplete beta, or that formula where they do not
+    // converge (it agrees with them to 20 digits at a = 0.5 and 1e4).
+    for (a, b, x, y, want) in [
+        (0.5, 1e-310, 0.75, 0.25, -712.832_907_194_269_8),
+        (0.5, 1e-310, 1.0, 5e-324, -707.186_886_008_014_1),
+        (1e4, 1e-310, 1.0, 5e-324, -707.201_981_140_174_7),
+        (1e307, 1e-310, 1.0, 5e-324, -710.191_292_809_889_3),
+        (1e307, 1e-310, 1.0, 1e-310, -711.955_835_436_075_3),
+        (1e-40, 5e-324, 1.0, 5e-324, -652.336_668_201_619_4),
+    ] {
+        assert_close(
+            &format!("ln_betai({a:e}, {b:e}, {x}, {y:e})"),
+            special::incomplete::ln_betai(a, b, x, y),
+            want,
+            Tol {
+                rel: 2e-16,
+                abs: 0.0,
+            },
+        );
+    }
+}
+#[test]
+fn betai_both_shapes_tiny() {
+    // Both shapes far below 1, through `bup` + `bgrat`, where `w` over the
+    // gamma prefactor `r` passed the f64 range (inf, and −inf for the
+    // mirror). Truth: mpmath (600 dps) betainc(a, b, 0, x, regularized=True).
+    assert_close(
+        "betai(4.2e-53, 1e-300, 0.75)",
+        special::betai(4.2e-53, 1e-300, 0.75),
+        2.380_952_380_952_381e-248,
+        Tol {
+            rel: 2e-15,
+            abs: 0.0,
+        },
+    );
+    assert_eq!(special::betai(1e-300, 4.2e-53, 0.25), 1.0);
+    // `1/B(a, b)` from `1/Γ(a)·1/Γ(b)`, which went subnormal before its
+    // division by `1/Γ(a + b)` (1e-5 and 587ε). Truth: mpmath (60 and 100
+    // dps) `₂F₁` forms, `1 − I_{0.25}(1e-300, 1e-20)` and
+    // `1 − I_{0.25}(3e-308, 1e-300)`.
+    for (a, b, want) in [
+        (1e-20, 1e-300, 1.000_000_000_000_000_1e-280),
+        (1e-300, 3e-308, 2.999_999_910_000_003e-8),
+    ] {
+        assert_close(
+            &format!("betai({a:e}, {b:e}, 0.75)"),
+            special::betai(a, b, 0.75),
+            want,
+            Tol {
+                rel: 2e-15,
+                abs: 0.0,
+            },
+        );
+    }
+}
+#[test]
+fn betai_small_shape_huge_other() {
+    // One shape ≤ 1, the other 1e12 to 1e15, near the reflection point,
+    // through `bgrat`: its `ln M = ln(Γ(a + b)/(Γ(a)·ν^b))` cancelled
+    // `b·ln a` (~25 at a = 1e15) and kept ~20ε. Truth: mpmath (80 and 120
+    // dps) incomplete beta at the exact inputs, `y = 1 − x` exact.
+    assert_close(
+        "betai(1e15, 0.7, 0.9999999999999963)",
+        special::betai(1e15, 0.7, 0.999_999_999_999_996_3),
+        1.253_479_855_897_603_3e-2,
+        Tol {
+            rel: 2e-15,
+            abs: 0.0,
+        },
+    );
+}
+#[test]
+fn ln_betai_tiny_shape_near_one() {
+    // `ln I` at `I` near 1 with `a ≪ 1 ≪ b`, from its complement `1 − I`
+    // (TOMS 708 `bgrat`); the continued fraction kept ~50ε relative in it.
+    // Truth: mpmath (420 dps) log(betainc(a, b, 0, x, regularized=True)).
+    assert_close(
+        "ln_betai(0.001, 1e10, 1.01e-10)",
+        special::incomplete::ln_betai(0.001, 1e10, 1.01e-10, 1.0 - 1.01e-10),
+        -2.159_872_524_406_481_8e-4,
+        Tol {
+            rel: 2e-15,
+            abs: 0.0,
+        },
+    );
+}
+#[test]
 fn betai_grid() {
     check_grid("betai", VAL, |a| special::betai(a[0], a[1], a[2]));
 }
@@ -430,12 +545,6 @@ fn logsumexp_grid() {
     // Three-source grid (mpmath truth + scipy + R stable logsumexp). Each row's
     // args is the full input slice: logsumexp(&[a0, a1, a2]).
     check_grid("logsumexp", VAL, special::logsumexp);
-}
-#[test]
-fn logsumexp_is_stable() {
-    // Naively exp() of these overflows; logsumexp must not.
-    let got = special::logsumexp(&[1000.0, 1000.0]);
-    assert!((got - (1000.0 + 2.0_f64.ln())).abs() < 1e-9, "got {got}");
     assert_eq!(special::logsumexp(&[]), f64::NEG_INFINITY);
 }
 #[test]

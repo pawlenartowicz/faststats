@@ -19,11 +19,12 @@ pub(crate) fn norm_quantile(p: f64) -> f64 {
 
 /// Blom (1958) normal scores: Φ⁻¹((rᵢ − 3/8) / (n + 1/4)).
 ///
-/// **Convention:** `rᵢ` is the average rank of the i-th finite observation;
+/// **Convention:** `rᵢ` is the average rank of the i-th non-NaN observation;
 /// `a = 3/8` (Blom only — van der Waerden `a=0` and Rankit `a=1/2` are not
 /// provided). Denominator `n + 1/4 = n − 2·(3/8) + 1`. Φ⁻¹ via public
 /// `special::erfc_inv`: `Φ⁻¹(p) = −√2·erfc_inv(2p)`.
-/// NaN values are omitted (Omit policy). Output length = finite count.
+/// NaN values are omitted (Omit policy); `±∞` are kept and rank as the
+/// extremes. Output length = non-NaN count.
 ///
 /// **Matches** `scipy.stats.norm.ppf((rankdata(v,'average') − 3/8) / (n + 1/4))`.
 ///
@@ -31,7 +32,7 @@ pub(crate) fn norm_quantile(p: f64) -> f64 {
 /// - `v`: input slice; may contain NaN.
 ///
 /// # Returns
-/// Normal scores in the order of the finite values of `v`.
+/// Normal scores in the order of the non-NaN values of `v`.
 ///
 /// # Errors
 /// - [`StatError::EmptyInput`] if `v` is empty.

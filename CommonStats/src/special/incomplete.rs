@@ -16,7 +16,7 @@
 //! ## Accuracy
 //!
 //! Worst error ratio `r` measured by `scripts/accuracy_sweep.py` against
-//! mpmath (43495 points): `r` = relative error / (max(κ, 1)·ε), κ the
+//! mpmath (44512 points): `r` = relative error / (max(κ, 1)·ε), κ the
 //! condition number over all real inputs, ε = 2⁻⁵²; for a log output the
 //! absolute error over the sensitivity of the log. `r ≤ 10`: at the accuracy
 //! the problem allows; `(review)` up to 1000; `(bug)` above it, a structural error;
@@ -44,12 +44,16 @@
 //! | bfrac, min(a,b)>=8 | 0.87 |
 //! | bgrat (shape<=1, complement) | 1.9 |
 //! | bgrat (shape<=1, direct) | 0.035 |
-//! | bpser (shape<=1, complement) | 0.58 |
+//! | bpser (shape<=1, complement) | 1.1 |
 //! | bpser (shape<=1, direct) | 0.91 |
 //! | bup+bgrat (shape<=1, complement) | 3.4 |
 //! | bup+bgrat (shape<=1, direct) | 1.9 |
+//! | subnormal shape (other arg subnormal) | 0.048 |
+//! | subnormal shape (own arg subnormal) | 0 |
+//! | subnormal shape (stand-in) | 0.43 |
+//! | subnormal shapes (both) | 0.5 |
 //! <!-- accuracy:end -->
-use crate::special::elementary::{algdiv, bcorr, erfcx, gam1, stirling_del};
+use crate::special::elementary::{algdiv, bcorr, erfcx, gam1, stirling_del, stirling_del_diff};
 use crate::special::lbeta;
 use crate::special::saddle::{beta_lambda, beta_saddle_dev, gamma_saddle_dev, rlog1, two_sum};
 
@@ -115,6 +119,11 @@ fn rgamma_small(a: f64) -> f64 {
 /// s > 0), ample for a correction of order ε.
 fn rgamma_sum(a: f64, b: f64) -> f64 {
     let (s, t) = two_sum(a, b);
+    if t == 0.0 {
+        // Also where `s` is subnormal (always exact there), whose `1/s`
+        // overflows and would make the correction `−∞·0`.
+        return rgamma_small(s);
+    }
     let psi = libm::log(s + 0.5) - 1.0 / s;
     rgamma_small(s) * (1.0 - psi * t)
 }
@@ -173,7 +182,7 @@ const POW_SWITCH: f64 = 16.0;
 /// `Expo`, with `x^a` moved to the scale by `pow` past `POW_SWITCH`; where
 /// `x^a` then leaves the normal range, so does the value (`1/Γ(a) < 1.2`,
 /// `e^{−x} ≤ 1`) and the one-f64 exponent keeps its log.
-fn gamma_prefactor(a: f64, x: f64, use_pow: bool) -> (f64, f64) {
+pub(crate) fn gamma_prefactor(a: f64, x: f64, use_pow: bool) -> (f64, f64) {
     if a < 8.0 {
         let l = libm::log(x);
         if a < f64::MIN_POSITIVE {
@@ -575,10 +584,14 @@ pub fn ln_gammq(a: f64, x: f64) -> f64 {
 /// reflection point `x = (a+1)/(a+b+2)`, the other side as its complement.
 /// With a shape ≤ 1, where that complement would be `1 −` a value near 1 and
 /// their `bratio` evaluates the side itself, its `bpser`, `bup` and `bgrat`
-/// do so here (a small `I` at `b ≪ 1` above the reflection point).
+/// do so here (a small `I` at `b ≪ 1` above the reflection point), and also
+/// on the fraction's own side within `|λ| ≤ 6` of it, where the fraction
+/// keeps ~30ε. With a subnormal shape, the leading term in that shape (see
+/// `subnormal_shape`); with a shape ≤ 1 at a subnormal argument, the tail
+/// from its value at a normal one (`subnormal_argument`).
 /// Measured against mpmath (`scripts/accuracy_sweep.py`, normal-range
 /// values): for `min(a, b) < 8` within 7e-15 relative, also in the far
-/// tails (the worst where `1 − x` is 2e-9), and within 1.6e-15 on the
+/// tails (the worst where `1 − x` is 2e-9), and within 2e-15 on the
 /// shape-≤-1 branches. For `min(a, b) ≥ 8` the error follows the
 /// conditioning of `I` in `x`, not `|ln I|`: the rounding of `λ`, formed from
 /// the rounded `x`, reaches 2.9e-12 relative at a, b ≈ 1.5e5 (`I` ≈ 3e-296)
@@ -602,13 +615,16 @@ pub fn betai(a: f64, b: f64, x: f64) -> f64 {
 /// caller where it is more accurate than `1 − x` (the upper tail `1 − I_x(a, b)
 /// = I_y(b, a)` is `ln_betai(b, a, y, x)`). `−∞` for x ≤ 0, `0` for y ≤ 0.
 /// On the continued-fraction (`bfrac`) side the prefactor skips `pow` for
-/// `a ≥ 1` (`ln m + e` of its one-f64 exponent keeps ~ε relative in the log)
-/// and takes it for `a < 1`, where that exponent's `ln a` would cancel
+/// `a ≥ 1` and takes it for `a < 1`, where the exponent's `ln a` would cancel
 /// against the fraction's `1/a` and leave `|ln a|·ε` absolute in an O(1) log.
+/// Skipped, `ln m + e` of the one-f64 exponent `a·ln x + b·ln y − ln B(a, b)`
+/// keeps the rounding of those terms, `ε·(|a·ln x| + |b·ln y| + |ln B|)/2`
+/// absolute, which is not small against an O(1) log where they cancel
+/// (`a·ln x` and `ln B` ~90 each at `ln I_{1.3e-11}(3.46, 2.7e11)`, `b·ln y`
+/// 3.5); the F quantile solver ends on a
+/// step on the mass itself (`polish_root`), which takes the `pow`.
 /// Measured against mpmath (`scripts/accuracy_sweep.py`): error ratio r ≤ 9.4
-/// on every branch but the complement side with `min(a, b) < 8`, which
-/// reaches r 12 where `log1p(−(1 − I))` is a small log (1.1e-14 relative at
-/// `ln I_{1.01e-10}(0.001, 1e10)` ≈ −2.2e-4).
+/// on every branch (the worst on `bfrac`'s own side with `min(a, b) < 8`).
 #[doc(hidden)]
 pub fn ln_betai(a: f64, b: f64, x: f64, y: f64) -> f64 {
     if x <= 0.0 {
@@ -633,11 +649,26 @@ pub(crate) fn betai_parts(a: f64, b: f64, x: f64, y: f64) -> (f64, f64, bool) {
     betai_kernel(a, b, x, y, false)
 }
 
+/// `|λ|` within which `betai_kernel` takes DiDonato & Morris's `bratio` route
+/// for a shape ≤ 1 also where `bfrac` would evaluate the same side. Measured
+/// against mpmath with each route forced, the small shape in [1e-3, 1] and the
+/// large one in [20, 1e17], 36 points per `|λ|`: the fraction's worst relative
+/// error is above `bgrat`'s through `|λ| = 6` (63ε against 12ε at 1, 22ε
+/// against 6ε at 4, 7.8ε against 5.5ε at 6) and below it at 8 (5.4ε against
+/// 7.5ε), where `bgrat` carries the rounding of its `z ≈ |λ|` into `e^{−z}`;
+/// the same holds with the large shape up to 1e10 and beyond it. `bgrat` is
+/// also the cheaper there (9% over `|λ|` in [3.5, 6]).
+/// Mirrored in `scripts/accuracy_sweep.py` (`beta_regime`).
+const SAME_SIDE_LAMBDA: f64 = 6.0;
+
 /// [`betai_parts`]; with `ln_i` the caller takes only `ln I` (`ln_betai`),
 /// so where `bfrac` evaluates `I` itself with `a ≥ 1`, `brcomp` skips `pow`:
 /// `ln m + e` of its one-f64 exponent already keeps ~ε relative in the log.
 /// For `a < 1` it does not (see the `bfrac` call below).
 fn betai_kernel(a: f64, b: f64, x: f64, y: f64, ln_i: bool) -> (f64, f64, bool) {
+    if a.min(b) < f64::MIN_POSITIVE && a.min(b) > 0.0 {
+        return subnormal_shape(a, b, x, y, ln_i);
+    }
     let lambda = beta_lambda(a, b, x, y);
     let min_ab = a.min(b);
     if min_ab > 100.0 && lambda.abs() <= 0.03 * min_ab {
@@ -662,23 +693,41 @@ fn betai_kernel(a: f64, b: f64, x: f64, y: f64, ln_i: bool) -> (f64, f64, bool) 
     // the other one, it would leave that value as `1 −` its complement, with
     // ε absolute (a small `I` at `b ≪ 1` above the reflection point, or the
     // `ln I` of an `I` near 1 at `a ≪ 1` below it); there `bratio`'s route is
-    // taken instead. Where both take the same side, `bfrac` stays.
-    if min_ab <= 1.0 && lower != (x > 0.5) {
-        let parts = if lower {
+    // taken instead. Where both take the same side, `bratio`'s route is
+    // taken too within `SAME_SIDE_LAMBDA` of the reflection point: there the
+    // fraction needs many terms with one shape large (x near 1) and keeps
+    // their rounding, ~30ε at `|λ| ≈ 1` (`betai(0.0058, 475025, 2.4e-6)`'s
+    // complement), where `bgrat` stays under 12ε (see `SAME_SIDE_LAMBDA`).
+    // Farther out the fraction holds ~5ε and `bgrat` would carry the rounding
+    // of its `z ≈ |λ|` into `e^{−z}` (2e-14 relative at `z = 500`).
+    if min_ab <= 1.0 {
+        // The shape and argument on the side `small_shape_upper` takes.
+        let (s, t, u) = if x <= 0.5 { (a, b, x) } else { (b, a, y) };
+        if s <= 1.0 && u < f64::MIN_POSITIVE {
+            if let Some((m, e)) = subnormal_argument(s, t, u, ln_i) {
+                if value_of_parts(m, e) <= 0.5 {
+                    return (m, e, x <= 0.5);
+                }
+            }
+        }
+    }
+    if min_ab <= 1.0 && (lower != (x > 0.5) || lambda.abs() <= SAME_SIDE_LAMBDA) {
+        let parts = if x <= 0.5 {
             small_shape_upper(a, b, x, y)
         } else {
             small_shape_upper(b, a, y, x)
         };
         if let Some((m, e)) = parts {
-            return (m, e, lower);
+            return (m, e, x <= 0.5);
         }
     }
     // The log form's `−ln B(a, b) ≈ ln a` cancels against the `1/a` in the
     // fraction for `a < 1`, where `ln I` is O(1) and would keep `|ln a|·ε`
-    // absolute (1.3e-15 at a = 0.014, ln I = −0.11). For `a ≥ 1` nothing of
-    // that size cancels, and `ln_i` skips the `pow` a precise prefactor costs
-    // on every step of the t and F quantile Newton iteration (t: `a = df/2`,
-    // so df ≥ 2). The complement is exponentiated by its caller
+    // absolute (1.3e-15 at a = 0.014, ln I = −0.11). For `a ≥ 1` `ln_i`
+    // skips the `pow` a precise prefactor costs on every step of the t and F
+    // quantile Newton iteration (t: `a = df/2`, so df ≥ 2), at the rounding of
+    // the exponent's terms where they cancel (see `ln_betai`), which the F
+    // solver's last step on the mass removes. The complement is exponentiated by its caller
     // (`log1p(−(1 − I))`), so it is always precise.
     let ((m, e), complement) = if lower {
         (bfrac(a, b, x, y, lambda, !ln_i || a < 1.0), false)
@@ -686,6 +735,129 @@ fn betai_kernel(a: f64, b: f64, x: f64, y: f64, ln_i: bool) -> (f64, f64, bool) 
         (bfrac(b, a, y, x, -lambda, true), true)
     };
     (m, e, complement)
+}
+
+/// `betai_kernel` with a subnormal shape, where `1/Γ(a) = a·(1 + gam1(a))`
+/// is subnormal and `bfrac`'s `b/a` overflows. With `a` subnormal and `b`
+/// normal, `B(b, a) = (a + b)/(ab)·Γ(1 + a)Γ(1 + b)/Γ(1 + a + b)` and
+/// `(1 − t)^{a−1} = (1 − t)^{−1}·e^{a·ln(1 − t)}` give
+/// `1 − I_x(a, b) = I_y(b, a) = ab/(a + b)·∫₀^y t^{b−1}/(1 − t) dt` to a
+/// relative `O(a·(|ln x| + ψ(1 + b)))`, below 1e-300: so it is the kernel's
+/// value at the normal `a' = 2⁹⁰⁰·a` (where that term is below 1e-34) times
+/// `a(a' + b)/(a'(a + b))`. The `2⁻⁹⁰⁰` goes to the exponent as
+/// `−900·ln 2` (with the rounding of `ln 2`), kept to twice f64 precision;
+/// a value in the normal range (`b` within a few powers of ten of `a`) is
+/// then formed, so `ln I` does not take the difference of the two ~620-sized
+/// logs `ln m + e` (r 14).
+/// That holds at any `x`, but the kernel itself fails at a subnormal argument
+/// (`bgrat`'s `z = ν·x` subnormal, then `1 −` a `bfrac` value near 1), so
+/// there the integral `K(b, y) = ∫₀^y t^{b−1}/(1 − t) dt` is formed instead:
+/// for a subnormal `x` (`y` rounds to 1), `K(b, 1 − x₀)` from the stand-in
+/// at the normal `x₀ = 2⁻¹⁰²²`, plus `∫_x^{x₀} (1 − u)^{b−1}/u du =
+/// ln(x₀/x) − (Ein(c·x₀) − Ein(c·x))`, `c = b − 1` (`(1 − u)^c = e^{−c·u}` to
+/// resolution there, `|c·x₀| < 4`); for a subnormal `y`, `K = y^b/b`, its
+/// series' next term `b·y/(b + 1)` below resolution.
+/// With both shapes subnormal, `I_x(a, b) = b/(a + b)` to a relative
+/// `O(min(a, b)·|ln(x/y)|)`, the smaller side given directly (`a + b` is
+/// exact there).
+fn subnormal_shape(a: f64, b: f64, x: f64, y: f64, ln_i: bool) -> (f64, f64, bool) {
+    // 2^900 and `ln 2 − fl(ln 2)`.
+    const UP: f64 = 8.452_712_498_170_644e270;
+    const LN_2_LO: f64 = 2.319_046_813_846_299_6e-17;
+    if a.max(b) < f64::MIN_POSITIVE {
+        let s = a + b;
+        return if b <= a {
+            (b / s, 0.0, false)
+        } else {
+            (a / s, 0.0, true)
+        };
+    }
+    if b < f64::MIN_POSITIVE {
+        let (m, e, complement) = subnormal_shape(b, a, y, x, ln_i);
+        return (m, e, !complement);
+    }
+    let a1 = a * UP;
+    // The tail times 2⁹⁰⁰, as `m·e^{expo}`.
+    let stand_in = |x, y| {
+        let (m, e, complement) = betai_kernel(a1, b, x, y, ln_i);
+        let (m, e) = if complement {
+            (m, e)
+        } else {
+            (1.0 - value_of_parts(m, e), 0.0)
+        };
+        (m * ((a1 + b) / (a + b)), e)
+    };
+    let (m, e) = if x < f64::MIN_POSITIVE {
+        // 2^1022, and `x₀ = 2⁻¹⁰²²`: `ln(x₀/x) = −ln(x·2^1022)`, exact scaling.
+        const UP_MIN: f64 = 4.494_232_837_155_79e307;
+        let (m0, e0) = stand_in(f64::MIN_POSITIVE, 1.0);
+        let c = b - 1.0;
+        let tail = -libm::log(x * UP_MIN) - (ein(c * f64::MIN_POSITIVE) - ein(c * x));
+        (value_of_parts(m0, e0) + a1 * (b / (a + b)) * tail, 0.0)
+    } else if y < f64::MIN_POSITIVE {
+        (a1 / (a + b), b * libm::log(y))
+    } else {
+        stand_in(x, y)
+    };
+    let mut expo = Expo { hi: e, lo: 0.0 };
+    expo.add_prod(-900.0, core::f64::consts::LN_2);
+    expo.add(-900.0 * LN_2_LO);
+    let (m, e) = expo.apply(m);
+    let v = value_of_parts(m, e);
+    if v >= f64::MIN_POSITIVE {
+        (v, 0.0, true)
+    } else {
+        (m, e, true)
+    }
+}
+
+/// `1 − I_x(a, b)` for `a ≤ 1` (normal) and a subnormal `x`, as `(m, e)`,
+/// where `small_shape_upper`'s `bgrat` gives up (`z = ν·x` subnormal) and
+/// `bfrac`'s `I` near 1 would leave it as `1 − I`, ε absolute. It is its value
+/// at `x₀ = 2^{−k}`, the largest with `b·x₀ ≤ 2⁻⁶⁰`, where the kernel holds,
+/// plus `I_{x₀} − I_x = (x₀^a − x^a)/(a·B(a, b))`: on `[x, x₀]` the factor
+/// `(1 − t)^{b−1}` and `bpser`'s further terms are 1 to within `b·x₀`.
+/// `x₀^a − x^a = x₀^a·(−expm1(a·ln(x/x₀)))`, and `1/(a·B(a, b)) =
+/// Γ(a + b)/(Γ(1 + a)·Γ(b))` from `gam1`, `rgamma_small`/`rgamma_sum` or
+/// `algdiv`, without `ln B`'s ~700 for a tiny `a`. `None` for `b > 2^962`
+/// (no normal `x₀`). Callers take it only where it is the smaller side.
+fn subnormal_argument(a: f64, b: f64, x: f64, ln_i: bool) -> Option<(f64, f64)> {
+    let k = 60.0 + libm::ceil(libm::log2(b)).max(0.0);
+    if k > 1022.0 {
+        return None;
+    }
+    let x0 = libm::scalbn(1.0, -(k as i32));
+    let (m, e, complement) = betai_kernel(a, b, x0, 1.0, ln_i);
+    let j0 = if complement {
+        value_of_parts(m, e)
+    } else {
+        1.0 - value_of_parts(m, e)
+    };
+    let rab = if b < 8.0 {
+        rgamma_small(b) / rgamma_sum(a, b)
+    } else {
+        libm::exp(-algdiv(a, b))
+    };
+    let d = libm::exp(a * libm::log(x0))
+        * -libm::expm1(a * libm::log(libm::scalbn(x, k as i32)))
+        * (1.0 + gam1(a))
+        * rab;
+    Some((j0 + d, 0.0))
+}
+
+/// `Ein(t) = ∫₀ᵗ (1 − e^{−s})/s ds = Σ_{k≥1} (−1)^{k+1}·t^k/(k·k!)` (DLMF
+/// 6.2.3), for `|t| ≤ 4`, where the largest term is under 3 and the sum keeps
+/// all but a digit.
+fn ein(t: f64) -> f64 {
+    let mut p = t;
+    let mut sum = t;
+    let mut k = 1.0;
+    while (p / k).abs() > 0.5 * f64::EPSILON * sum.abs() {
+        k += 1.0;
+        p *= -t / k;
+        sum += p / k;
+    }
+    sum
 }
 
 /// `(scale, expo)` with `x^a·y^b/B(a,b) = scale·e^{expo}`, `y = 1 − x`
@@ -704,7 +876,7 @@ fn betai_kernel(a: f64, b: f64, x: f64, y: f64, ln_i: bool) -> (f64, f64, bool) 
 /// rounded value and `c` the exact residual (Fast2Sum, as `1 >` the operand),
 /// for `brcomp_small`'s `pow`: `(1 − x)^b` from `1 − x` rounded would carry
 /// `b·ε`, 1e-11 at the t distribution's `b = df/2 = 1e5`.
-fn brcomp(a: f64, b: f64, x: f64, y: f64, lambda: f64, precise: bool) -> (f64, f64) {
+pub(crate) fn brcomp(a: f64, b: f64, x: f64, y: f64, lambda: f64, precise: bool) -> (f64, f64) {
     if a.min(b) >= 8.0 {
         let x0 = a / (a + b);
         return (
@@ -766,7 +938,12 @@ fn brcomp_small(
     (yh, cy, ln_y): (f64, f64, f64),
 ) -> Option<(f64, f64)> {
     let (mut scale, mut expo, powers) = if a.max(b) < 8.0 {
-        let r = rgamma_small(a) * rgamma_small(b) / rgamma_sum(a, b);
+        // The larger factor over the sum first: with both shapes tiny the
+        // product `1/Γ(a)·1/Γ(b) ≈ ab` would go subnormal (or to 0, leaving
+        // the log form's ~700ε) before the division by `1/Γ(a + b) ≈ a + b`
+        // brings it back (1e-5 relative at `a = 1e-300`, `b = 1e-20`).
+        let (ra, rb) = (rgamma_small(a), rgamma_small(b));
+        let r = ra.min(rb) * (ra.max(rb) / rgamma_sum(a, b));
         let e = Expo { hi: 0.0, lo: 0.0 };
         (r, e, [(xh, cx, a, ln_x), (yh, cy, b, ln_y)])
     } else {
@@ -992,7 +1169,8 @@ fn basym(a: f64, b: f64, lambda: f64) -> (f64, f64) {
 /// itself (its `bpser` and `fpser`), which the caller leaves to `bfrac`.
 /// `bratio`'s `apser`, for `a < 1e-15·min(1, b)`, is not taken: it needs
 /// ψ(b) to full precision, and `bpser`/`bgrat` below hold there too while
-/// `a` is normal (every O(a) factor is formed without cancellation).
+/// `a` is normal (every O(a) factor is formed without cancellation); a
+/// subnormal `a` never reaches here (`subnormal_shape`).
 fn small_shape_upper(a: f64, b: f64, x: f64, y: f64) -> Option<(f64, f64)> {
     // `bratio`'s tolerance max(ε, 1e-15) in its branch tests.
     const EPS: f64 = 1e-15;
@@ -1076,10 +1254,16 @@ fn bup(a: f64, b: f64, x: f64, y: f64, n: usize) -> (f64, f64) {
 /// `J_n` from the one before plus a multiple of `r = z^b·e^{−z}/Γ(b)`.
 /// Everything is kept in units of `r`, whose `(scale, expo)` is the incomplete
 /// gamma kernel's own prefactor (so `J_0/r` of its continued fraction is that
-/// fraction exactly); `e^{expo}` stays in the exponent. `None` where the
-/// expansion cannot be formed (`b·z` underflows, or a partial sum ≤ 0) or `z`
-/// is subnormal: its few remaining bits reach `Q(b, z)` scaled by `b·ln z`
-/// (1.2e-10 relative in `betai(4.1e-4, 6.1e5, 5e-324)`).
+/// fraction exactly); `e^{expo}` stays in the exponent. TOMS 708 also gives
+/// up where `b·z` underflows, which its `grat1` forms; here `J_0/r` and `r`
+/// are formed apart and hold there (`F(1e-20, 5).sf(1.12e-287)`, `b·z` ≈
+/// 2e-327). `w` is added as a multiple of `r`, unless that multiple (or its
+/// `w/scale`) passes the f64 range (≈ 1e352 at
+/// `betai(4.2e-53, 1e-300, 0.75)`, `scale` ≈ 1e-300); then in the units of
+/// whichever of the two exponents is larger. `None` where a partial sum is
+/// ≤ 0, or `z` is subnormal: its few remaining bits reach `Q(b, z)` scaled
+/// by `b·ln z` (1.2e-10 relative in `betai(4.1e-4, 6.1e5, 5e-324)`); a
+/// subnormal argument goes to `subnormal_argument` first.
 fn bgrat(a: f64, b: f64, x: f64, y: f64, (mw, ew): (f64, f64)) -> Option<(f64, f64)> {
     const TERMS: usize = 30;
     let bm1 = b - 1.0;
@@ -1090,7 +1274,7 @@ fn bgrat(a: f64, b: f64, x: f64, y: f64, (mw, ew): (f64, f64)) -> Option<(f64, f
         libm::log1p(-y)
     };
     let z = -nu * lnx;
-    if z < f64::MIN_POSITIVE || b * z == 0.0 {
+    if z < f64::MIN_POSITIVE {
         return None;
     }
     let (scale, expo) = gamma_prefactor(b, z, true);
@@ -1104,13 +1288,30 @@ fn bgrat(a: f64, b: f64, x: f64, y: f64, (mw, ew): (f64, f64)) -> Option<(f64, f
         let (m, e, upper) = gamma_pq(b, z, None);
         pq_from_parts(m, e, upper).1 / scale * libm::exp(-expo)
     };
-    // M·r = scale·e^{expo + ln M}; the caller's `w` in those units.
-    let ln_m = -(algdiv(b, a) + b * libm::log(nu));
-    let l = if mw > 0.0 {
+    // ln M = ln(Γ(a+b)/Γ(a)) − b·ln ν. `algdiv(b, a) + b·ln ν` would cancel
+    // `b·ln a` against `b·ln ν` (25 at a = 1e15, b = 0.7, ~20ε in M); with
+    // `algdiv`'s own terms, `ln(Γ(a+b)/Γ(a)) = (a + b − ½)·ln(1 + b/a) −
+    // b·(1 − ln a) − (δ(a) − δ(a+b))`, and `ln ν = ln a + ln(1 + (b − 1)/(2a))`,
+    // the `b·ln a` drops out: what cancels is `(a + b − ½)·ln(1 + b/a) ≈ b`
+    // against `b`, ε·b absolute. (A subnormal `b/a` as in `algdiv`.)
+    let h = b / a;
+    let u = if h < f64::MIN_POSITIVE {
+        b * (1.0 + (b - 0.5) / a)
+    } else {
+        (a + (b - 0.5)) * libm::log1p(h)
+    };
+    let ln_m = (u - b) - b * libm::log1p(0.5 * bm1 / a) - stirling_del_diff(b, a);
+    // M·r = scale·e^{expo + ln M}; the caller's `w` in those units. Where
+    // that overflows, it serves only the stopping test, formed in logs.
+    let mut l = if mw > 0.0 {
         mw / scale * libm::exp(ew - expo - ln_m)
     } else {
         0.0
     };
+    let split = !l.is_finite();
+    if split {
+        l = libm::exp(libm::log(mw) - libm::log(scale) + ew - expo - ln_m);
+    }
     let v = 0.25 / (nu * nu);
     let t2 = 0.25 * lnx * lnx;
     let mut c = [0.0; TERMS];
@@ -1141,7 +1342,15 @@ fn bgrat(a: f64, b: f64, x: f64, y: f64, (mw, ew): (f64, f64)) -> Option<(f64, f
             break;
         }
     }
-    Some((scale * libm::exp(ln_m) * (sum + l), expo))
+    if !split {
+        return Some((scale * libm::exp(ln_m) * (sum + l), expo));
+    }
+    let part = scale * libm::exp(ln_m) * sum;
+    Some(if ew >= expo {
+        (mw + part * libm::exp(expo - ew), ew)
+    } else {
+        (part + mw * libm::exp(ew - expo), expo)
+    })
 }
 
 #[cfg(test)]

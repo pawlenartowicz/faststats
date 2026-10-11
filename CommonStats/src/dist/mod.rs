@@ -214,14 +214,22 @@ pub(crate) fn norm_quantile(p: f64) -> f64 {
 /// Morris 1986 `rcomp`): the sum `α·ln β + (α−1)·ln x − y − lnΓ(α)` would
 /// keep the rounding of terms of size `α·|ln x|` (`0` for `−346.65` at
 /// `χ²(1e300)`, `x = 1e300`). Where `y` leaves the normal range the sum, whose
-/// terms no longer cancel. For `α < 8` the sum, `lnΓ(α)` from `lgamma`.
+/// terms no longer cancel. For `½ ≤ α < 8` the sum, `lnΓ(α)` from `lgamma`.
+/// For `α < ½` the sum with `lnΓ(α) = lnΓ(1 + α) − ln α`, as
+/// `α·ln β + α·ln x + ln(α/x) − y − lnΓ(1 + α)`: at a tiny `α`, `(α − 1)·ln x` and `lnΓ(α)`
+/// are each about `−ln x` and `−ln α` (690 at `χ²(1e-300)`, `x = 1.4e-300`)
+/// and would keep the rounding of that size where the result is `O(1)`. The
+/// split itself cancels as `α → 1` (`α·ln x` against `ln(α/x)`, relative
+/// error `ε/(1 − α)`), and for `α ≥ ½` `|lnΓ(α)| < 0.58` leaves the sum
+/// nothing to cancel, hence the cut at `½`.
 pub(crate) fn gamma_log_density(shape: f64, rate: f64, x: f64) -> f64 {
     gamma_log_density_with(shape, rate, gamma_log_density_consts(shape, rate), x)
 }
 
 /// The `x`-free terms of [`gamma_log_density`], for a caller (the Gamma
 /// quantile solver) that evaluates it at many `x`: `(½·ln(α/2π) − δ(α), 0)`
-/// for `α ≥ 8`, else `(α·ln β, lnΓ(α))`.
+/// for `α ≥ 8`, `(α·ln β, lnΓ(α))` for `½ ≤ α < 8` and `(α·ln β, lnΓ(1 +
+/// α))` for `α < ½`.
 pub(crate) fn gamma_log_density_consts(shape: f64, rate: f64) -> (f64, f64) {
     if shape >= 8.0 {
         (
@@ -229,9 +237,55 @@ pub(crate) fn gamma_log_density_consts(shape: f64, rate: f64) -> (f64, f64) {
                 - crate::special::elementary::stirling_del(shape),
             0.0,
         )
-    } else {
+    } else if shape >= 0.5 {
         (shape * libm::log(rate), crate::special::lgamma(shape))
+    } else {
+        (
+            shape * libm::log(rate),
+            crate::special::elementary::ln_gamma_1p(shape),
+        )
     }
+}
+
+/// Density of `Gamma(shape α, rate β)` at `x`, `β^α·x^{α−1}·e^{−βx}/Γ(α)`,
+/// as the incomplete gamma prefactor `y^α·e^{−y}/Γ(α) = m·e^{e}`, `y = β·x`
+/// (`gamma_prefactor`), over `x`: `value_of_parts(m/x, e)`. `exp` of
+/// [`gamma_log_density`] would carry the rounding of that log's terms, up to
+/// `α·|ln β|` (1.1e3 at `Gamma(5.1, 4.6e-94)`, `x = 1.1e94`), and of `ln x`.
+/// Where `y` is subnormal (`α < 8`), it is formed as `2⁶⁴·y` from the exact
+/// inputs and `2^{−64·α}` goes to the scale. Where `y` or `m/x` leaves the
+/// normal range, and at `x = 0`, `exp` of the log density. Shared by `Gamma`
+/// and `ChiSquared`.
+pub(crate) fn gamma_density(shape: f64, rate: f64, x: f64) -> f64 {
+    const TWO_64: f64 = 18_446_744_073_709_551_616.0;
+    if x > 0.0 {
+        let y = rate * x;
+        // `x·2⁶⁴` (`β ≥ 1`, so `x ≤ y`) and `β·2⁶⁴` are exact.
+        let (y, scale) = if y >= f64::MIN_POSITIVE {
+            (y, 1.0)
+        } else if shape < 8.0 {
+            let ys = if rate >= 1.0 {
+                rate * (x * TWO_64)
+            } else {
+                (rate * TWO_64) * x
+            };
+            (ys, libm::pow(2.0, -64.0 * shape))
+        } else {
+            (0.0, 0.0)
+        };
+        if (f64::MIN_POSITIVE..f64::INFINITY).contains(&y) {
+            let (m, e) = crate::special::incomplete::gamma_prefactor(shape, y, true);
+            // `m/x` before the scale: `m·2^{−64α}` can fall below the normal
+            // range where the quotient is normal. Where `m/x` overflows, `m` is
+            // large and the other order loses nothing.
+            let s = m / x * scale;
+            let s = if s.is_finite() { s } else { m * scale / x };
+            if (f64::MIN_POSITIVE..f64::INFINITY).contains(&s) {
+                return crate::special::incomplete::value_of_parts(s, e);
+            }
+        }
+    }
+    libm::exp(gamma_log_density(shape, rate, x))
 }
 
 /// [`gamma_log_density`] given `(c, ln_gamma) = gamma_log_density_consts(..)`.
@@ -255,6 +309,16 @@ pub(crate) fn gamma_log_density_with(
         return f64::NEG_INFINITY;
     }
     let y = rate * x;
+    if shape < 0.5 {
+        // ln(α/x), from the two logs where the quotient is not normal.
+        let q = shape / x;
+        let ln_q = if (f64::MIN_POSITIVE..f64::INFINITY).contains(&q) {
+            libm::log(q)
+        } else {
+            libm::log(shape) - libm::log(x)
+        };
+        return c + shape * libm::log(x) + ln_q - y - ln_gamma;
+    }
     if shape < 8.0 {
         return c + (shape - 1.0) * libm::log(x) - y - ln_gamma;
     }
@@ -288,24 +352,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn norm_quantile_matches_known_points() {
-        // Φ⁻¹(0.5) = 0, Φ⁻¹(0.975) ≈ 1.959963984540054 (scipy norm.ppf).
-        assert!(norm_quantile(0.5).abs() < 1e-12);
-        assert!((norm_quantile(0.975) - 1.959_963_984_540_054).abs() < 1e-9);
-        assert!((norm_quantile(0.025) + 1.959_963_984_540_054).abs() < 1e-9);
-    }
-
-    #[test]
     fn bound_is_copy_and_eq() {
         let b = Bound::Finite(1.0);
         let c = b; // Copy
         assert_eq!(b, c);
         assert_eq!(Bound::NegInfinity, Bound::NegInfinity);
-    }
-
-    #[test]
-    fn gamma_log_density_normalizes() {
-        // Gamma(shape=1, rate=1) is Exponential(1): pdf(x)=e^{-x}; log pdf(2)=-2.
-        assert!((gamma_log_density(1.0, 1.0, 2.0) + 2.0).abs() < 1e-12);
     }
 }

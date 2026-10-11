@@ -218,7 +218,7 @@ pub(crate) fn stirling_del(x: f64) -> f64 {
 /// `x = b/(a+b)`, `c = a/(a+b) = 1 − x` and `s_n = 1 + x + … + x^{n−1}`
 /// (from `b^{−n} − (a+b)^{−n} = b^{−n}(1 − x^n)`). The difference is formed
 /// without subtracting the two corrections (DiDonato & Morris 1992, `algdiv`).
-fn stirling_del_diff(a: f64, b: f64) -> f64 {
+pub(crate) fn stirling_del_diff(a: f64, b: f64) -> f64 {
     let h = a / b;
     let (c, x) = (h / (1.0 + h), 1.0 / (1.0 + h));
     let x2 = x * x;

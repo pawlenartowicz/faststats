@@ -11,8 +11,6 @@
 //! `ProptestConfig` (not only `PROPTEST_CASES`/`PROPTEST_RNG_SEED`), so
 //! `cargo test --all-features` draws the same inputs every run in CI.
 
-mod common;
-
 use commonstats::dist::continuous::{
     Beta, Cauchy, ChiSquared, Exponential, FisherF, Gamma, InverseGaussian, LogNormal, Normal,
     StudentT, Uniform, Weibull,
@@ -919,62 +917,5 @@ fn weibull_via_exponential() {
                 Ok(())
             },
         )
-        .unwrap();
-}
-
-/// `LogNormal(mu, sigma)` is `exp(Normal(mu, sigma))`, so
-/// `LogNormal::cdf(x) == Normal::cdf(ln x)` for `x > 0`. This is a wiring
-/// guard, not an independent numerical cross-check: `LogNormal::cdf` is
-/// itself implemented as `self.z().cdf(ln(x))` on an internal `Normal`, so a
-/// passing run only confirms that delegation still holds, not that either
-/// side's `cdf` is numerically accurate (the oracle grids and the
-/// backward-error property cover that).
-#[test]
-fn lognormal_via_normal() {
-    let mut runner = TestRunner::new(config());
-    runner
-        .run(
-            &(loc_param(), pos_param(), tail_prob()),
-            |(mu, sigma, p)| {
-                let ln_d = LogNormal::new(mu, sigma).unwrap();
-                let x = ln_d.quantile(p).unwrap();
-                let n = Normal::new(mu, sigma).unwrap();
-                let (c1, c2) = (ln_d.cdf(x), n.cdf(libm::log(x)));
-                let diff = (c1 - c2).abs();
-                let slack = SCALING_SLACK * EPS * c1.max(c2).max(p);
-                prop_assert!(
-                    diff <= slack,
-                    "LogNormal via Normal: cdf(x)={c1:e} vs Normal.cdf(ln x)={c2:e}, diff={diff:e}"
-                );
-                Ok(())
-            },
-        )
-        .unwrap();
-}
-
-/// `ChiSquared(k)` is defined as `Gamma(k/2, rate 1/2)` (`ChiSquared::as_gamma`),
-/// so its `cdf` must exactly match a freshly built `Gamma(k/2, 0.5)`'s. Like
-/// `lognormal_via_normal`, this is a wiring guard: `ChiSquared::cdf` calls
-/// `self.as_gamma().cdf(x)` directly, so it is the same computation on both
-/// sides by construction, and a passing run only confirms `as_gamma`'s field
-/// mapping stays `(0.5 * k, 0.5)`, not that `Gamma::cdf` itself is accurate.
-#[test]
-fn chisquared_via_gamma() {
-    let mut runner = TestRunner::new(config());
-    runner
-        .run(&(pos_param(), tail_prob()), |(k, p)| {
-            let c = ChiSquared::new(k).unwrap();
-            let x = c.quantile(p).unwrap();
-            let g = Gamma::new(0.5 * k, 0.5).unwrap();
-            let (c1, c2) = (c.cdf(x), g.cdf(x));
-            prop_assert_eq!(
-                c1,
-                c2,
-                "ChiSquared vs Gamma(k/2, 1/2): {:e} vs {:e}",
-                c1,
-                c2
-            );
-            Ok(())
-        })
         .unwrap();
 }

@@ -21,6 +21,12 @@ pub enum Scheme {
     Bootstrap,
 }
 
+/// `n` as the `u32` the indices and the bounded draws use, or
+/// [`StatError::DomainError`] when it does not fit.
+fn index_bound(n: usize) -> Result<u32, StatError> {
+    u32::try_from(n).map_err(|_| StatError::DomainError("resample: n must be <= u32::MAX"))
+}
+
 /// Fill `out` with the row indices for one resample draw, draw-addressable and
 /// allocation-free.
 ///
@@ -34,7 +40,9 @@ pub enum Scheme {
 /// index in `0..B`. `seed`: the run seed. `out`: caller-owned buffer that
 /// receives the indices; **its length must equal `n`**.
 ///
-/// Returns [`StatError::MismatchedLengths`] when `out.len() != n`.
+/// Returns [`StatError::DomainError`] when `n > u32::MAX` (the indices are
+/// `u32`, and so is the bound the generator draws from), checked first;
+/// [`StatError::MismatchedLengths`] when `out.len() != n`.
 ///
 /// ```
 /// use commonstats::{gen_resample_indices, Scheme};
@@ -51,6 +59,7 @@ pub fn gen_resample_indices(
     seed: u64,
     out: &mut [u32],
 ) -> Result<(), StatError> {
+    let n32 = index_bound(n)?;
     if out.len() != n {
         return Err(StatError::MismatchedLengths { a: n, b: out.len() });
     }
@@ -60,17 +69,16 @@ pub fn gen_resample_indices(
     let mut rng = CommonStatsRng::new(seed, draw_id);
     match scheme {
         Scheme::Permutation => {
-            for (i, slot) in out.iter_mut().enumerate() {
-                *slot = i as u32;
+            for (i, slot) in (0..n32).zip(out.iter_mut()) {
+                *slot = i;
             }
             // Fisher–Yates: for i = n-1 down to 1, swap i with a uniform j in [0, i].
-            for i in (1..n).rev() {
-                let j = rng.bounded((i + 1) as u32) as usize;
-                out.swap(i, j);
+            for i in (1..n32).rev() {
+                let j = rng.bounded(i + 1) as usize;
+                out.swap(i as usize, j);
             }
         }
         Scheme::Bootstrap => {
-            let n32 = n as u32;
             for slot in out.iter_mut() {
                 *slot = rng.bounded(n32);
             }
@@ -143,7 +151,7 @@ pub fn gen_sign_flips(n: usize, draw_id: u64, seed: u64, out: &mut [f64]) -> Res
 /// `dist` is constructed and owned by the caller (e.g. `NullDist::new(observed,
 /// side)` or `BootDist::new(level)`).
 ///
-/// Returns [`StatError::DomainError`] when `b == 0`.
+/// Returns [`StatError::DomainError`] when `b == 0` or `n > u32::MAX`.
 ///
 /// ```
 /// use commonstats::{run_serial, NullDist, Scheme, Sidedness};
@@ -177,6 +185,8 @@ where
     if b == 0 {
         return Err(StatError::DomainError("run_serial: B must be >= 1"));
     }
+    // Before the allocation: an `n` past u32::MAX would ask for ≥ 16 GiB first.
+    index_bound(n)?;
     let mut idx = vec![0u32; n];
     for draw_id in 0..b {
         gen_resample_indices(scheme, n, draw_id, seed, &mut idx)?;
@@ -231,6 +241,16 @@ mod tests {
         let mut c = vec![0u32; n];
         gen_resample_indices(Scheme::Permutation, n, 6, 77, &mut c).unwrap();
         assert_ne!(a, c, "different draw_id must differ");
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn n_past_u32_range_errors() {
+        // Indices are u32: n = 2³² cannot be indexed, and its u32 cast would be 0.
+        assert!(matches!(
+            gen_resample_indices(Scheme::Bootstrap, u32::MAX as usize + 1, 0, 1, &mut []),
+            Err(StatError::DomainError(_))
+        ));
     }
 
     #[test]
