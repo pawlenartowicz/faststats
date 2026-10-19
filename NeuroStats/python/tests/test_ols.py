@@ -181,6 +181,12 @@ def test_load_refuses_a_file_that_is_not_a_saved_result(tmp_path):
     (tmp_path / "text.npz").write_text("not an archive")
     with pytest.raises(ValueError):
         ns.TfceInference.load(tmp_path / "text.npz")
+    # Every array present, but the meta is not the dict `save` writes.
+    for meta in ("{}", "[]"):
+        np.savez(tmp_path / "meta.npz", meta=np.array(meta), exceed=np.zeros(3),
+                 **{k: np.zeros(3) for k in MAPS})
+        with pytest.raises(ValueError, match="not a saved result"):
+            ns.TfceInference.load(tmp_path / "meta.npz")
 
 
 def test_extend_refusals():

@@ -290,6 +290,11 @@ impl<'a> PermProblem<'a> {
         let flip = tested.is_none();
         let exact = flip && n < 64 && (1u64 << n) <= opts.n_perm;
         let b = if exact { 1u64 << n } else { opts.n_perm };
+        // An enumerated draw id is a bit pattern, not a seeded draw: such a
+        // run cannot continue a Monte Carlo null.
+        if exact && opts.extend.is_some() {
+            return Err(NeuroError::InvalidParams);
+        }
         let mut problem = Self {
             domain,
             store,
@@ -311,11 +316,6 @@ impl<'a> PermProblem<'a> {
         };
         problem.observe()?;
         if let Some(state) = opts.extend {
-            // An enumerated draw id is a bit pattern, not a seeded draw: such
-            // a run cannot continue a Monte Carlo null.
-            if exact {
-                return Err(NeuroError::InvalidParams);
-            }
             problem.resume(state)?;
         }
         Ok(problem)

@@ -296,6 +296,39 @@ fn lattice_matches_csr_on_bands() {
     }
 }
 
+/// A CSR node may have any number of neighbours, not only a lattice's 26: a
+/// star whose hub has the lowest stat, so it activates after all 30 leaves.
+#[test]
+fn csr_hub_with_more_than_26_neighbours() {
+    let leaves = 30u32;
+    let mut offsets = vec![0, leaves];
+    let mut neighbours: Vec<u32> = (1..=leaves).collect();
+    for _ in 0..leaves {
+        neighbours.push(0);
+        offsets.push(neighbours.len() as u32);
+    }
+    let dom = Domain::from_csr(offsets, neighbours).unwrap();
+    let mut stat = vec![2.0; leaves as usize + 1];
+    stat[0] = 1.0;
+    for w in [
+        Weighting::MneStep,
+        Weighting::SmithNichols,
+        Weighting::Exact,
+        Weighting::Nilearn,
+    ] {
+        let p = TfceParams {
+            e: 0.5,
+            h: 2.0,
+            start: 0.25,
+            step: 0.5,
+            weighting: w,
+        };
+        let fast = tfce(&dom, &stat, &p).unwrap();
+        let slow = tfce_naive(&dom, &stat, &p).unwrap();
+        assert_map_close(&format!("star {w:?}"), &fast, &slow, REL, ABS_FLOOR);
+    }
+}
+
 /// G6 — `tfce_bands` (union-find) ≈ `tfce_bands_naive` under non-strict
 /// membership and an irregular hand-written grid, on every small fixture.
 #[test]

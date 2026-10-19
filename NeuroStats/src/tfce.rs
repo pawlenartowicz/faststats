@@ -630,6 +630,9 @@ trait Neighbours {
     fn index_of(&self, i: usize) -> usize;
     /// Calls `f(u)` for every neighbour `u` of `v`, both in this index space.
     fn for_each<F: FnMut(usize)>(&self, v: usize, f: F);
+    /// Largest neighbour count of any node: the size of the sweep's per-event
+    /// buffers. A CSR row may be any length, not only a lattice's 26.
+    fn max_degree(&self) -> usize;
 }
 
 struct CsrView<'a> {
@@ -651,6 +654,14 @@ impl Neighbours for CsrView<'_> {
         for &u in &self.neighbours[lo..hi] {
             f(u as usize);
         }
+    }
+
+    fn max_degree(&self) -> usize {
+        self.offsets
+            .windows(2)
+            .map(|w| (w[1] - w[0]) as usize)
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -710,6 +721,10 @@ impl Neighbours for LatticeView<'_> {
             // the sweep skips them exactly as it skips an inactive node.
             f((v as i64 + self.delta[k]) as usize);
         }
+    }
+
+    fn max_degree(&self) -> usize {
+        self.n_off
     }
 }
 
@@ -890,7 +905,8 @@ fn sweep_bands_impl<G: Neighbours>(
     // Only nodes that clear the lowest band can ever activate.
     build_order(g, stat, |s| member(s, ths[0], strict), order, heights);
     uf.reset(g.len());
-    let (mut near, mut above) = ([0u32; 26], [0u32; 26]);
+    let d = g.max_degree();
+    let (mut near, mut above) = (alloc::vec![0u32; d], alloc::vec![0u32; d]);
     let mut ptr = 0usize;
     for i in (0..nt).rev() {
         let h = ths[i];
@@ -1082,7 +1098,8 @@ fn sweep_exact_impl<G: Neighbours>(
     // Only nodes above `start` can ever activate.
     build_order(g, stat, |s| s > h0, order, heights);
     uf.reset(g.len());
-    let (mut near, mut above) = ([0u32; 26], [0u32; 26]);
+    let d = g.max_degree();
+    let (mut near, mut above) = (alloc::vec![0u32; d], alloc::vec![0u32; d]);
     for (&v, &h) in order.iter().zip(heights.iter()) {
         let v = v as usize;
         // One power per event: every settlement at this height reuses it.
@@ -1234,8 +1251,8 @@ impl Forest {
         &self,
         g: &G,
         v: usize,
-        near: &mut [u32; 26],
-        above: &mut [u32; 26],
+        near: &mut [u32],
+        above: &mut [u32],
     ) -> usize {
         let mut n = 0usize;
         g.for_each(v, |u| {
