@@ -1,19 +1,21 @@
 //! Threshold-free cluster enhancement (TFCE) over a [`Domain`].
 //!
 //! Two implementations of one sum: stepped for [`Weighting::SmithNichols`] /
-//! [`Weighting::MneStep`], closed-form integral for [`Weighting::Exact`] (see
-//! its docs). [`tfce_naive`] re-labels connected components at every band
+//! [`Weighting::MneStep`] / [`Weighting::Nilearn`], closed-form integral for
+//! [`Weighting::Exact`] (see its docs). [`tfce_naive`] re-labels connected components at every band
 //! (the readable oracle, a transcription of MNE-Python's loop for the stepped
 //! rules), and [`tfce()`] sweeps the bands once with an incremental
 //! union-find (the product path). Both take the same [`TfceParams`] and agree
 //! within `1e-12` relative on every fixture in `tests/fixtures/tfce_*.json`.
 //!
 //! Which of the two the caller gets is not observable in the numbers beyond
-//! that tolerance, but the band rule is: a stepped weighting evaluates the
-//! `arange(start, max(stat), step)` grid, so `step` changes the answer, while
+//! that tolerance, but the band rule is: [`Weighting::SmithNichols`] and
+//! [`Weighting::MneStep`] evaluate the `arange(start, max(stat), step)` grid,
+//! so `step` changes the answer; [`Weighting::Nilearn`] evaluates 100 equal
+//! steps up to `max(stat)` and ignores `start` and `step`; and
 //! [`Weighting::Exact`] integrates over the distinct `stat` values and ignores
 //! `step` entirely. [`tfce_bands`] exposes the band list directly for callers
-//! that want neither grid.
+//! that want none of these grids.
 //!
 //! The module's oracle is MNE-Python 1.12.1
 //! (`mne.stats.cluster_level._find_clusters`, `tail=1`), frozen into
@@ -62,15 +64,35 @@ pub enum Weighting {
     /// `stat ≤ start` get 0. No external oracle: no reference tool emits this
     /// quantity in a form that can be frozen here. Validated union-find against
     /// naive to `rel 1e-12`
-    /// (`tests/perm_oracle.rs::g10_exact_union_find_matches_naive`) and as the
-    /// `step → 0` limit of `SmithNichols`
-    /// (`::g11_exact_is_limit_of_smith_nichols`).
+    /// (`tests/tfce_oracle.rs::g1_union_find_matches_naive_on_fixtures`,
+    /// `::g1_union_find_matches_naive_synthetic`) and as the `step → 0` limit
+    /// of `SmithNichols`
+    /// (`tests/perm_oracle.rs::g11_exact_is_limit_of_smith_nichols`).
     Exact,
+    /// nilearn `calculate_tfce` under `dh="auto"` (nilearn 0.14.1,
+    /// `mass_univariate/_utils.py`): 100 thresholds
+    /// `np.linspace(0, max(stat), 101)[1:]`, rebuilt for every map, so the
+    /// grid scales with the map and its last threshold is the maximum itself.
+    /// `w_i = h_i^h` with no `· step` factor, and membership is `stat >= h_i`
+    /// (not strict), so the largest node is a member of every band.
+    /// `start` and `step` are not used (still validated: pass any finite
+    /// `start` and any positive `step`). A map with `max(stat) <= 0` gets all
+    /// zeros, as in nilearn. The map is also all zeros when `max(stat) / 100`
+    /// is below `f64::MIN_POSITIVE`: the step is then subnormal and the
+    /// thresholds are no longer strictly increasing. Matches nilearn's
+    /// `calculate_tfce` to `rel 1e-12` on random maps and masks, one- and
+    /// two-sided (`NeuroStats/python/tests/test_tfce_parity.py` in the `faststats`
+    /// repository); union-find against naive to `rel 1e-12`
+    /// (`tests/tfce_oracle.rs::g1_union_find_matches_naive_on_fixtures`,
+    /// `::g1_union_find_matches_naive_synthetic`).
+    Nilearn,
 }
 
-/// TFCE parameters. Under the stepped rules, thresholds follow NumPy
+/// TFCE parameters. Under [`Weighting::SmithNichols`] and
+/// [`Weighting::MneStep`], thresholds follow NumPy
 /// `arange(start, max(stat), step)` (start inclusive, stop exclusive), so the
-/// largest node clears every band; [`Weighting::Exact`] uses no grid.
+/// largest node clears every band; [`Weighting::Nilearn`] builds its own grid
+/// from `max(stat)` and [`Weighting::Exact`] uses no grid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TfceParams {
     /// Extent exponent `E`. Smith–Nichols / MNE default `0.5`.
@@ -79,10 +101,12 @@ pub struct TfceParams {
     /// [`Weighting::Exact`].
     pub h: f64,
     /// First threshold `h_0`; nodes with `stat <= start` get 0. Finite;
-    /// `≥ 0` under [`Weighting::Exact`].
+    /// `≥ 0` under [`Weighting::Exact`]. Unused by [`Weighting::Nilearn`]
+    /// (pass any finite value).
     pub start: f64,
     /// Threshold spacing; must be `> 0` and finite. Unused by
-    /// [`Weighting::Exact`] (pass any positive value).
+    /// [`Weighting::Exact`] and [`Weighting::Nilearn`] (pass any positive
+    /// value).
     pub step: f64,
     /// Band weight rule — see [`Weighting`].
     pub weighting: Weighting,
@@ -107,6 +131,21 @@ impl TfceParams {
             Err(NeuroError::InvalidParams)
         }
     }
+}
+
+/// Which sign of the statistic counts as evidence, and so which map TFCE
+/// enhances. A required argument of [`tfce_tail_into`], never a default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tail {
+    /// TFCE of the map. Large positive values of `stat` are the evidence.
+    Positive,
+    /// TFCE of the negated map. Large negative values of `stat` are the
+    /// evidence.
+    Negative,
+    /// TFCE of the map minus TFCE of the negated map. The output is signed:
+    /// positive where `stat` is positive, negative where it is negative. The
+    /// tested quantity is its absolute value.
+    TwoSided,
 }
 
 /// Length and finiteness checks on `stat`; returns `max(stat)` (`None` when
@@ -189,13 +228,33 @@ fn arange(start: f64, stop: f64, step: f64) -> Vec<f64> {
     v
 }
 
+/// Number of thresholds of [`Weighting::Nilearn`] (nilearn's `dh="auto"`).
+const NILEARN_STEPS: usize = 100;
+
+/// NumPy `np.linspace(0, max, 101)[1:]` for `f64`, reproduced bit-exactly
+/// (NumPy 2.5.3): `h_k = k · (max / 100)` for `k = 1..=99`, and `h_100 = max`
+/// itself. Bit equality matters because membership is `stat >= h_k`. Left
+/// empty when `max / 100 < f64::MIN_POSITIVE` (`max <= 0`, or a step so small
+/// that the grid is not strictly increasing). Writes into `out` (cleared
+/// first) so the sweep can reuse one buffer.
+fn nilearn_thresholds_into(max: f64, out: &mut Vec<f64>) {
+    out.clear();
+    let step = max / NILEARN_STEPS as f64;
+    if step < f64::MIN_POSITIVE {
+        return;
+    }
+    out.extend((1..NILEARN_STEPS).map(|k| k as f64 * step));
+    out.push(max);
+}
+
 /// Weight `w_i` of band `i` under `params.weighting` (see [`Weighting`]).
-/// Only called for the stepped rules — [`Weighting::Exact`] builds its bands
+/// Only called for the grid rules — [`Weighting::Exact`] builds its bands
 /// with the closed-form weight instead (see [`tfce_naive`], [`sweep_exact`]).
 fn band_weight(i: usize, ths: &[f64], params: &TfceParams) -> f64 {
     let h = ths[i];
     match params.weighting {
         Weighting::SmithNichols => libm::pow(h, params.h) * params.step,
+        Weighting::Nilearn => libm::pow(h, params.h),
         Weighting::Exact => unreachable!("Exact never calls band_weight"),
         Weighting::MneStep => {
             let dh = if i == 0 {
@@ -214,7 +273,9 @@ fn band_weight(i: usize, ths: &[f64], params: &TfceParams) -> f64 {
 /// the node count of the connected component (under `domain` adjacency,
 /// restricted to nodes with `stat > h_i`, **strict**) containing `v`, thresholds
 /// `h_i` are NumPy `arange(start, max(stat), step)`, and `w_i` follows
-/// `params.weighting`. Positive tail only. Summation is ascending in `i`, one
+/// `params.weighting`. Under [`Weighting::Nilearn`] the thresholds are its own
+/// 100-step grid and membership is `stat >= h_i`. Positive tail only.
+/// Summation is ascending in `i`, one
 /// addition per band per node — a line-for-line transcription of
 /// `mne.stats.cluster_level._find_clusters` (MNE 1.12.1, `tail=1`), so under
 /// [`Weighting::MneStep`] it matches MNE to `pow` rounding
@@ -240,8 +301,8 @@ pub fn tfce_naive(
     let Some(max) = check_inputs(domain, stat, params)? else {
         return Ok(out);
     };
-    // (threshold, weight) bands: membership is `stat > threshold`, contribution
-    // `weight · extent^E`. Stepped rules take the `arange` grid; Exact takes the
+    // (threshold, weight) bands, contribution `weight · extent^E`. SmithNichols
+    // and MneStep take the `arange` grid, Nilearn its 100-step grid, Exact the
     // distinct stat values above h0 with the closed-form interval weight.
     let bands: Vec<(f64, f64)> = match params.weighting {
         Weighting::Exact => {
@@ -258,16 +319,26 @@ pub fn tfce_naive(
             }
             bands
         }
-        _ => {
-            let ths = arange(params.start, max, params.step);
-            (0..ths.len())
-                .map(|i| (ths[i], band_weight(i, &ths, params)))
-                .collect()
+        Weighting::Nilearn => {
+            let mut ths = Vec::new();
+            nilearn_thresholds_into(max, &mut ths);
+            grid_bands(&ths, params)
+        }
+        Weighting::SmithNichols | Weighting::MneStep => {
+            grid_bands(&arange(params.start, max, params.step), params)
         }
     };
 
-    naive_sum(domain, stat, &bands, params.e, true, &mut out);
+    let strict = params.weighting != Weighting::Nilearn;
+    naive_sum(domain, stat, &bands, params.e, strict, &mut out);
     Ok(out)
+}
+
+/// `(threshold, weight)` pairs of a threshold grid under `params.weighting`.
+fn grid_bands(ths: &[f64], params: &TfceParams) -> Vec<(f64, f64)> {
+    (0..ths.len())
+        .map(|i| (ths[i], band_weight(i, ths, params)))
+        .collect()
 }
 
 /// Naive re-clustering sum over `(threshold, weight)` bands into `out`
@@ -318,8 +389,10 @@ fn naive_sum(
 /// TFCE-enhanced map — incremental union-find (the product path).
 ///
 /// Same quantity and conventions as [`tfce_naive`] (strict `stat > h_i`
-/// membership, NumPy `arange` thresholds under the stepped rules,
-/// `params.weighting` band weights, positive tail), computed in one
+/// membership and NumPy `arange` thresholds under [`Weighting::SmithNichols`]
+/// and [`Weighting::MneStep`], `stat >= h_i` on the 100-step grid under
+/// [`Weighting::Nilearn`], `params.weighting` band weights, positive tail),
+/// computed in one
 /// descending sweep: nodes are sorted by `stat`, activated as the threshold
 /// drops below them, and merged with active neighbours in a disjoint-set
 /// forest (union by size, path compression). Contributions are banked at
@@ -354,33 +427,31 @@ pub fn tfce(domain: &Domain, stat: &[f64], params: &TfceParams) -> Result<Vec<f6
     Ok(out)
 }
 
-/// Scratch buffers for [`tfce_into`]: the sweep order, the disjoint-set forest,
-/// the threshold grid and its cumulative band weights, and — for lattice
-/// domains only — the voxel-indexed input and output the sweep runs over.
+/// Scratch buffers for [`tfce_into`] and [`tfce_tail_into`]: the sweep order,
+/// the disjoint-set forest, the threshold grid with its cumulative band
+/// weights, and for the negative and two-sided tails the negated map and its
+/// TFCE (two node-sized buffers).
 /// Grown on demand (the threshold count follows `max(stat)`), never shrunk, so
 /// a permutation loop that reuses one workspace reallocates only when a draw
 /// needs a longer threshold grid than any earlier one (stepped rules); never
 /// under [`Weighting::Exact`].
 ///
-/// A lattice sweep works in voxel-index space, so the forest and the two
-/// voxel buffers are sized by the grid, not by the node count: on a mask that
-/// fills a small part of its grid a workspace costs several times what the
-/// node-indexed CSR path did.
+/// A lattice sweep works in voxel-index space, so the forest is sized by the
+/// grid, not by the node count: on a mask that fills a small part of its grid
+/// a workspace costs several times what the node-indexed CSR path does.
 #[derive(Debug, Clone)]
 pub struct TfceWorkspace {
-    order: Vec<u32>,
-    /// Radix-sort scratch: the `u64` sort keys of `order` and the two
-    /// ping-pong halves the eight passes swap through.
-    keys: Vec<u64>,
-    keys_tmp: Vec<u64>,
-    order_tmp: Vec<u32>,
+    /// The sweep order and its heights, see [`build_order`].
+    order: Vec<u64>,
+    heights: Vec<u64>,
     forest: Forest,
     ths: Vec<f64>,
     cum: Vec<f64>,
-    /// `stat` scattered to voxel index, `-inf` outside the mask. Empty for CSR.
-    stat_v: Vec<f64>,
-    /// The sweep's voxel-indexed output, gathered back to node order. Empty for CSR.
-    out_v: Vec<f64>,
+    /// `-stat` in node order. Empty until a [`Tail::Negative`] or
+    /// [`Tail::TwoSided`] call.
+    neg_stat: Vec<f64>,
+    /// TFCE of `-stat` in node order. Empty until a [`Tail::TwoSided`] call.
+    neg_out: Vec<f64>,
 }
 
 impl TfceWorkspace {
@@ -389,21 +460,20 @@ impl TfceWorkspace {
     pub fn new(n_nodes: usize) -> Self {
         Self {
             order: Vec::with_capacity(n_nodes),
-            keys: Vec::new(),
-            keys_tmp: Vec::new(),
-            order_tmp: Vec::new(),
+            heights: Vec::new(),
             forest: Forest::new(n_nodes),
             ths: Vec::new(),
             cum: Vec::new(),
-            stat_v: Vec::new(),
-            out_v: Vec::new(),
+            neg_stat: Vec::new(),
+            neg_out: Vec::new(),
         }
     }
 }
 
 /// [`tfce()`] into a caller-owned `out`, reusing `ws` — the allocation-free
 /// entry point for permutation loops. Same quantity, conventions, tolerances,
-/// and errors as [`tfce()`], bit-identical to it.
+/// and errors as [`tfce()`], bit-identical to it. Equal to [`tfce_tail_into`]
+/// with [`Tail::Positive`].
 ///
 /// `out.len()` must equal `domain.n_nodes()`, else
 /// [`NeuroError::MismatchedLengths`] (checked before `stat`).
@@ -411,6 +481,63 @@ pub fn tfce_into(
     domain: &Domain,
     stat: &[f64],
     params: &TfceParams,
+    ws: &mut TfceWorkspace,
+    out: &mut [f64],
+) -> Result<(), NeuroError> {
+    tfce_tail_into(domain, stat, params, Tail::Positive, ws, out)
+}
+
+/// TFCE of `stat` under `tail` into a caller-owned `out`, reusing `ws`. No
+/// allocation once `ws` has grown to the map, so a permutation loop calls
+/// this once per draw.
+///
+/// - [`Tail::Positive`]: `out = TFCE(stat)`, bit-identical to [`tfce()`].
+/// - [`Tail::Negative`]: `out = TFCE(−stat)`.
+/// - [`Tail::TwoSided`]: `out = TFCE(stat) − TFCE(−stat)`, signed.
+///
+/// Each `TFCE(·)` is the positive-tail quantity of [`tfce()`] under `params`.
+/// The threshold grid of the grid rules is built from the maximum of the map
+/// being enhanced: `max(stat)`, `max(−stat)`, or, for the two-sided tail,
+/// `max |stat|`, one grid shared by both passes. Under
+/// [`Weighting::SmithNichols`] and [`Weighting::MneStep`] the shared grid
+/// changes no value (a band above a map's own maximum is empty). Under
+/// [`Weighting::Nilearn`] it does, because that grid scales with its maximum;
+/// this is nilearn's `calculate_tfce(two_sided_test=True)`, matched to
+/// `rel 1e-12` on random maps and masks
+/// (`NeuroStats/python/tests/test_tfce_parity.py` in the `faststats` repository).
+/// [`Weighting::Exact`] uses no grid. With `start ≥ 0` at most one of the two
+/// terms of the two-sided difference is non-zero at a node, so the
+/// subtraction loses no digits. The tails are checked against [`tfce_naive`]
+/// (`tests/tfce_oracle.rs::g13_tails_match_naive`).
+///
+/// `stat`: one finite value per node in `domain` node order. `out`: same
+/// length; every entry is overwritten.
+///
+/// Errors: [`NeuroError::MismatchedLengths`] if `out.len()` (checked first)
+/// or `stat.len()` differs from `domain.n_nodes()`;
+/// [`NeuroError::NonFiniteStat`] and [`NeuroError::InvalidParams`] as
+/// [`tfce()`].
+///
+/// ```
+/// use neurostats::{Conn, Domain, Tail, TfceParams, TfceWorkspace, Weighting, tfce, tfce_tail_into};
+/// let dom = Domain::from_volume([4, 1, 1], Conn::Face);
+/// let stat = [3.0, 1.0, -2.0, -2.0];
+/// let neg: Vec<f64> = stat.iter().map(|s| -s).collect();
+/// let p = TfceParams { e: 0.5, h: 2.0, start: 0.0, step: 1.0, weighting: Weighting::Exact };
+/// let mut ws = TfceWorkspace::new(dom.n_nodes());
+/// let mut out = vec![0.0; 4];
+/// tfce_tail_into(&dom, &stat, &p, Tail::TwoSided, &mut ws, &mut out).unwrap();
+/// let (up, down) = (tfce(&dom, &stat, &p).unwrap(), tfce(&dom, &neg, &p).unwrap());
+/// for v in 0..4 {
+///     assert_eq!(out[v], up[v] - down[v]);
+/// }
+/// assert!(out[0] > 0.0 && out[2] < 0.0);
+/// ```
+pub fn tfce_tail_into(
+    domain: &Domain,
+    stat: &[f64],
+    params: &TfceParams,
+    tail: Tail,
     ws: &mut TfceWorkspace,
     out: &mut [f64],
 ) -> Result<(), NeuroError> {
@@ -424,30 +551,81 @@ pub fn tfce_into(
     let Some(max) = check_inputs(domain, stat, params)? else {
         return Ok(());
     };
-    if params.weighting == Weighting::Exact {
-        sweep_exact(domain, stat, params, ws, out);
+    if tail == Tail::Positive {
+        tfce_pass(domain, stat, params, max, ws, out);
         return Ok(());
     }
-    arange_into(params.start, max, params.step, &mut ws.ths);
+    // The negated map is moved out of the workspace for the passes, which
+    // borrow the rest of it mutably, and moved back afterwards.
+    let mut neg = core::mem::take(&mut ws.neg_stat);
+    neg.clear();
+    let mut neg_max = f64::NEG_INFINITY;
+    for &s in stat {
+        neg.push(-s);
+        if -s > neg_max {
+            neg_max = -s;
+        }
+    }
+    if tail == Tail::Negative {
+        tfce_pass(domain, &neg, params, neg_max, ws, out);
+    } else {
+        let grid_max = if max > neg_max { max } else { neg_max };
+        tfce_pass(domain, stat, params, grid_max, ws, out);
+        let mut neg_out = core::mem::take(&mut ws.neg_out);
+        neg_out.clear();
+        neg_out.resize(n, 0.0);
+        tfce_pass(domain, &neg, params, grid_max, ws, &mut neg_out);
+        for (o, &m) in out.iter_mut().zip(&neg_out) {
+            *o -= m;
+        }
+        ws.neg_out = neg_out;
+    }
+    ws.neg_stat = neg;
+    Ok(())
+}
+
+/// One positive-tail TFCE pass over `stat` into `out`, with the grid rules'
+/// thresholds built from `grid_max` (the map's own maximum, or `max |stat|`
+/// when two passes share a grid). Inputs are already checked.
+fn tfce_pass(
+    domain: &Domain,
+    stat: &[f64],
+    params: &TfceParams,
+    grid_max: f64,
+    ws: &mut TfceWorkspace,
+    out: &mut [f64],
+) {
+    let strict = match params.weighting {
+        Weighting::Exact => {
+            sweep_exact(domain, stat, params, ws, out);
+            return;
+        }
+        Weighting::Nilearn => {
+            nilearn_thresholds_into(grid_max, &mut ws.ths);
+            false
+        }
+        Weighting::SmithNichols | Weighting::MneStep => {
+            arange_into(params.start, grid_max, params.step, &mut ws.ths);
+            true
+        }
+    };
     ws.cum.clear();
     ws.cum.push(0.0f64);
     for i in 0..ws.ths.len() {
         let last = *ws.cum.last().expect("non-empty");
         ws.cum.push(last + band_weight(i, &ws.ths, params));
     }
-    sweep_bands(domain, stat, params.e, true, ws, out);
-    Ok(())
+    sweep_bands(domain, stat, params.e, strict, ws, out);
 }
 
-/// The index space a sweep runs over, and the neighbour relation on it. A CSR
-/// domain sweeps node indices; a lattice sweeps linear voxel indices, where a
-/// neighbour is an arithmetic step instead of a random read into a 26-column
-/// table — the sweep is memory-bound and that table is its dominant cost.
+/// The index space a sweep's forest lives in, and the neighbour relation on
+/// it. A CSR domain sweeps node indices; a lattice sweeps linear voxel indices,
+/// where a neighbour is an arithmetic step instead of a random read into a
+/// 26-column table — the sweep is memory-bound and that table is its dominant
+/// cost. `stat` and `out` stay in node order either way.
 trait Neighbours {
     /// Size of the index space the forest is allocated over.
     fn len(&self) -> usize;
-    /// Number of nodes, i.e. the length of `stat` and `out` in node order.
-    fn n_nodes(&self) -> usize;
     /// Index-space index of node `i` (the identity for a CSR domain).
     fn index_of(&self, i: usize) -> usize;
     /// Calls `f(u)` for every neighbour `u` of `v`, both in this index space.
@@ -461,10 +639,6 @@ struct CsrView<'a> {
 
 impl Neighbours for CsrView<'_> {
     fn len(&self) -> usize {
-        self.offsets.len() - 1
-    }
-
-    fn n_nodes(&self) -> usize {
         self.offsets.len() - 1
     }
 
@@ -513,10 +687,6 @@ impl Neighbours for LatticeView<'_> {
         self.dims[0] * self.dims[1] * self.dims[2]
     }
 
-    fn n_nodes(&self) -> usize {
-        self.lin_of.len()
-    }
-
     fn index_of(&self, i: usize) -> usize {
         self.lin_of[i] as usize
     }
@@ -546,8 +716,8 @@ impl Neighbours for LatticeView<'_> {
 /// One descending union-find sweep over explicit bands, on whichever index
 /// space `domain` prefers. `ws.ths` strictly increasing,
 /// `ws.cum[k] = Σ_{j<k} w_j` (`len == ths.len() + 1`). Membership per `strict`.
-/// Shared by `tfce_into` (arange grid, strict) and `tfce_bands_into` (caller
-/// grid, either rule).
+/// Shared by `tfce_pass` (the grid of `params.weighting`) and
+/// `tfce_bands_into` (caller grid, either rule).
 fn sweep_bands(
     domain: &Domain,
     stat: &[f64],
@@ -558,14 +728,11 @@ fn sweep_bands(
 ) {
     let TfceWorkspace {
         order,
-        keys,
-        keys_tmp,
-        order_tmp,
+        heights,
         forest,
         ths,
         cum,
-        stat_v,
-        out_v,
+        ..
     } = ws;
     match domain.graph() {
         Graph::Csr {
@@ -576,37 +743,12 @@ fn sweep_bands(
                 offsets,
                 neighbours,
             };
-            sweep_bands_impl(
-                &g, stat, ths, cum, e, strict, order, keys, keys_tmp, order_tmp, forest, out,
-            );
+            sweep_bands_impl(&g, stat, ths, cum, e, strict, order, heights, forest, out);
         }
         Graph::Lattice { dims, conn, lin_of } => {
             let g = LatticeView::new(*dims, *conn, lin_of);
-            scatter(stat, lin_of, g.len(), stat_v);
-            out_v.resize(g.len(), 0.0);
-            sweep_bands_impl(
-                &g, stat_v, ths, cum, e, strict, order, keys, keys_tmp, order_tmp, forest, out_v,
-            );
-            gather(out_v, lin_of, out);
+            sweep_bands_impl(&g, stat, ths, cum, e, strict, order, heights, forest, out);
         }
-    }
-}
-
-/// `stat` (node order) into voxel order, `-inf` outside the mask so an
-/// out-of-mask voxel is a member of no band under either rule.
-fn scatter(stat: &[f64], lin_of: &[u32], n_vox: usize, stat_v: &mut Vec<f64>) {
-    stat_v.clear();
-    stat_v.resize(n_vox, f64::NEG_INFINITY);
-    for (i, &s) in stat.iter().enumerate() {
-        stat_v[lin_of[i] as usize] = s;
-    }
-}
-
-/// The sweep's voxel-order output back to node order. Reads only in-mask
-/// entries, every one of which the resolve loop has written.
-fn gather(out_v: &[f64], lin_of: &[u32], out: &mut [f64]) {
-    for (o, &l) in out.iter_mut().zip(lin_of) {
-        *o = out_v[l as usize];
     }
 }
 
@@ -623,73 +765,110 @@ fn sort_key(x: f64) -> u64 {
     if b & SIGN != 0 { !b } else { b ^ SIGN }
 }
 
-/// Stable LSD radix sort of the `(keys, order)` pairs by key, descending.
-/// Eight one-byte passes: a byte histogram is 256 counters, which stays in L1,
-/// and eight of them cover the whole `u64` key. Descending order comes from
-/// prefix-summing each histogram from byte value 255 down. The pass count is
-/// even, so after the last swap the sorted data is back in `keys` / `order`.
+/// Node index carried in the low half of a sort entry of [`build_order`].
+#[inline]
+fn node_of(entry: u64) -> usize {
+    (entry as u32) as usize
+}
+
+/// The sweep order: the nodes whose stat `keep` accepts, by [`sort_key`]
+/// descending, equal keys in node order. On return `order[i]` is the `i`-th
+/// node's index in `g`'s index space and `heights[i]` the bits of its stat,
+/// so the sweep reads both in sequence. The sweep stops at the first
+/// non-member anyway, so dropping the rest changes no output and shortens the
+/// sort to the activating count.
 ///
-/// Stability matters: equal keys are equal stats, and keeping them in index
+/// A sort entry packs the top 32 bits of the node's key above its node index.
+/// A stable LSD radix sort orders the entries by those 32 bits in three
+/// passes (11, 11 and 10 bits), with all three histograms counted in the one
+/// scan that builds the entries. That leaves only runs of nodes whose keys
+/// share their top half out of order; each run is then sorted by the full
+/// key. On a statistic map the runs are short, so this moves a third of the
+/// bytes of a radix sort over the whole key in three eighths of the passes.
+/// A map whose values differ only in their low bits degrades to the
+/// comparison sort of the runs, `O(V log V)`.
+///
+/// Tie order matters: equal keys are equal stats, and keeping them in node
 /// order makes the activation sequence among ties deterministic.
-fn radix_sort_desc(
-    keys: &mut Vec<u64>,
-    order: &mut Vec<u32>,
-    keys_tmp: &mut Vec<u64>,
-    order_tmp: &mut Vec<u32>,
+fn build_order<G: Neighbours, F: Fn(f64) -> bool>(
+    g: &G,
+    stat: &[f64],
+    keep: F,
+    order: &mut Vec<u64>,
+    heights: &mut Vec<u64>,
 ) {
-    debug_assert_eq!(keys.len(), order.len());
-    let n = keys.len();
-    keys_tmp.clear();
-    keys_tmp.resize(n, 0);
-    order_tmp.clear();
-    order_tmp.resize(n, 0);
-    for pass in 0..8 {
-        let shift = pass * 8;
-        let mut count = [0usize; 256];
-        for &k in keys.iter() {
-            count[((k >> shift) & 0xff) as usize] += 1;
+    const MASK: u64 = 0x7ff;
+    order.clear();
+    let mut count = [[0u32; 2048]; 3];
+    for (k, &s) in stat.iter().enumerate() {
+        if keep(s) {
+            let top = sort_key(s) >> 32;
+            count[0][(top & MASK) as usize] += 1;
+            count[1][((top >> 11) & MASK) as usize] += 1;
+            count[2][(top >> 22) as usize] += 1;
+            order.push(top << 32 | k as u64);
         }
-        let mut start = [0usize; 256];
-        let mut acc = 0usize;
+    }
+    let n = order.len();
+    // `heights` doubles as the radix scratch. Every pass overwrites its first
+    // `n` slots before reading them, so it is only grown, never cleared.
+    if heights.len() < n {
+        heights.resize(n, 0);
+    }
+    for (pass, count) in count.iter().enumerate() {
+        // A digit every entry shares cannot change the order.
+        if count.iter().any(|&c| c as usize == n) {
+            continue;
+        }
+        let shift = 32 + 11 * pass;
+        // Descending: prefix-sum from the highest digit value down.
+        let mut start = [0u32; 2048];
+        let mut acc = 0u32;
         for (s, &c) in start.iter_mut().zip(count.iter()).rev() {
             *s = acc;
             acc += c;
         }
-        for (&k, &o) in keys.iter().zip(order.iter()) {
-            let b = ((k >> shift) & 0xff) as usize;
-            keys_tmp[start[b]] = k;
-            order_tmp[start[b]] = o;
+        for &entry in &order[..n] {
+            let b = ((entry >> shift) & MASK) as usize;
+            heights[start[b] as usize] = entry;
             start[b] += 1;
         }
-        core::mem::swap(keys, keys_tmp);
-        core::mem::swap(order, order_tmp);
+        core::mem::swap(order, heights);
     }
-}
-
-/// Fill `order` with the indices whose stat `keep` accepts, sorted by stat
-/// descending. The sweep stops at the first non-member anyway, so dropping the
-/// rest changes no output and shortens the sort to the activating count.
-fn build_order<F: Fn(f64) -> bool>(
-    stat: &[f64],
-    keep: F,
-    order: &mut Vec<u32>,
-    keys: &mut Vec<u64>,
-    keys_tmp: &mut Vec<u64>,
-    order_tmp: &mut Vec<u32>,
-) {
-    order.clear();
-    keys.clear();
-    for (v, &s) in stat.iter().enumerate() {
-        if keep(s) {
-            order.push(v as u32);
-            keys.push(sort_key(s));
+    if heights.len() < n {
+        heights.resize(n, 0);
+    }
+    let mut i = 0usize;
+    while i < n {
+        let top = order[i] >> 32;
+        let mut j = i + 1;
+        while j < n && order[j] >> 32 == top {
+            j += 1;
         }
+        if j - i > 1 {
+            // Entries of a run share their top half, so comparing two of them
+            // as integers compares their node indices.
+            order[i..j].sort_unstable_by(|&a, &b| {
+                sort_key(stat[node_of(b)])
+                    .cmp(&sort_key(stat[node_of(a)]))
+                    .then(a.cmp(&b))
+            });
+        }
+        i = j;
     }
-    radix_sort_desc(keys, order, keys_tmp, order_tmp);
+    // Node → index space and stat here, in a loop whose iterations are
+    // independent, so the two random reads per node overlap across nodes
+    // instead of sitting at the head of each activation in the sweep.
+    order.truncate(n);
+    heights.truncate(n);
+    for (o, h) in order.iter_mut().zip(heights.iter_mut()) {
+        let k = node_of(*o);
+        *o = g.index_of(k) as u64;
+        *h = stat[k].to_bits();
+    }
 }
 
-/// `sweep_bands` over one index space. `stat` and `out` are indexed by it and
-/// have length `g.len()`.
+/// `sweep_bands` over one index space. `stat` and `out` are in node order.
 #[allow(clippy::too_many_arguments)]
 fn sweep_bands_impl<G: Neighbours>(
     g: &G,
@@ -698,80 +877,46 @@ fn sweep_bands_impl<G: Neighbours>(
     cum: &[f64],
     e: f64,
     strict: bool,
-    order: &mut Vec<u32>,
-    keys: &mut Vec<u64>,
-    keys_tmp: &mut Vec<u64>,
-    order_tmp: &mut Vec<u32>,
+    order: &mut Vec<u64>,
+    heights: &mut Vec<u64>,
     uf: &mut Forest,
     out: &mut [f64],
 ) {
-    let n = g.len();
     let nt = ths.len();
     if nt == 0 {
         out.fill(0.0);
         return;
     }
-    // Only indices that clear the lowest band can ever activate.
-    build_order(
-        stat,
-        |s| member(s, ths[0], strict),
-        order,
-        keys,
-        keys_tmp,
-        order_tmp,
-    );
-    uf.reset(n);
+    // Only nodes that clear the lowest band can ever activate.
+    build_order(g, stat, |s| member(s, ths[0], strict), order, heights);
+    uf.reset(g.len());
+    let (mut near, mut above) = ([0u32; 26], [0u32; 26]);
     let mut ptr = 0usize;
     for i in (0..nt).rev() {
         let h = ths[i];
-        while ptr < order.len() && member(stat[order[ptr] as usize], h, strict) {
+        while ptr < order.len() && member(f64::from_bits(heights[ptr]), h, strict) {
             let v = order[ptr] as usize;
             ptr += 1;
+            let n = uf.active_neighbours(g, v, &mut near, &mut above);
             uf.activate(v, i);
             let mut rv = v; // v is its own root at activation
-            g.for_each(v, |u| {
-                if !uf.active[u] {
-                    return;
+            for (&u, &p) in near[..n].iter().zip(&above) {
+                let ru = uf.find_from(u as usize, p as usize);
+                if ru != rv {
+                    rv = uf.link(rv, ru, i, cum, e);
                 }
-                let ru = uf.find(u);
-                if ru == rv {
-                    return;
-                }
-                rv = uf.link(rv, ru, i, cum, e);
-            });
+            }
         }
     }
     // Walk the nodes, not the index space: on a sparse mask the voxel-count
     // walk would cost several times the node count for nothing.
-    for k in 0..g.n_nodes() {
-        let v = g.index_of(k);
-        if uf.active[v] && uf.parent[v] as usize == v {
-            uf.pay(v, 0, cum, e);
-        }
-    }
-    for k in 0..g.n_nodes() {
-        let v = g.index_of(k);
-        out[v] = resolve(uf, v);
+    for (k, o) in out.iter_mut().enumerate() {
+        *o = uf.resolve(g.index_of(k), |uf, r| uf.pay(r, 0, cum, e));
     }
 }
 
-/// A node's TFCE value once the sweep is done: its own bank plus its root's
-/// (the bank of a non-root is relative to its parent, and `find` has just
-/// compressed the path to the root).
-fn resolve(uf: &mut Forest, v: usize) -> f64 {
-    if !uf.active[v] {
-        return 0.0;
-    }
-    let r = uf.find(v);
-    if r == v {
-        uf.bank[v]
-    } else {
-        uf.bank[v] + uf.bank[r]
-    }
-}
-
-/// TFCE over an explicit band list — the low-level operator behind the Python
-/// grid weightings and the nilearn shim.
+/// TFCE over an explicit band list, for callers that build their own
+/// threshold grid.
 ///
 /// `TFCE(v) = Σ_i weights[i] · extent_i(v)^e` over bands `i` where `v` is a
 /// member: `stat[v] > thresholds[i]` when `strict`, `stat[v] >= thresholds[i]`
@@ -887,8 +1032,8 @@ pub fn tfce_bands_naive(
 
 /// The `Exact` sweep: same forest, no grid. Events are the distinct `stat`
 /// values in descending order; a root's bank is paid for the height run
-/// `[h_now, since_h[r]]` at its current size each time its size changes, and
-/// finally down to `h0 = start`. One activation per node, one pay per size
+/// `[h_now, a]` (`a` the height of its last size change) at its current size
+/// each time its size changes, and finally down to `h0 = start`. One activation per node, one pay per size
 /// change: `O(V log V + V·α(V))`.
 fn sweep_exact(
     domain: &Domain,
@@ -899,12 +1044,8 @@ fn sweep_exact(
 ) {
     let TfceWorkspace {
         order,
-        keys,
-        keys_tmp,
-        order_tmp,
+        heights,
         forest,
-        stat_v,
-        out_v,
         ..
     } = ws;
     match domain.graph() {
@@ -916,100 +1057,127 @@ fn sweep_exact(
                 offsets,
                 neighbours,
             };
-            sweep_exact_impl(
-                &g, stat, params, order, keys, keys_tmp, order_tmp, forest, out,
-            );
+            sweep_exact_impl(&g, stat, params, order, heights, forest, out);
         }
         Graph::Lattice { dims, conn, lin_of } => {
             let g = LatticeView::new(*dims, *conn, lin_of);
-            scatter(stat, lin_of, g.len(), stat_v);
-            out_v.resize(g.len(), 0.0);
-            sweep_exact_impl(
-                &g, stat_v, params, order, keys, keys_tmp, order_tmp, forest, out_v,
-            );
-            gather(out_v, lin_of, out);
+            sweep_exact_impl(&g, stat, params, order, heights, forest, out);
         }
     }
 }
 
 /// `sweep_exact` over one index space (see [`sweep_bands_impl`]).
-#[allow(clippy::too_many_arguments)]
 fn sweep_exact_impl<G: Neighbours>(
     g: &G,
     stat: &[f64],
     params: &TfceParams,
-    order: &mut Vec<u32>,
-    keys: &mut Vec<u64>,
-    keys_tmp: &mut Vec<u64>,
-    order_tmp: &mut Vec<u32>,
+    order: &mut Vec<u64>,
+    heights: &mut Vec<u64>,
     uf: &mut Forest,
     out: &mut [f64],
 ) {
-    let n = g.len();
-    let h0 = params.start;
     let hp1 = params.h + 1.0;
-    // Only indices above `start` can ever activate.
-    build_order(stat, |s| s > h0, order, keys, keys_tmp, order_tmp);
-    uf.reset(n);
-    for &v32 in &*order {
-        let v = v32 as usize;
-        let h = stat[v];
-        uf.activate_exact(v, h);
+    let h0 = params.start;
+    let p0 = height_pow(h0, hp1);
+    // Only nodes above `start` can ever activate.
+    build_order(g, stat, |s| s > h0, order, heights);
+    uf.reset(g.len());
+    let (mut near, mut above) = ([0u32; 26], [0u32; 26]);
+    for (&v, &h) in order.iter().zip(heights.iter()) {
+        let v = v as usize;
+        // One power per event: every settlement at this height reuses it.
+        let p = height_pow(f64::from_bits(h), hp1);
+        let n = uf.active_neighbours(g, v, &mut near, &mut above);
+        uf.activate_exact(v, p);
         let mut rv = v; // v is its own root at activation
-        g.for_each(v, |u| {
-            if !uf.active[u] {
-                return;
+        for (&u, &up) in near[..n].iter().zip(&above) {
+            let ru = uf.find_from(u as usize, up as usize);
+            if ru != rv {
+                rv = uf.link_exact(rv, ru, p, hp1, params.e);
             }
-            let ru = uf.find(u);
-            if ru == rv {
-                return;
-            }
-            rv = uf.link_exact(rv, ru, h, hp1, params.e);
-        });
-    }
-    for k in 0..g.n_nodes() {
-        let v = g.index_of(k);
-        if uf.active[v] && uf.parent[v] as usize == v {
-            uf.pay_exact(v, h0, hp1, params.e);
         }
     }
-    for k in 0..g.n_nodes() {
-        let v = g.index_of(k);
-        out[v] = resolve(uf, v);
+    for (k, o) in out.iter_mut().enumerate() {
+        *o = uf.resolve(g.index_of(k), |uf, r| uf.pay_exact(r, p0, hp1, params.e));
     }
+}
+
+/// `x^{H+1}` for a height `x ≥ 0`, `hp1 = H + 1`. The usual `H = 2` is two
+/// multiplications, within 1 ulp of the correctly rounded cube, in place of a
+/// general `pow`; every other exponent takes `pow`.
+#[inline]
+fn height_pow(x: f64, hp1: f64) -> f64 {
+    if hp1 == 3.0 {
+        x * x * x
+    } else {
+        libm::pow(x, hp1)
+    }
+}
+
+/// `size^E`. The usual `E = 0.5` is the correctly rounded square root, the
+/// same bits `pow(size, 0.5)` returns.
+#[inline]
+fn extent_pow(size: u32, e: f64) -> f64 {
+    if e == 0.5 {
+        libm::sqrt(size as f64)
+    } else {
+        libm::pow(size as f64, e)
+    }
+}
+
+/// A node's share of the forest that only settlements and the final read
+/// touch. One cache line holds two, and none straddles a line.
+#[derive(Debug, Clone, Copy)]
+#[repr(align(32))]
+struct Account {
+    /// TFCE sum: absolute for a root, relative to its parent otherwise.
+    bank: f64,
+    /// Root only, `Exact`: height of the last size change, raised to `H+1`.
+    since_p: f64,
+    /// Root only, stepped rules: one past the band of the last size change.
+    unpaid_end: u32,
+    /// Root only: node count of the component.
+    size: u32,
 }
 
 /// Disjoint-set forest with lazily paid per-root TFCE banks.
 ///
-/// Invariant: for a root `r`, `bank[r]` is the absolute TFCE sum every member
-/// has earned through band `since[r] + 1`; bands `since[r]..=current` are still
-/// unpaid and will be paid with the current `size[r]`. For a non-root `v`,
-/// `bank[v]` is relative to its parent — a node's value is the sum of `bank`
+/// Invariant: for a root `r`, `bank` is the absolute TFCE sum every member
+/// has earned in bands `unpaid_end..`; bands `current..unpaid_end` are still
+/// unpaid and will be paid with the current `size`. For a non-root `v`,
+/// `bank` is relative to its parent — a node's value is the sum of `bank`
 /// along its path to the root. Linking `a` under `b` therefore sets
 /// `bank[a] -= bank[b]` so `a`'s subtree does not inherit `b`'s past.
-/// `since[r]` (band index, stepped rules) or `since_h[r]` (height, `Exact`)
-/// marks where the root's size last changed.
+/// `unpaid_end` (band index, stepped rules) or `since_p` (height raised to
+/// `H+1`, `Exact`) marks where the root's size last changed.
+///
+/// `parent` and `active` are all a neighbour probe or a root search reads, so
+/// they stay in arrays of their own, dense enough to keep in cache — `active`
+/// is one bit per index, so every probe of an inactive neighbour stays in the
+/// nearest caches. The rest of a node sits together in its [`Account`].
 #[derive(Debug, Clone)]
 struct Forest {
     parent: Vec<u32>,
-    size: Vec<u32>,
-    bank: Vec<f64>,
-    since: Vec<u32>,
-    since_h: Vec<f64>,
-    active: Vec<bool>,
+    account: Vec<Account>,
+    /// Bit `v % 64` of word `v / 64` is set once `v` has activated.
+    active: Vec<u64>,
     /// Scratch for iterative path compression (depth ≤ log₂ V under union by size).
     path: Vec<u32>,
 }
 
 impl Forest {
+    const EMPTY: Account = Account {
+        bank: 0.0,
+        since_p: 0.0,
+        unpaid_end: 0,
+        size: 0,
+    };
+
     fn new(n: usize) -> Self {
         Self {
             parent: alloc::vec![0; n],
-            size: alloc::vec![0; n],
-            bank: alloc::vec![0.0; n],
-            since: alloc::vec![0; n],
-            since_h: alloc::vec![0.0; n],
-            active: alloc::vec![false; n],
+            account: alloc::vec![Self::EMPTY; n],
+            active: alloc::vec![0; n.div_ceil(64)],
             path: Vec::new(),
         }
     }
@@ -1018,37 +1186,89 @@ impl Forest {
     /// overwritten by `activate` before they are read.
     fn reset(&mut self, n: usize) {
         self.parent.resize(n, 0);
-        self.size.resize(n, 0);
-        self.bank.resize(n, 0.0);
-        self.since.resize(n, 0);
-        self.since_h.resize(n, 0.0);
+        self.account.resize(n, Self::EMPTY);
         self.active.clear();
-        self.active.resize(n, false);
+        self.active.resize(n.div_ceil(64), 0);
+    }
+
+    #[inline]
+    fn is_active(&self, v: usize) -> bool {
+        self.active[v / 64] >> (v % 64) & 1 != 0
+    }
+
+    #[inline]
+    fn set_active(&mut self, v: usize) {
+        self.active[v / 64] |= 1 << (v % 64);
     }
 
     fn activate(&mut self, v: usize, band: usize) {
-        self.active[v] = true;
+        self.set_active(v);
         self.parent[v] = v as u32;
-        self.size[v] = 1;
-        self.bank[v] = 0.0;
-        self.since[v] = band as u32;
+        self.account[v] = Account {
+            bank: 0.0,
+            since_p: 0.0,
+            unpaid_end: band as u32 + 1,
+            size: 1,
+        };
     }
 
-    /// Pay root `r` for bands `lo..=since[r]` at its current size, then mark
-    /// `lo − 1` as the next unpaid band (callers pass `lo = current + 1` on a
-    /// merge, `lo = 0` at the end).
+    /// Pay root `r` for bands `lo..unpaid_end` at its current size (callers
+    /// pass `lo = current + 1` on a merge, `lo = 0` at the end). Paying a
+    /// root twice down to the same `lo` pays nothing the second time.
     fn pay(&mut self, r: usize, lo: usize, cum: &[f64], e: f64) {
-        let hi = self.since[r] as usize;
-        if hi >= lo {
-            let wsum = cum[hi + 1] - cum[lo];
-            self.bank[r] += wsum * libm::pow(self.size[r] as f64, e);
+        let a = &mut self.account[r];
+        let end = a.unpaid_end as usize;
+        if end > lo {
+            let wsum = cum[end] - cum[lo];
+            a.bank += wsum * extent_pow(a.size, e);
         }
-        self.since[r] = lo.saturating_sub(1) as u32;
+        a.unpaid_end = lo as u32;
+    }
+
+    /// The active neighbours of `v` into `near` and each one's parent into
+    /// `above`, in neighbour order; returns their count. Collecting them
+    /// before the first merge costs no branch per neighbour, and the parent
+    /// reads do not depend on one another, so their cache misses overlap
+    /// instead of queueing behind each merge.
+    fn active_neighbours<G: Neighbours>(
+        &self,
+        g: &G,
+        v: usize,
+        near: &mut [u32; 26],
+        above: &mut [u32; 26],
+    ) -> usize {
+        let mut n = 0usize;
+        g.for_each(v, |u| {
+            near[n] = u as u32;
+            n += self.is_active(u) as usize;
+        });
+        for (a, &u) in above.iter_mut().zip(&near[..n]) {
+            *a = self.parent[u as usize];
+        }
+        n
+    }
+
+    /// [`Forest::find`] of `v` given `p`, its parent as
+    /// [`Forest::active_neighbours`] read it earlier in the same event. If
+    /// `p` is a root now it was one then, no merge or compression since has
+    /// moved `v` off it, and it is the answer; otherwise the forest changed
+    /// under the read and the search starts over.
+    fn find_from(&mut self, v: usize, p: usize) -> usize {
+        if self.parent[p] as usize == p {
+            return p;
+        }
+        self.find(v)
     }
 
     /// Root of `v` with offset-preserving path compression.
     fn find(&mut self, v: usize) -> usize {
-        let mut r = v;
+        // A root, or a child of one, has nothing to compress: the usual case
+        // once paths have been compressed.
+        let p = self.parent[v] as usize;
+        let mut r = self.parent[p] as usize;
+        if r == p {
+            return p;
+        }
         while self.parent[r] as usize != r {
             r = self.parent[r] as usize;
         }
@@ -1063,11 +1283,19 @@ impl Forest {
             let u = self.path[k] as usize;
             let p = self.parent[u] as usize;
             if p != r {
-                self.bank[u] += self.bank[p];
+                self.account[u].bank += self.account[p].bank;
                 self.parent[u] = r as u32;
             }
         }
         r
+    }
+
+    /// Attach root `small` under root `big`, both settled to the current
+    /// event; the caller then records the event as `big`'s last size change.
+    fn attach(&mut self, small: usize, big: usize) {
+        self.parent[small] = big as u32;
+        self.account[small].bank -= self.account[big].bank;
+        self.account[big].size += self.account[small].size;
     }
 
     /// Merge two known roots `ra`, `rb` during band `band`; returns the
@@ -1077,52 +1305,73 @@ impl Forest {
         // Both roots' sizes change now: settle the bands above `band` first.
         self.pay(ra, band + 1, cum, e);
         self.pay(rb, band + 1, cum, e);
-        let (small, big) = if self.size[ra] < self.size[rb] {
+        let (small, big) = if self.account[ra].size < self.account[rb].size {
             (ra, rb)
         } else {
             (rb, ra)
         };
-        self.parent[small] = big as u32;
-        self.bank[small] -= self.bank[big];
-        self.size[big] += self.size[small];
-        self.since[big] = band as u32;
+        self.attach(small, big);
+        self.account[big].unpaid_end = band as u32 + 1;
         big
     }
 
-    fn activate_exact(&mut self, v: usize, h: f64) {
-        self.active[v] = true;
+    /// `p` is the activation height raised to `H+1`.
+    fn activate_exact(&mut self, v: usize, p: f64) {
+        self.set_active(v);
         self.parent[v] = v as u32;
-        self.size[v] = 1;
-        self.bank[v] = 0.0;
-        self.since_h[v] = h;
+        self.account[v] = Account {
+            bank: 0.0,
+            since_p: p,
+            unpaid_end: 0,
+            size: 1,
+        };
     }
 
-    /// Pay root `r` for heights `[h_now, since_h[r]]` at its current size:
-    /// `size^E · (since_h^{H+1} − h_now^{H+1}) / (H+1)`.
-    fn pay_exact(&mut self, r: usize, h_now: f64, hp1: f64, e: f64) {
-        let a = self.since_h[r];
-        if a > h_now {
-            let w = (libm::pow(a, hp1) - libm::pow(h_now, hp1)) / hp1;
-            self.bank[r] += w * libm::pow(self.size[r] as f64, e);
+    /// Pay root `r` for the height run down to the current event at its
+    /// current size: `size^E · (since_p − p_now) / (H+1)`, both heights
+    /// already raised to `H+1`. Heights are non-negative, so the powers order
+    /// as the heights do; two heights whose powers round equal pay zero.
+    fn pay_exact(&mut self, r: usize, p_now: f64, hp1: f64, e: f64) {
+        let a = &mut self.account[r];
+        if a.since_p > p_now {
+            let w = (a.since_p - p_now) / hp1;
+            a.bank += w * extent_pow(a.size, e);
         }
-        self.since_h[r] = h_now;
+        a.since_p = p_now;
     }
 
-    /// Merge two known roots `ra`, `rb` at event height `h_now`; returns the
-    /// surviving root (tie-breaking as [`Forest::link`]).
-    fn link_exact(&mut self, ra: usize, rb: usize, h_now: f64, hp1: f64, e: f64) -> usize {
-        self.pay_exact(ra, h_now, hp1, e);
-        self.pay_exact(rb, h_now, hp1, e);
-        let (small, big) = if self.size[ra] < self.size[rb] {
+    /// Merge two known roots `ra`, `rb` at an event whose height raised to
+    /// `H+1` is `p_now`; returns the surviving root (tie-breaking as
+    /// [`Forest::link`]).
+    fn link_exact(&mut self, ra: usize, rb: usize, p_now: f64, hp1: f64, e: f64) -> usize {
+        self.pay_exact(ra, p_now, hp1, e);
+        self.pay_exact(rb, p_now, hp1, e);
+        let (small, big) = if self.account[ra].size < self.account[rb].size {
             (ra, rb)
         } else {
             (rb, ra)
         };
-        self.parent[small] = big as u32;
-        self.bank[small] -= self.bank[big];
-        self.size[big] += self.size[small];
-        self.since_h[big] = h_now;
+        self.attach(small, big);
+        self.account[big].since_p = p_now;
         big
+    }
+
+    /// Node `v`'s TFCE value once the sweep is done: its own bank plus its
+    /// root's (the bank of a non-root is relative to its parent, and `find`
+    /// has just compressed the path to the root). `settle` pays a root down
+    /// to the end of the sweep; it runs on every read of a member, and every
+    /// call after a root's first pays nothing.
+    fn resolve<S: Fn(&mut Self, usize)>(&mut self, v: usize, settle: S) -> f64 {
+        if !self.is_active(v) {
+            return 0.0;
+        }
+        let r = self.find(v);
+        settle(self, r);
+        if r == v {
+            self.account[v].bank
+        } else {
+            self.account[v].bank + self.account[r].bank
+        }
     }
 }
 
@@ -1130,40 +1379,66 @@ impl Forest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn radix_sort_desc_matches_comparison_sort() {
-        // Negatives, zeros of both signs, and repeats, so ties and the
-        // sign-bit branch of `sort_key` are both exercised.
-        let vals: Vec<f64> = alloc::vec![
-            0.0, -0.0, 1.5, -1.5, 3.0, -3.0, 1.5, 0.25, -0.25, 2.0, -2.0, 0.0, 7.5, -7.5, 1e-300,
-            -1e-300, 1e300, -1e300, 42.0, 42.0,
-        ];
-        let mut order: Vec<u32> = (0..vals.len() as u32).collect();
-        let mut keys: Vec<u64> = vals.iter().map(|&x| sort_key(x)).collect();
-        let (mut kt, mut ot) = (Vec::new(), Vec::new());
-        radix_sort_desc(&mut keys, &mut order, &mut kt, &mut ot);
+    /// `build_order` over a path graph of `vals.len()` nodes, as `(node, stat)`.
+    fn ordered(
+        vals: &[f64],
+        keep: impl Fn(f64) -> bool,
+        order: &mut Vec<u64>,
+        heights: &mut Vec<u64>,
+    ) -> Vec<(usize, f64)> {
+        let offsets: Vec<u32> = (0..=vals.len() as u32).collect();
+        let g = CsrView {
+            offsets: &offsets,
+            neighbours: &[],
+        };
+        build_order(&g, vals, keep, order, heights);
+        order
+            .iter()
+            .zip(heights.iter())
+            .map(|(&v, &h)| (v as usize, f64::from_bits(h)))
+            .collect()
+    }
 
-        let mut want: Vec<u32> = (0..vals.len() as u32).collect();
-        want.sort_by(|&a, &b| sort_key(vals[b as usize]).cmp(&sort_key(vals[a as usize])));
-        assert_eq!(order, want);
-        // Keys travel with their index and come out descending.
-        for (k, &o) in keys.iter().zip(order.iter()) {
-            assert_eq!(*k, sort_key(vals[o as usize]));
+    #[test]
+    fn build_order_matches_comparison_sort() {
+        // Negatives, zeros of both signs and repeats exercise ties and the
+        // sign-bit branch of `sort_key`; the `1.0 + k·ε` block shares the top
+        // half of its key, so only the per-run sort can order it; subnormals
+        // and far-apart exponents exercise every radix digit.
+        let mut vals: Vec<f64> = alloc::vec![
+            0.0, -0.0, 1.5, -1.5, 3.0, -3.0, 1.5, 0.25, -0.25, 2.0, -2.0, 0.0, 7.5, -7.5, 1e-300,
+            -1e-300, 1e300, -1e300, 42.0, 42.0, 5e-324, 1e-310, -5e-324,
+        ];
+        for k in [7u64, 2, 9, 2, 0, 31, 5, 31, 1] {
+            vals.push(f64::from_bits(1.0f64.to_bits() + k));
         }
-        assert!(keys.windows(2).all(|w| w[0] >= w[1]));
-        // Stable: the two 42.0 entries keep input order, and so do the 1.5s.
-        let p42: Vec<u32> = order
-            .iter()
-            .copied()
-            .filter(|&o| o == 18 || o == 19)
-            .collect();
-        assert_eq!(p42, alloc::vec![18, 19]);
-        let p15: Vec<u32> = order
-            .iter()
-            .copied()
-            .filter(|&o| o == 2 || o == 6)
-            .collect();
-        assert_eq!(p15, alloc::vec![2, 6]);
+        for keep_all in [true, false] {
+            let keep = |s: f64| keep_all || s > 0.25;
+            let got = ordered(&vals, keep, &mut Vec::new(), &mut alloc::vec![0u64; 3]);
+
+            // Stable comparison sort: equal keys stay in node order.
+            let mut want: Vec<usize> = (0..vals.len()).filter(|&k| keep(vals[k])).collect();
+            want.sort_by(|&a, &b| sort_key(vals[b]).cmp(&sort_key(vals[a])));
+            assert_eq!(got.len(), want.len());
+            for (&(node, stat), &k) in got.iter().zip(&want) {
+                assert_eq!(node, k);
+                assert_eq!(stat.to_bits(), vals[k].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn build_order_reuses_longer_scratch() {
+        // A second, shorter map must not see entries left by the first.
+        let (mut order, mut heights) = (Vec::new(), Vec::new());
+        let long: Vec<f64> = (0..300).map(|i| ((i * 37) % 101) as f64 * 0.5).collect();
+        ordered(&long, |_| true, &mut order, &mut heights);
+        let short = [2.0, 9.0, 1e-3, 9.0, 4.0];
+        let got = ordered(&short, |_| true, &mut order, &mut heights);
+        assert_eq!(
+            got,
+            alloc::vec![(1, 9.0), (3, 9.0), (4, 4.0), (0, 2.0), (2, 1e-3)]
+        );
     }
 
     #[test]
@@ -1322,6 +1597,87 @@ mod tests {
                 assert_eq!(a, b, "G5 {name} {w:?}");
             }
         }
+    }
+
+    // Two nodes on a line, stat = [100, 50], E = 1, H = 2. The grid is
+    // h_k = k for k = 1..=100. Node 1 is a member of bands 1..=50 (`>=`: band
+    // 50 sits exactly on its value) and node 0 of all 100 (band 100 sits on
+    // the maximum). Bands 1..=50 hold both nodes, bands 51..=100 node 0 alone:
+    // node 1 → 2·Σ_{k≤50} k² = 85850, node 0 → 85850 + Σ_{51≤k≤100} k² = 381275.
+    // Under strict membership the values would be 80850 and 368775.
+    #[test]
+    fn nilearn_hand_case_counts_ties_and_the_maximum() {
+        let dom = Domain::from_volume([2, 1, 1], crate::Conn::Face);
+        let p = TfceParams {
+            e: 1.0,
+            h: 2.0,
+            start: 0.0,
+            step: 1.0,
+            weighting: Weighting::Nilearn,
+        };
+        for got in [
+            tfce(&dom, &[100.0, 50.0], &p).unwrap(),
+            tfce_naive(&dom, &[100.0, 50.0], &p).unwrap(),
+        ] {
+            assert!(
+                (got[0] - 381275.0).abs() < 1e-7 && (got[1] - 85850.0).abs() < 1e-7,
+                "{got:?}"
+            );
+        }
+        // A flat map: every node sits on the maximum, so all three are in all
+        // 100 bands. E = 1, H = 0 → 100 · 3.
+        let line = Domain::from_volume([3, 1, 1], crate::Conn::Face);
+        let flat = TfceParams { h: 0.0, ..p };
+        assert_eq!(
+            tfce(&line, &[7.0, 7.0, 7.0], &flat).unwrap(),
+            alloc::vec![300.0; 3]
+        );
+    }
+
+    #[test]
+    fn nilearn_thresholds_follow_numpy_linspace() {
+        // np.linspace(0, 3.7, 101)[1:] — first, a middle one, the last two.
+        let mut t = Vec::new();
+        nilearn_thresholds_into(3.7, &mut t);
+        assert_eq!(t.len(), 100);
+        assert_eq!(t[0], 0.037000000000000005);
+        assert_eq!(t[49], 1.8500000000000003);
+        assert_eq!(t[98], 3.6630000000000007);
+        assert_eq!(t[99], 3.7);
+        assert!(t.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    // No positive value, or a maximum too small for a strictly increasing
+    // grid: every node 0, and `start` / `step` change nothing.
+    #[test]
+    fn nilearn_degenerate_maps_are_zero() {
+        let dom = Domain::from_volume([3, 1, 1], crate::Conn::Face);
+        let p = TfceParams {
+            e: 0.5,
+            h: 2.0,
+            start: 0.0,
+            step: 1.0,
+            weighting: Weighting::Nilearn,
+        };
+        for stat in [
+            [-1.0, -2.0, -0.5],
+            [0.0, 0.0, 0.0],
+            [0.0, -3.0, 0.0],
+            [1e-320, 5e-321, 0.0],
+        ] {
+            assert_eq!(tfce(&dom, &stat, &p).unwrap(), alloc::vec![0.0; 3]);
+            assert_eq!(tfce_naive(&dom, &stat, &p).unwrap(), alloc::vec![0.0; 3]);
+        }
+        let other = TfceParams {
+            start: 7.5,
+            step: 0.01,
+            ..p
+        };
+        let stat = [2.0, 1.0, 3.0];
+        assert_eq!(
+            tfce(&dom, &stat, &p).unwrap(),
+            tfce(&dom, &stat, &other).unwrap()
+        );
     }
 
     #[test]

@@ -10,8 +10,8 @@ env:
   RUSTFLAGS: -D warnings
 
 # No root workspace manifest: each crate dir is built on its own. Add new
-# crates to both matrices. The python/ binding crate (faststats-py, the
-# faststats wheel) is not a stats crate and has its own `python` job below.
+# crates to both matrices. The NeuroStats/python binding crate (neurostats-py, the
+# neurostats wheel) is not a stats crate and has its own `python` job below.
 jobs:
   test:
     name: build + test (${{ matrix.crate }})
@@ -66,7 +66,7 @@ jobs:
       - run: cargo build ${{ matrix.flags }} --target wasm32-unknown-unknown
 
   python:
-    name: faststats wheel (build + pytest)
+    name: neurostats wheel (build + pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,17 +75,17 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: python
+          workspaces: NeuroStats/python
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       # maturin develop refuses to run outside a virtualenv; VIRTUAL_ENV is what it checks.
       - run: python -m venv .venv && echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV" && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-        working-directory: python
+        working-directory: NeuroStats/python
       - run: pip install "maturin>=1.15,<2" pytest numpy scipy nilearn
       - run: cargo clippy --all-targets -- -D warnings
-        working-directory: python
+        working-directory: NeuroStats/python
       - run: maturin develop --release
-        working-directory: python
+        working-directory: NeuroStats/python
       - run: pytest -q
-        working-directory: python
+        working-directory: NeuroStats/python

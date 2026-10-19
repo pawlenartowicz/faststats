@@ -43,7 +43,7 @@ Each ships on its own schedule and is used from here like any other library.
 - [CommonStats for Python](Documentation/CommonStats/python/README.md) — binding status
 - [NeuroStats crate guide](Documentation/NeuroStats/rust/README.md) — full API detail
 - [NeuroStats for Python](Documentation/NeuroStats/python/api.md) — Python API
-- [NeuroStats and nilearn](Documentation/NeuroStats/python/nilearn_compatibility.md) — compatibility notes
+- [NeuroStats and nilearn](Documentation/NeuroStats/python/nilearn_io.md) — maskers and images in, images out; parity notes
 - [RobustStats](Documentation/RobustStats/README.md) — status
 - [GLMM](Documentation/GLMM/README.md) — pointer to its own repository
 

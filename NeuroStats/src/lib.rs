@@ -1,6 +1,6 @@
 //! NeuroStats — `no_std`, WASM-ready neuroimaging statistics.
 //!
-//! Three layers, each usable on its own. No I/O: every entry point takes and
+//! Four layers, each usable on its own. No I/O: every entry point takes and
 //! returns slices, and nothing here opens a file or a network socket.
 //!
 //! **Adjacency.** [`Domain`] is an undirected graph over the in-mask voxels of
@@ -15,41 +15,55 @@
 //! **TFCE.** [`tfce()`] enhances a statistic map over a [`Domain`] and
 //! [`tfce_into`] does it into a caller-owned buffer with a reusable
 //! [`TfceWorkspace`]; [`tfce_naive`] is the readable re-clustering oracle for
-//! both. [`TfceParams`] carries the exponents, the threshold grid and the
-//! [`Weighting`] rule. [`tfce_bands`], [`tfce_bands_into`] and
+//! both. [`tfce_tail_into`] does the same for a chosen [`Tail`]: the map, the
+//! negated map, or the signed difference of the two. [`TfceParams`] carries
+//! the exponents, the threshold grid and the [`Weighting`] rule. [`tfce_bands`], [`tfce_bands_into`] and
 //! [`tfce_bands_naive`] take an explicit `(threshold, weight)` band list
 //! instead of a grid.
 //!
-//! **Sign-flip permutation inference** (feature `std`). `tfce_one_sample`
-//! runs the one-sample test end to end and returns a `TfceInference` with the
-//! observed maps, the FWE-corrected and uncorrected p-maps and the max-TFCE
-//! null. Its pieces are public so a caller can drive the loop itself:
-//! [`OneSampleT`] is the t-map from sufficient statistics,
-//! `sign_flip_plan` picks exhaustive enumeration or Monte Carlo and returns a
-//! `SignFlipPlan`, `OneSampleProblem` holds everything fixed across draws,
+//! **Brain store.** [`Store`] is the copy of the brain data that permutation
+//! inference reads: voxel-major `f64`, each node's column residualised
+//! against a nuisance basis and scaled to unit norm, built in one pass from
+//! an `f32` or `f64` source and a row index. [`nuisance_basis`]
+//! orthonormalises the confound columns and the intercept into that basis.
+//!
+//! **Permutation inference** (feature `std`). `tfce_ols` runs TFCE
+//! permutation inference for the linear model
+//! `brain ~ tested + confounds + intercept` fitted at every node, and returns
+//! a `TfceInference`: the observed statistic, the FWE-corrected and
+//! uncorrected p-maps, and a `NullState` with the observed TFCE map, the
+//! max-TFCE null and the settings of the run. With no tested regressor it
+//! tests the intercept, which without confounds is the one-sample sign-flip
+//! test. Its pieces are public so a caller can drive the loop itself:
+//! `PermOpts` carries the TFCE settings, the tail, the seed, the draw budget
+//! and the batch size; `PermProblem::ols` holds everything fixed across
+//! draws; `stat_batch` gives the statistic maps of a batch of draws;
 //! `run_range` runs a range of draws into a `NullPartial` using a
-//! `PermWorkspace`, and `finalize` turns a merged null into p-maps.
-//! `tfce_one_sample_threads` (feature `parallel`) spreads the same draws over
-//! a rayon pool.
+//! `PermWorkspace`; and `finalize` turns a merged null into p-maps.
+//! `draw_permutation` is the row shuffle of one draw. `run_threads` and
+//! `tfce_ols_threads` (feature `parallel`) spread the same draws over a rayon
+//! pool.
 //!
 //! Conventions are explicit and never defaulted: the caller states the voxel
-//! connectivity ([`Conn`]) and the TFCE band weighting ([`Weighting`]), because
-//! the reference tools (MNE vs FSL/PALM/SPM) disagree on the latter by several ×
-//! on the same map.
+//! connectivity ([`Conn`]), the TFCE band weighting ([`Weighting`]) and the
+//! tail ([`Tail`]), because the reference tools (MNE vs FSL/PALM/SPM) disagree
+//! on the weighting by several × on the same map.
 //!
-//! Random draws are addressable, not streamed: the sign pattern of draw `b` is
-//! a pure function of `(seed, b)`, and merging `NullPartial`s adds counts and
-//! concatenates maxima, which `finalize` then sorts. So a run is reproducible
-//! from its seed and bit-identical for every thread count and every partition
-//! of `0..B` into `run_range` calls.
+//! Random draws are addressable, not streamed: the row shuffle or sign
+//! pattern of draw `b` is a pure function of `(seed, b)`, every dot product of
+//! the statistic is one sum in subject order whatever the batch, and merging
+//! `NullPartial`s adds counts and concatenates maxima, which `finalize` then
+//! sorts. So a run is reproducible from its seed and bit-identical for every
+//! thread count, every batch size and every partition of the draws into
+//! `run_range` calls.
 //!
 //! Cargo features, both on by default: `std` pulls in `commonstats` and the
 //! standard library and compiles the `permute` module (everything under
-//! "sign-flip permutation inference" above); `parallel` implies `std` and adds
-//! `rayon`, which is what `tfce_one_sample_threads` runs on. With
+//! "permutation inference" above); `parallel` implies `std` and adds `rayon`,
+//! which is what `run_threads` and `tfce_ols_threads` run on. With
 //! `default-features = false` only the `no_std` core is compiled — [`Domain`],
-//! [`tfce()`] and their neighbours — and that is the configuration the
-//! `wasm32-unknown-unknown` build uses.
+//! [`tfce()`], [`Store`] and their neighbours — and that is the configuration
+//! the `wasm32-unknown-unknown` build uses.
 //!
 //! ```
 //! use neurostats::{Conn, Domain, TfceParams, Weighting, tfce};
@@ -73,22 +87,22 @@ extern crate std;
 
 pub mod domain;
 pub mod error;
-pub mod onesample;
 #[cfg(feature = "std")]
 pub mod permute;
+pub mod store;
 pub mod tfce;
 
 pub use domain::{Conn, Domain};
 pub use error::NeuroError;
-pub use onesample::OneSampleT;
-#[cfg(feature = "parallel")]
-pub use permute::tfce_one_sample_threads;
 #[cfg(feature = "std")]
 pub use permute::{
-    NullPartial, OneSampleProblem, PermWorkspace, SignFlipPlan, TfceInference, finalize, run_range,
-    sign_flip_plan, tfce_one_sample,
+    Engine, NullPartial, NullState, PermOpts, PermProblem, PermWorkspace, TfceInference,
+    draw_permutation, finalize, run_range, stat_batch, tfce_ols,
 };
+#[cfg(feature = "parallel")]
+pub use permute::{run_threads, tfce_ols_threads};
+pub use store::{Store, nuisance_basis};
 pub use tfce::{
-    TfceParams, TfceWorkspace, Weighting, tfce, tfce_bands, tfce_bands_into, tfce_bands_naive,
-    tfce_into, tfce_naive,
+    Tail, TfceParams, TfceWorkspace, Weighting, tfce, tfce_bands, tfce_bands_into,
+    tfce_bands_naive, tfce_into, tfce_naive, tfce_tail_into,
 };

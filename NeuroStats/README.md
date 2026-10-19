@@ -1,11 +1,12 @@
 # neurostats
 
-`no_std`, WASM-ready neuroimaging statistics in Rust. Three layers, each usable
+`no_std`, WASM-ready neuroimaging statistics in Rust. Four layers, each usable
 on its own: an adjacency graph over masked-volume voxels (`Domain`),
 threshold-free cluster enhancement (`tfce` and friends) over a statistic map
-on that graph, and one-sample sign-flip permutation inference
-(`tfce_one_sample`). No I/O anywhere: every entry point takes and returns
-slices. Part of the [faststats](https://github.com/pawlenartowicz/faststats)
+on that graph, a residualised copy of the brain data (`Store`), and TFCE
+permutation inference for a linear model fitted at every node (`tfce_ols`,
+which includes the one-sample test). No I/O anywhere: every entry point takes
+and returns slices. Part of the [faststats](https://github.com/pawlenartowicz/faststats)
 repository. Full guide with worked examples and API detail:
 [`../Documentation/NeuroStats/rust/README.md`](../Documentation/NeuroStats/rust/README.md).
 
@@ -26,39 +27,66 @@ let enhanced = tfce(&dom, &stat, &p).unwrap();
 assert_eq!(enhanced.len(), dom.n_nodes());
 ```
 
-## Permutation inference (one-sample)
+## Permutation inference (`tfce_ols`)
 
 ```rust
-use neurostats::{Conn, Domain, TfceParams, Weighting, tfce_one_sample};
+use neurostats::{Conn, Domain, PermOpts, Tail, TfceParams, Weighting, tfce_ols};
 
-// x: subject-major, x[i * V + v] = subject i at node v; n subjects.
+// y: subject-major, y[i * V + v] = subject i at node v; n subjects.
 let dom = Domain::from_volume([3, 1, 1], Conn::Face);
-let x = [2.0, 0.3, 0.0, 2.5, -0.4, 0.0, 1.8, 0.1, 0.0, 2.2, -0.2, 0.0];
+let y = [2.0, 0.3, 0.0, 2.5, -0.4, 0.0, 1.8, 0.1, 0.0, 2.2, -0.2, 0.0];
+let age = [31.0, 45.0, 28.0, 52.0]; // tested regressor, one value per subject
+let sex = [0.0, 1.0, 1.0, 0.0]; // confounds, row-major n × c
 let p = TfceParams { e: 0.5, h: 2.0, start: 0.0, step: 1.0, weighting: Weighting::Exact };
-let r = tfce_one_sample(&dom, &x, 4, &p, 42, 5000).unwrap();
-// r.t_obs, r.tfce_obs, r.p_fwe (max-TFCE FWE), r.p_unc, r.null_max (sorted, len B)
+let opts = PermOpts::new(p, Tail::TwoSided, 42, 5000); // seed 42, 5000 draws
+
+// brain ~ age + sex + intercept, t of age:
+let r = tfce_ols(&dom, &y, 4, Some(&age), &sex, &opts).unwrap();
+// brain ~ intercept, t of the intercept: the one-sample test.
+let one = tfce_ols(&dom, &y, 4, None, &[], &opts).unwrap();
+// r.stat_obs, r.p_fwe (max-TFCE FWE), r.p_unc, r.null.tfce_obs,
+// r.null.maxima (the null, sorted, len B)
 ```
 
-- **Statistic** — one-sample t, `ddof = 1`, no variance smoothing; degenerate
-  nodes (variance at the rounding floor) get `t = 0`.
-- **Realizations** — all `2^n` sign patterns when `2^n ≤ B`, else `B` Monte
-  Carlo draws (identity + `B − 1` Philox draws keyed by `(seed, draw_id)`).
-  `B` counts the identity, so `p ≥ 1/B`.
-- **p-values** — `p_fwe(v) = #{b : max_b ≥ tfce_obs(v)} / B` over the max-TFCE
-  null, `p_unc(v) = #{b : tfce_b(v) ≥ tfce_obs(v)} / B` over the node's own
-  null (no multiplicity correction). Both one-sided, positive tail; a
-  negative effect is tested by negating `x`. `p_fwe` matches MNE 1.12.1
-  `permutation_cluster_1samp_test(threshold=dict(...), tail=1)`
-  `cluster_pv` by exact enumeration on the frozen fixtures; `p_unc` has no
-  external oracle (MNE emits no such map).
-- **Splitting** — `OneSampleProblem` + `run_range` over any partition of
-  `0..B`, merged through `NullPartial`, then `finalize`: bit-identical to the
-  serial call regardless of the split.
-- **Threads** — `tfce_one_sample_threads(&dom, &x, n, &p, seed, b, threads)`
-  (feature `parallel`) does that split over a rayon pool. `threads = 0` means
-  every core the machine reports; `threads = 1` runs serially. The result is
-  bit-identical to `tfce_one_sample` for every thread count, so a run is
-  reproducible from `(seed, b)` alone.
+- **Model** — `brain ~ tested + confounds + intercept`, one fit per node with
+  the same design; the statistic is the t of `tested`. With `tested = None`
+  the model is `brain ~ intercept + confounds` and the statistic is the t of
+  the intercept, which without confounds is the one-sample t (`ddof = 1`).
+  A node with no residual variance gets `t = 0`. The formula is the one of
+  nilearn `permuted_ols`.
+- **Draws** — with a tested regressor the rows of the design are shuffled
+  together and the brain data stay fixed, which gives the Freedman–Lane
+  statistic. With `tested = None` the rows are sign-flipped: all `2^n`
+  patterns when `2^n ≤ B`, else `B` Monte Carlo draws. Draw 0 is the identity
+  and `B` counts it, so `p ≥ 1/B`.
+- **Tails** — `Tail::Positive`, `Tail::Negative` or `Tail::TwoSided`,
+  required. The tested quantity `T` is the TFCE of the map, the TFCE of the
+  negated map, or `|TFCE(map) − TFCE(−map)|`.
+- **p-values** — `p_fwe(v) = #{b : max_b ≥ T(v)} / B` over the max-TFCE null,
+  `p_unc(v) = #{b : T_b(v) ≥ T(v)} / B` over the node's own null (no
+  multiplicity correction). For the one-sample test under `Tail::Positive`,
+  `p_fwe` matches MNE 1.12.1
+  `permutation_cluster_1samp_test(threshold=dict(...), tail=1)` `cluster_pv`
+  by exact enumeration on the frozen fixtures. The t of every draw and both
+  p-maps are checked against a loop that refits every node by the normal
+  equations.
+- **No refits** — the data are residualised against the confounds and scaled
+  once, into a `Store`. A draw then costs a few dot products per node and one
+  TFCE. Draws run in batches of `PermOpts::batch`, so the store is read once
+  per batch; the batch size never changes a result.
+- **Pieces** — `nuisance_basis` + `Store::from_f64` or `Store::from_f32` (an
+  `f32` or `f64` source and a row index) + `PermProblem::ols` + `run_range`
+  over any partition of `problem.draws()`, merged through `NullPartial`, then
+  `finalize`: bit-identical to `tfce_ols` regardless of the split.
+- **Threads** — `tfce_ols_threads(.., threads)` and `run_threads` (feature
+  `parallel`) do that split over a rayon pool. `threads = 0` means every core
+  the machine reports; `threads = 1` runs serially. The result is
+  bit-identical to `tfce_ols` for every thread count, so a run is reproducible
+  from its seed and budget alone.
+- **Extending a null** — a result carries its `NullState` (`r.null`). Set
+  `PermOpts::extend = Some(&r.null)` with a larger `n_perm` and the same
+  data, design, seed and settings: only the missing draws are run, and the
+  result equals one run with the larger budget, bit for bit.
 
 ## `Domain` kinds
 
@@ -98,49 +126,59 @@ disagree:
 - `Weighting::Exact`: closed-form `∫_{start}^{stat[v]} e_v(h)^E · h^H dh` — no
   threshold grid, ignores `step` entirely; recommended for new analyses
   (`start = 0`).
+- `Weighting::Nilearn`: 100 thresholds in equal steps from 0 up to and
+  including `max(stat)`, rebuilt for every map; `w_i = h_i^H` with no step
+  factor; membership is `stat >= h`; `start` and `step` are not used (nilearn
+  `calculate_tfce` under `dh="auto"`).
 
-Under the stepped rules, thresholds are NumPy `arange(start, max(stat),
-step)`, start inclusive, stop exclusive. Membership at a threshold is strict
-(`stat > h`).
+Under `SmithNichols` and `MneStep`, thresholds are NumPy `arange(start,
+max(stat), step)`, start inclusive, stop exclusive, and membership at a
+threshold is strict (`stat > h`).
 
 `tfce` is the incremental union-find product path; `tfce_naive` re-clusters
 at every threshold and is the readable oracle. They agree within `1e-12`
 relative on every fixture in `tests/fixtures/`; `tfce_naive` under
 `Weighting::MneStep` matches MNE 1.12.1 on those same fixtures.
 
+`tfce_tail_into(&dom, &stat, &p, tail, &mut ws, &mut out)` enhances for a
+chosen `Tail`: `Positive` is the map, `Negative` the negated map, and
+`TwoSided` the first minus the second, which is signed. Under the grid rules
+both passes of a two-sided call share one grid, built from `max |stat|`. It
+reuses a `TfceWorkspace` and allocates nothing per call.
+
 `tfce_bands` / `tfce_bands_into` / `tfce_bands_naive` take an explicit
 strictly increasing threshold list, explicit band weights, and a
-strict/non-strict membership flag — the form the Python wheel and the
-nilearn shim use.
+strict/non-strict membership flag, for callers that build their own grid.
 
 ## RNG contract
 
-The sign pattern of draw `b` is a pure function of `(seed, b)` (Philox4x32-10
-from `commonstats`, keyed to a sign-flip stream). `tfce_one_sample_threads` is
-bit-identical to `tfce_one_sample` for every thread count and every partition
-of `0..B` into `run_range` calls, because merging never reorders draws before
-sorting. Draw 0 is always the identity realization. Exhaustive enumeration
-(every `2^n` sign pattern, `n` = subject count) is used when `2^n ≤ B`,
-otherwise `B` Monte Carlo draws.
+Draw `b` is a pure function of `(seed, b)` (Philox4x32-10 from `commonstats`):
+a row shuffle from `gen_resample_indices(Scheme::Permutation, ..)` when a
+regressor is tested (`draw_permutation` returns it), a sign pattern from
+`gen_sign_flips` when the intercept is tested. `tfce_ols_threads` is
+bit-identical to `tfce_ols` for every thread count, every batch size and every
+partition of the draws into `run_range` calls, because each dot product is
+summed in a fixed order and merging never reorders draws before sorting. Draw
+0 is always the identity. Every `2^n` sign pattern is enumerated when the
+intercept is tested and `2^n ≤ B`; row shuffles are never enumerated.
 
 ## Features
 
 | feature | default | adds |
 |---|---|---|
 | `std` | yes | the `permute` module — permutation inference; pulls in `commonstats` and the standard library |
-| `parallel` | yes | `tfce_one_sample_threads`, the rayon-backed driver; implies `std` |
+| `parallel` | yes | `run_threads` and `tfce_ols_threads`, the rayon-backed drivers; implies `std` |
 
-Opt out with `default-features = false`, which leaves the `no_std` TFCE core
-(`Domain`, `tfce`, `tfce_bands`); add `features = ["std"]` back for serial
-permutations without rayon. There is no negative feature, because cargo
-features are additive and unify across the dependency graph — one consumer
-asking for less would strip parallelism from every other consumer in the
-build.
+Opt out with `default-features = false`, which leaves the `no_std` core
+(`Domain`, `tfce`, `tfce_bands`, `Store`, `nuisance_basis`); add
+`features = ["std"]` back for serial permutations without rayon. There is no
+negative feature, because cargo features are additive and unify across the
+dependency graph — one consumer asking for less would strip parallelism from
+every other consumer in the build.
 
 `RAYON_NUM_THREADS` and rayon's global pool have no effect here:
-`tfce_one_sample_threads` builds its own pool per call, sized by its
-`threads` argument, so concurrent callers cannot disturb each other's thread
-counts.
+`run_threads` builds its own pool per call, sized by its `threads` argument,
+so concurrent callers cannot disturb each other's thread counts.
 
 ## CI gates
 
@@ -153,8 +191,8 @@ counts.
 
 ## Portability
 
-The core and `permute` are `#![no_std]` + `alloc`. Only
-`tfce_one_sample_threads` (feature `parallel`) links the standard library, for
+The core and `permute` are `#![no_std]` + `alloc`. Only `run_threads` and
+`tfce_ols_threads` (feature `parallel`) link the standard library, for
 threads. `#![forbid(unsafe_code)]`. The `wasm32-unknown-unknown` build is
 `--no-default-features`: rayon needs threads that target does not have.
 

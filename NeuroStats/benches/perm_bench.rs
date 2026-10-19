@@ -1,6 +1,7 @@
-//! Sign-flip permutation timing on the realistic bench fixture: `B = 200`
-//! Monte Carlo draws over `n = 30` synthetic subjects (fixture map + unit
-//! noise, fixed LCG), reporting ms/draw and the `tfce_into` share.
+//! Permutation timing on the realistic bench fixture: `B = 200` Monte Carlo
+//! draws of the one-sample test (`tfce_ols` with no tested regressor and no
+//! confounds) over `n = 30` synthetic subjects (fixture map + unit noise,
+//! fixed LCG), reporting ms/draw and the `tfce_into` share.
 //!
 //! Run: `cargo bench --bench perm_bench` (pin and lock the machine first; the
 //! first pass is discarded, the min of the rest is reported).
@@ -8,11 +9,11 @@
 use std::time::Instant;
 
 use neurostats::{
-    Conn, Domain, OneSampleProblem, PermWorkspace, TfceParams, TfceWorkspace, Weighting, run_range,
-    sign_flip_plan, tfce_into,
+    Conn, Domain, PermOpts, PermProblem, PermWorkspace, Store, Tail, TfceParams, TfceWorkspace,
+    Weighting, run_range, tfce_into,
 };
 #[cfg(feature = "parallel")]
-use neurostats::{tfce_one_sample, tfce_one_sample_threads};
+use neurostats::{tfce_ols, tfce_ols_threads};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -58,6 +59,8 @@ fn main() {
     let x: Vec<f64> = (0..n * v)
         .map(|k| 0.3 * fx.stat[k % v] + (next() - 0.5) * 3.4641)
         .collect();
+    let rows: Vec<usize> = (0..n).collect();
+    let store = Store::from_f64(&x, n, v, &rows, &[]).unwrap();
     let runs = 3;
     for weighting in [Weighting::MneStep, Weighting::Exact] {
         let p = TfceParams {
@@ -67,13 +70,13 @@ fn main() {
             step: fx.params.step,
             weighting,
         };
-        let problem = OneSampleProblem::new(&dom, &x, n, p, 7).unwrap();
-        let plan = sign_flip_plan(n, b);
-        let mut ws = PermWorkspace::new(n, v);
+        let opts = PermOpts::new(p, Tail::Positive, 7, b);
+        let problem = PermProblem::ols(&dom, &store, None, &opts).unwrap();
+        let mut ws = PermWorkspace::new(&problem);
         let mut best = f64::INFINITY;
         for r in 0..=runs {
             let t = Instant::now();
-            let null = run_range(&problem, &plan, 0..plan.b, &mut ws);
+            let null = run_range(&problem, problem.draws(), &mut ws);
             let dt = t.elapsed().as_secs_f64();
             std::hint::black_box(null);
             if r > 0 {
@@ -87,7 +90,7 @@ fn main() {
         for r in 0..=runs {
             let t = Instant::now();
             for _ in 0..b {
-                tfce_into(&dom, problem.t_obs(), &p, &mut tws, &mut out).unwrap();
+                tfce_into(&dom, problem.stat_obs(), &p, &mut tws, &mut out).unwrap();
             }
             let dt = t.elapsed().as_secs_f64();
             std::hint::black_box(&out);
@@ -107,12 +110,11 @@ fn main() {
     scaling_section();
 }
 
-/// Brain-mask-sized scaling check: `tfce_one_sample_threads` at `threads` in
-/// {1, 2, 4, 6} against serial `tfce_one_sample`, on a ~250k-node ellipsoid
-/// mask (the shape of a real brain-mask problem, unlike the small fixture
-/// above). Report seconds and the ratio to serial — spec A gate 5 turns this
-/// into a pass/fail (>= 4x at 6 threads) but only under a locked clock, so
-/// this bench just prints the numbers.
+/// Brain-mask-sized scaling check: `tfce_ols_threads` at `threads` in
+/// {1, 2, 4, 6} against serial `tfce_ols`, on a ~250k-node ellipsoid mask (the
+/// shape of a real brain-mask problem, unlike the small fixture above).
+/// Reports seconds and the ratio to serial. A ratio means something only
+/// under a locked clock, so this bench just prints the numbers.
 #[cfg(feature = "parallel")]
 fn scaling_section() {
     let dims = [128usize, 128, 92];
@@ -153,6 +155,7 @@ fn scaling_section() {
         weighting: Weighting::Exact,
     };
 
+    let opts = PermOpts::new(p, Tail::Positive, 7, b);
     let runs = 5;
 
     println!(
@@ -161,26 +164,26 @@ fn scaling_section() {
     );
 
     // Serial baseline: the dedicated single-threaded function, not
-    // `tfce_one_sample_threads(.., 1)` — the two are expected to be
-    // bit-identical, but the ratio below is against the serial code path
-    // callers actually use without the `parallel` feature.
+    // `tfce_ols_threads(.., 1)` — the two are expected to be bit-identical,
+    // but the ratio below is against the serial code path callers actually
+    // use without the `parallel` feature.
     let mut serial_best = f64::INFINITY;
     for r in 0..=runs {
         let t = Instant::now();
-        let out = tfce_one_sample(&dom, &x, n, &p, 7, b).unwrap();
+        let out = tfce_ols(&dom, &x, n, None, &[], &opts).unwrap();
         let dt = t.elapsed().as_secs_f64();
         std::hint::black_box(&out);
         if r > 0 {
             serial_best = serial_best.min(dt);
         }
     }
-    println!("  serial (tfce_one_sample): min {:.3} s", serial_best);
+    println!("  serial (tfce_ols): min {:.3} s", serial_best);
 
     for threads in [1usize, 2, 4, 6] {
         let mut best = f64::INFINITY;
         for r in 0..=runs {
             let t = Instant::now();
-            let out = tfce_one_sample_threads(&dom, &x, n, &p, 7, b, threads).unwrap();
+            let out = tfce_ols_threads(&dom, &x, n, None, &[], &opts, threads).unwrap();
             let dt = t.elapsed().as_secs_f64();
             std::hint::black_box(&out);
             if r > 0 {

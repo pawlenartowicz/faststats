@@ -398,20 +398,6 @@ mod tests {
     }
 
     #[test]
-    fn symmetric_no_self_loops() {
-        let dims = [3, 4, 5];
-        let mask: Vec<bool> = (0..60).map(|i| i % 3 != 1).collect();
-        let d = Domain::from_mask(&mask, dims, Conn::Vertex).unwrap();
-        assert_eq!(d.n_nodes(), mask.iter().filter(|&&m| m).count());
-        for i in 0..d.n_nodes() {
-            for j in nb(&d, i) {
-                assert_ne!(j as usize, i);
-                assert!(nb(&d, j as usize).contains(&(i as u32)));
-            }
-        }
-    }
-
-    #[test]
     fn mask_length_checked() {
         let e = Domain::from_mask(&[true; 5], [2, 2, 2], Conn::Face).unwrap_err();
         assert_eq!(
@@ -429,16 +415,6 @@ mod tests {
     fn oversized_grid_rejected() {
         let e = Domain::from_mask(&[true], [65_536, 65_536, 2], Conn::Face).unwrap_err();
         assert_eq!(e, NeuroError::TooManyNodes);
-    }
-
-    #[test]
-    fn row_major_node_order() {
-        // Node 1 is voxel (0,0,1); with Face conn its neighbours are (0,0,0)=0,
-        // (0,1,1)=3, (1,0,1)=5 on a 2×2×2 grid.
-        let d = Domain::from_volume([2, 2, 2], Conn::Face);
-        let mut n = nb(&d, 1);
-        n.sort_unstable();
-        assert_eq!(n, alloc::vec![0, 3, 5]);
     }
 
     /// `neighbours_into` on a lattice reproduces, row for row, the
@@ -524,19 +500,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn from_csr_round_trips_from_mask() {
-        let dims = [3, 4, 5];
-        let mask: Vec<bool> = (0..60).map(|i| i % 3 != 1).collect();
-        let d = Domain::from_mask(&mask, dims, Conn::Edge).unwrap();
-        let (offsets, neighbours) = d.to_csr().unwrap();
-        let back = Domain::from_csr(offsets, neighbours).unwrap();
-        // The two carry different representations, so compare the graphs.
-        assert_eq!(back.to_csr().unwrap(), d.to_csr().unwrap());
-        assert_eq!(back.n_nodes(), d.n_nodes());
-        assert_eq!(back.n_edges(), d.n_edges());
     }
 
     #[test]

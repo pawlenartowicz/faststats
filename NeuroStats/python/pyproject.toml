@@ -3,11 +3,11 @@ requires = ["maturin>=1.8,<2"]
 build-backend = "maturin"
 
 [project]
-name = "faststats"
-version = "0.1.0"
-description = "Rust-backed statistics for Python: TFCE and permutation inference (faststats.neuro)."
+name = "neurostats"
+version = "0.2.0"
+description = "Neuroimaging statistics for Python on a Rust core: TFCE and permutation inference."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "LGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-GPL"]
 authors = [{ name = "Paweł Lenartowicz" }]
@@ -26,8 +26,7 @@ test = ["pytest", "scipy", "nilearn"]
 Repository = "https://github.com/pawlenartowicz/faststats"
 
 [tool.maturin]
-python-source = "python"
-module-name = "faststats._faststats"
+module-name = "neurostats._neurostats"
 features = ["pyo3/extension-module"]
 exclude = [
     { path = "venv/**/*", format = "sdist" },

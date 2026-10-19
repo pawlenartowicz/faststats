@@ -9,10 +9,10 @@ rustc-ice-*.txt
 .DS_Store
 *.swp
 
-# Python binding (faststats/python)
+# Python bindings (<Crate>/python/)
 venv/
 *.so
 __pycache__/
 .pytest_cache/
-/python/dist/
+/*/python/dist/
 CommonStats/scripts/.accuracy_cache/

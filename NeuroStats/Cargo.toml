@@ -1,6 +1,6 @@
 [package]
 name = "neurostats"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"  # edition 2024 floor, matches commonstats
 license = "LGPL-3.0-or-later"
@@ -12,17 +12,20 @@ readme = "README.md"
 authors = ["Paweł Lenartowicz"]
 keywords = ["statistics", "neuroimaging", "tfce", "permutation", "wasm"]
 categories = ["mathematics", "science", "no-std", "wasm"]
+# Bench inputs, read only by the benches and scripts; not needed to build or test.
+exclude = ["tests/fixtures/bench_reference.npz", "tests/fixtures/tfce_bench.json"]
 
 [dependencies]
 libm = "0.2"      # powf under no_std — pure-Rust, WASM-clean
-# Sign-flip generation + Mergeable
+# Draw generation (sign flips, row shuffles) + Mergeable
 commonstats = { path = "../CommonStats", version = "0.2", features = ["resample"], optional = true }
-rayon = { version = "1.12", optional = true }   # thread pool for `tfce_one_sample_threads`
+rayon = { version = "1.12", optional = true }   # thread pool for `run_threads`
 
 [features]
 default = ["std", "parallel"]
-# `permute` needs commonstats (sign-flip RNG, Mergeable) and `std::thread`;
-# the TFCE core needs neither, so it stays buildable for `no_std`/wasm.
+# `permute` needs commonstats (draw RNG, Mergeable) and `std::thread`; the
+# TFCE core and the brain store need neither, so they stay buildable for
+# `no_std`/wasm.
 std = ["dep:commonstats"]
 # rayon-backed splitting of the draw loop. Opt out with
 # `default-features = false` — a negative feature would not work, since cargo
@@ -43,6 +46,11 @@ harness = false   # plain std::time::Instant timing — no criterion dependency
 [[bench]]
 name = "perm_bench"
 harness = false   # plain std::time::Instant timing — no criterion dependency
+
+[[bench]]
+name = "cell_bench"
+harness = false   # plain std::time::Instant timing — no criterion dependency
+required-features = ["parallel"]
 
 # Mirrors the CI gate (`clippy --all-features -- -D warnings`) for local builds.
 # `unsafe_code`/`missing_docs` stay in lib.rs as the owning site.

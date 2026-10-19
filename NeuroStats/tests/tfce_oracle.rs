@@ -1,14 +1,16 @@
-//! TFCE parity gates (design spec §5):
-//!   G1 — union-find `tfce` ≈ `tfce_naive`, both weightings (internal, no oracle)
+//! TFCE parity gates:
+//!   G1 — union-find `tfce` ≈ `tfce_naive`, all four weightings (internal, no oracle)
 //!   G2 — `tfce_naive` ≈ MNE 1.12.1 golden (`MneStep`)
 //!   G3 — `tfce` ≈ MNE golden (`MneStep`)
 //!   G4 — `tfce_naive` ≈ independent NumPy Smith–Nichols transcription (`SmithNichols`)
+//!   G13 — `tfce_tail_into` ≈ `tfce_naive` for the three tails; nilearn hand case
 //! Tolerance everywhere: rel 1e-12 with abs floor 1e-12 · max|expected|.
 mod common;
 
 use common::{Fixture, assert_map_close, load};
 use neurostats::{
-    Conn, Domain, TfceParams, Weighting, tfce, tfce_bands, tfce_bands_naive, tfce_naive,
+    Conn, Domain, Tail, TfceParams, TfceWorkspace, Weighting, tfce, tfce_bands, tfce_bands_naive,
+    tfce_naive, tfce_tail_into,
 };
 
 const REL: f64 = 1e-12;
@@ -41,7 +43,12 @@ fn g1_union_find_matches_naive_on_fixtures() {
     for name in SMALL {
         let fx = load(name);
         let dom = fx.domain();
-        for w in [Weighting::MneStep, Weighting::SmithNichols] {
+        for w in [
+            Weighting::MneStep,
+            Weighting::SmithNichols,
+            Weighting::Exact,
+            Weighting::Nilearn,
+        ] {
             let p = params(&fx, w);
             let fast = tfce(&dom, &fx.stat, &p).unwrap();
             let slow = tfce_naive(&dom, &fx.stat, &p).unwrap();
@@ -73,7 +80,12 @@ fn g1_union_find_matches_naive_synthetic() {
             let stat: Vec<f64> = (0..dom.n_nodes())
                 .map(|_| (next() * 6.0 * 4.0).round() / 4.0)
                 .collect();
-            for w in [Weighting::MneStep, Weighting::SmithNichols] {
+            for w in [
+                Weighting::MneStep,
+                Weighting::SmithNichols,
+                Weighting::Exact,
+                Weighting::Nilearn,
+            ] {
                 let p = TfceParams {
                     e: 0.5,
                     h: 2.0,
@@ -232,6 +244,7 @@ fn lattice_matches_csr_on_fixtures() {
                 Weighting::MneStep,
                 Weighting::SmithNichols,
                 Weighting::Exact,
+                Weighting::Nilearn,
             ] {
                 let p = params(&fx, w);
                 let a = tfce(&lat, &stat, &p).unwrap();
@@ -358,4 +371,189 @@ fn tfce_bands_rejects_bad_bands() {
         tfce_bands(&dom, &s, &[], &[], 0.5, true).unwrap(),
         vec![0.0, 0.0]
     );
+}
+
+const WEIGHTINGS: [Weighting; 4] = [
+    Weighting::MneStep,
+    Weighting::SmithNichols,
+    Weighting::Exact,
+    Weighting::Nilearn,
+];
+
+/// The fixture map with every other node negated. With `balanced`, one node
+/// is then forced to `+m` and another to `-m`, `m = 1.5 · max |stat|`, so both
+/// signs have the same maximum.
+fn signed(fx: &Fixture, balanced: bool) -> Vec<f64> {
+    let mut stat: Vec<f64> = fx
+        .stat
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| if i % 2 == 0 { s } else { -s })
+        .collect();
+    if balanced {
+        let m = 1.5 * stat.iter().fold(0.0f64, |a, s| a.max(s.abs()));
+        let last = stat.len() - 1;
+        stat[0] = m;
+        stat[last] = -m;
+    }
+    stat
+}
+
+/// G13 — the three tails against `tfce_naive`: positive is the naive map,
+/// negative is the naive map of `-stat`, two-sided is their difference.
+/// `tfce_naive` builds each grid from its own map's maximum, so it is the
+/// two-sided oracle where the shared grid changes nothing: for `MneStep`,
+/// `SmithNichols` and `Exact` on any map, and for `Nilearn` on a map whose
+/// two signs have the same maximum.
+#[test]
+fn g13_tails_match_naive() {
+    let mut ws = TfceWorkspace::new(0);
+    for name in ["grid4", "blob", "ties", "two_clusters"] {
+        let fx = load(name);
+        let dom = fx.domain();
+        for balanced in [false, true] {
+            let stat = signed(&fx, balanced);
+            let neg: Vec<f64> = stat.iter().map(|s| -s).collect();
+            for w in WEIGHTINGS {
+                if w == Weighting::Nilearn && !balanced {
+                    continue;
+                }
+                let p = params(&fx, w);
+                let up = tfce_naive(&dom, &stat, &p).unwrap();
+                let down = tfce_naive(&dom, &neg, &p).unwrap();
+                let both: Vec<f64> = up.iter().zip(&down).map(|(a, b)| a - b).collect();
+                let mut got = vec![f64::NAN; dom.n_nodes()];
+                for (tail, want) in [
+                    (Tail::Positive, &up),
+                    (Tail::Negative, &down),
+                    (Tail::TwoSided, &both),
+                ] {
+                    tfce_tail_into(&dom, &stat, &p, tail, &mut ws, &mut got).unwrap();
+                    assert_map_close(
+                        &format!("G13 {name} balanced={balanced} {w:?} {tail:?}"),
+                        &got,
+                        want,
+                        REL,
+                        ABS_FLOOR,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Under `Nilearn` both passes of a two-sided call use the grid of
+/// `max |stat|`. Two adjacent nodes, stat = [100, -50], E = 1, H = 2: the grid
+/// is h_k = k for k = 1..=100. Node 0 is alone in all 100 bands of the
+/// positive pass: Σ k² = 338350. Node 1 is alone in bands 1..=50 of the
+/// negative pass: Σ_{k≤50} k² = 42925. On its own grid (h_k = k/2) the
+/// negative pass would give 84587.5. nilearn 0.14.1
+/// `calculate_tfce(E=1, H=2, two_sided_test=True)` returns [338350, -42925].
+#[test]
+fn g13_two_sided_nilearn_grid_comes_from_max_abs() {
+    let dom = Domain::from_volume([2, 1, 1], Conn::Face);
+    let p = TfceParams {
+        e: 1.0,
+        h: 2.0,
+        start: 0.0,
+        step: 1.0,
+        weighting: Weighting::Nilearn,
+    };
+    let mut ws = TfceWorkspace::new(2);
+    let mut got = vec![f64::NAN; 2];
+    tfce_tail_into(&dom, &[100.0, -50.0], &p, Tail::TwoSided, &mut ws, &mut got).unwrap();
+    assert_map_close("G13 hand", &got, &[338350.0, -42925.0], REL, ABS_FLOOR);
+}
+
+/// One workspace reused across tails, weightings and domains of different
+/// size gives the bits a fresh workspace gives: nothing of an earlier call
+/// (the negated map, its TFCE, the grid) leaks into a later one.
+#[test]
+fn g13_workspace_reuse_across_tails_is_bitwise() {
+    let mut shared = TfceWorkspace::new(0);
+    for name in [
+        "bench",
+        "grid4",
+        "blob",
+        "single",
+        "empty_grid",
+        "two_clusters",
+    ] {
+        let fx = load(name);
+        let dom = fx.domain();
+        let stat: Vec<f64> = fx
+            .stat
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| if i % 3 == 0 { -0.6 * s } else { s })
+            .collect();
+        for w in WEIGHTINGS {
+            let p = params(&fx, w);
+            for tail in [Tail::TwoSided, Tail::Negative, Tail::Positive] {
+                let mut want = vec![f64::NAN; dom.n_nodes()];
+                let mut fresh = TfceWorkspace::new(dom.n_nodes());
+                tfce_tail_into(&dom, &stat, &p, tail, &mut fresh, &mut want).unwrap();
+                let mut got = vec![f64::NAN; dom.n_nodes()];
+                tfce_tail_into(&dom, &stat, &p, tail, &mut shared, &mut got).unwrap();
+                assert_eq!(got, want, "reuse {name} {w:?} {tail:?}");
+            }
+        }
+    }
+}
+
+/// A map with no negative value: the negative tail is all zeros and the
+/// two-sided tail equals the positive tail. An all-zero map is all zeros
+/// under every tail. No NaN and no negative zero-crossing artefacts.
+#[test]
+fn g13_one_signed_and_zero_maps() {
+    let dom = Domain::from_volume([3, 2, 1], Conn::Face);
+    let stat = [0.5, 2.0, 0.0, 1.5, 3.0, 0.25];
+    let mut ws = TfceWorkspace::new(dom.n_nodes());
+    for w in WEIGHTINGS {
+        let p = TfceParams {
+            e: 0.5,
+            h: 2.0,
+            start: 0.0,
+            step: 0.25,
+            weighting: w,
+        };
+        let up = tfce(&dom, &stat, &p).unwrap();
+        let mut got = vec![f64::NAN; 6];
+        tfce_tail_into(&dom, &stat, &p, Tail::Negative, &mut ws, &mut got).unwrap();
+        assert_eq!(got, vec![0.0; 6], "{w:?} negative");
+        tfce_tail_into(&dom, &stat, &p, Tail::TwoSided, &mut ws, &mut got).unwrap();
+        assert_eq!(got, up, "{w:?} two-sided");
+        for tail in [Tail::Positive, Tail::Negative, Tail::TwoSided] {
+            tfce_tail_into(&dom, &[0.0; 6], &p, tail, &mut ws, &mut got).unwrap();
+            assert_eq!(got, vec![0.0; 6], "{w:?} {tail:?} zero map");
+        }
+    }
+}
+
+#[test]
+fn tfce_tail_into_rejects_bad_inputs() {
+    let dom = Domain::from_volume([2, 1, 1], Conn::Face);
+    let p = TfceParams {
+        e: 0.5,
+        h: 2.0,
+        start: 0.0,
+        step: 1.0,
+        weighting: Weighting::Nilearn,
+    };
+    let mut ws = TfceWorkspace::new(2);
+    let mut out = vec![0.0; 2];
+    let mut short = vec![0.0; 1];
+    for tail in [Tail::Positive, Tail::Negative, Tail::TwoSided] {
+        assert_eq!(
+            tfce_tail_into(&dom, &[1.0, 2.0], &p, tail, &mut ws, &mut short),
+            Err(neurostats::NeuroError::MismatchedLengths {
+                expected: 2,
+                got: 1
+            })
+        );
+        assert_eq!(
+            tfce_tail_into(&dom, &[1.0, f64::NAN], &p, tail, &mut ws, &mut out),
+            Err(neurostats::NeuroError::NonFiniteStat)
+        );
+    }
 }

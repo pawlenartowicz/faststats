@@ -1,0 +1,128 @@
+{
+ "dataset": {
+  "script": "scripts/gen_bench_dataset.py",
+  "seed": 20261014,
+  "dims": [
+   50,
+   50,
+   50
+  ],
+  "n": 20,
+  "n_voxels": 57856,
+  "sigma": 2.5,
+  "effect": 0.5,
+  "n_maps": 100
+ },
+ "tfce": {
+  "test": {
+   "e": 0.5,
+   "h": 2.0,
+   "conn": 6,
+   "tail": "positive",
+   "core": 1,
+   "runs": 3,
+   "n_maps": 100,
+   "keep_maps": 10
+  },
+  "tools": {
+   "nilearn": {
+    "seconds": 20.748510406003334,
+    "pass_seconds": [
+     20.901165163959377,
+     20.748510406003334,
+     21.259440031950362
+    ],
+    "version": "0.14.1",
+    "command": "nilearn.mass_univariate._utils.calculate_tfce(arr4d, bin_struct, E=0.5, H=2.0, dh='auto', two_sided_test=False)",
+    "timed": "calculate_tfce on the in-memory 4D array",
+    "tfce": "E=0.5 H=2.0 conn=6, 100 thresholds per map (dh='auto')"
+   },
+   "neurostats": {
+    "seconds": 0.3171608249831479,
+    "pass_seconds": [
+     0.38474629100528546,
+     0.3175451690040063,
+     0.3171608249831479
+    ],
+    "version": "0.2.0",
+    "command": "neurostats.tfce(map, domain, params='nilearn', tail='positive') per map, domain = Domain.from_mask(mask, conn=6)",
+    "timed": "tfce per map on the in-memory 3-D maps, Domain prebuilt",
+    "tfce": "E=0.5 H=2.0 conn=6, nilearn's 100 thresholds per map"
+   },
+   "fsl": {
+    "seconds": 5.146961668040603,
+    "pass_seconds": [
+     5.149511793977581,
+     5.154297439032234,
+     5.146961668040603
+    ],
+    "version": "fsl-avwutils-2209.8-h67d7eeb_2",
+    "command": "fslmaths target/bench_data/tmaps.nii -tfce 2.0 0.5 6 target/bench_data/out/tfce_fsl",
+    "timed": "whole fslmaths command",
+    "tfce": "E=0.5 H=2.0 conn=6, fslmaths' own threshold grid"
+   },
+   "palm": {
+    "seconds": 5.710783004760742,
+    "pass_seconds": [
+     5.714277982711792,
+     5.710783004760742,
+     5.716001987457275
+    ],
+    "version": "Dec/2025 (GitHub) commit 9086eff, GNU Octave, version 10.2.0",
+    "command": "palm_tfce(x(:, m)', 1, opts, plm) for each map, opts.tfce: deltah=0 conn=6 E=0.5 H=2.0",
+    "timed": "palm_tfce loop inside Octave (tic/toc), maps in memory",
+    "tfce": "E=0.5 H=2.0 conn=6, step max/100 per map, sum multiplied by the step"
+   }
+  }
+ },
+ "perm": {
+  "test": {
+   "e": 0.5,
+   "h": 2.0,
+   "conn": 6,
+   "tail": "positive",
+   "core": 1,
+   "runs": 3,
+   "n_perms": 100,
+   "design": "one-sample t, sign-flipping"
+  },
+  "tools": {
+   "fsl": {
+    "seconds": 4.327035665046424,
+    "pass_seconds": [
+     4.327035665046424,
+     4.327869624015875,
+     4.34032097295858
+    ],
+    "version": "Part of FSL (ID: 2412.6-dirty) randomise v2.9",
+    "command": "randomise -i target/bench_data/data.nii -o target/bench_data/out/fsl -m target/bench_data/mask.nii -1 -T -R -n 100 --tfce_H=2.0 --tfce_E=0.5 --tfce_C=6 --seed=1 --quiet",
+    "timed": "whole randomise command",
+    "tfce": "E=0.5 H=2.0 conn=6, randomise's own threshold grid"
+   },
+   "palm": {
+    "seconds": 12.359304405981675,
+    "pass_seconds": [
+     12.359304405981675,
+     12.413783291936852,
+     12.42728226701729
+    ],
+    "version": "Dec/2025 (GitHub) commit 9086eff, GNU Octave, version 10.2.0",
+    "command": "palm -i target/bench_data/data.nii -m target/bench_data/mask.nii -d target/bench_data/out/design.csv -t target/bench_data/out/contrast.csv -o target/bench_data/out/palm -n 100 -ise -T -tfce_H 2.0 -tfce_E 0.5 -tfce_C 6 -seed 1 -noniiclass",
+    "timed": "whole palm command",
+    "tfce": "E=0.5 H=2.0 conn=6, tfce_dh auto"
+   },
+   "nilearn": {
+    "seconds": 21.781178548932076,
+    "pass_seconds": [
+     21.781178548932076,
+     21.907284207991324,
+     21.882213124074042
+    ],
+    "version": "0.14.1",
+    "command": "permuted_ols(ones, y, model_intercept=False, n_perm=100, two_sided_test=False, random_state=1, n_jobs=1, masker=masker, tfce=True)",
+    "timed": "NiftiMasker fit + transform + permuted_ols, warm interpreter",
+    "tfce": "E=0.5 H=2.0 conn=6, 100 thresholds (dh='auto')"
+   }
+  }
+ }
+}

@@ -15,6 +15,16 @@ class Domain:
     def indptr(self) -> NDArray[np.uint32]: ...
     def indices(self) -> NDArray[np.uint32]: ...
 
+def tfce(
+    domain: Domain,
+    stat: NDArray[np.float64],
+    e: float,
+    h: float,
+    start: float | None,
+    step: float | None,
+    weighting: str,
+    tail: str,
+) -> NDArray[np.float64]: ...
 def tfce_bands(
     domain: Domain,
     stat: NDArray[np.float64],
@@ -23,25 +33,30 @@ def tfce_bands(
     e: float,
     strict: bool,
 ) -> NDArray[np.float64]: ...
-def tfce_exact(
-    domain: Domain, stat: NDArray[np.float64], e: float, h: float, start: float
-) -> NDArray[np.float64]: ...
-def tfce_one_sample(
+
+def tfce_ols(
     domain: Domain,
-    x: NDArray[np.float64],
-    n_subj: int,
+    y: NDArray[np.float32] | NDArray[np.float64],
+    rows: NDArray[np.uint64] | None,
+    tested: NDArray[np.float64] | None,
+    confounds: NDArray[np.float64] | None,
     e: float,
     h: float,
-    start: float,
-    step: float,
+    start: float | None,
+    step: float | None,
     weighting: str,
+    tail: str,
     seed: int,
     n_perm: int,
-    threads: int = ...,
+    threads: int,
+    extend: tuple[NDArray[np.float64], NDArray[np.uint32], NDArray[np.float64], int, int] | None,
 ) -> tuple[
     NDArray[np.float64],
     NDArray[np.float64],
     NDArray[np.float64],
     NDArray[np.float64],
     NDArray[np.float64],
+    NDArray[np.uint32],
+    int,
+    int,
 ]: ...

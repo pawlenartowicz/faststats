@@ -1,19 +1,21 @@
-//! L2 parity gates (design spec §5):
-//!   G5  — exact enumeration ≈ MNE 1.12.1 (RNG-independent)
-//!   G6  — Monte Carlo ≈ MNE, statistically
-//!   G7  — split/merge determinism of `NullPartial`
-//!   G8  — sufficient-statistic t == direct two-pass t
+//! Permutation-loop gates:
+//!   G5  — one-sample test, exact enumeration ≈ MNE 1.12.1 (RNG-independent)
+//!   G6  — one-sample test, Monte Carlo ≈ MNE, statistically
+//!   G7  — split, merge and batch-size determinism of the loop
+//!   G8  — one-sample t of the engine == direct two-pass t on flipped data
 //!   G9  — `tfce_into` == `tfce` bit-for-bit, workspace reused across fixtures
-//!   G10 — `Weighting::Exact`: union-find ≈ naive
 //!   G11 — `Exact` is the limit of `SmithNichols` as `step → 0`
+//!   G12 — threaded driver == serial driver bit-for-bit
+//!   G14 — a null extended to `B` draws == one run of `B` draws
 mod common;
 
 use common::{Fixture, assert_map_close, load, load_perm};
 use commonstats::accum::Mergeable;
+use commonstats::gen_sign_flips;
 use neurostats::{
-    Conn, Domain, NullPartial, OneSampleProblem, OneSampleT, PermWorkspace, TfceParams,
-    TfceWorkspace, Weighting, finalize, run_range, sign_flip_plan, tfce, tfce_into, tfce_naive,
-    tfce_one_sample,
+    Conn, Domain, NullPartial, PermOpts, PermProblem, PermWorkspace, Store, Tail, TfceInference,
+    TfceParams, TfceWorkspace, Weighting, finalize, nuisance_basis, run_range, stat_batch, tfce,
+    tfce_into, tfce_ols,
 };
 
 const REL: f64 = 1e-12;
@@ -39,10 +41,12 @@ fn params(fx: &Fixture, weighting: Weighting) -> TfceParams {
     }
 }
 
-/// Sufficient-statistic t (Q − S²/n) vs a direct two-pass mean/var on the
-/// flipped data. Prints the worst relative error seen.
+/// The engine's one-sample t (no tested regressor, no confounds) against a
+/// direct two-pass mean/var on the sign-flipped data, for the engine's own
+/// draws rebuilt from `commonstats::gen_sign_flips`. Prints the worst relative
+/// error seen.
 #[test]
-fn g8_sufficient_stat_t_matches_direct() {
+fn g8_one_sample_t_matches_direct() {
     let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
     let mut next = || {
         seed = seed
@@ -51,34 +55,55 @@ fn g8_sufficient_stat_t_matches_direct() {
         (seed >> 11) as f64 / (1u64 << 53) as f64
     };
     let (n, v) = (17usize, 200usize);
-    // Signal so some nodes have |t| ≫ 1 (where Q − S²/n loses digits).
-    let x: Vec<f64> = (0..n * v)
+    // Signal so some nodes have |t| ≫ 1 (where 1 − b² loses digits).
+    let y: Vec<f64> = (0..n * v)
         .map(|k| {
             let node = k % v;
             let shift = if node < 40 { 1.5 } else { 0.0 };
             shift + (next() - 0.5) * 2.0
         })
         .collect();
-    let st = OneSampleT::new(&x, n).unwrap();
-    let mut t = vec![0.0; v];
+    let dom = Domain::from_volume([v, 1, 1], Conn::Face);
+    let p = TfceParams {
+        e: 0.5,
+        h: 2.0,
+        start: 0.0,
+        step: 1.0,
+        weighting: Weighting::Exact,
+    };
+    let rows: Vec<usize> = (0..n).collect();
+    let store = Store::from_f64(&y, n, v, &rows, &[]).unwrap();
+    let (run_seed, b) = (11u64, 51u64);
+    let mut opts = PermOpts::new(p, Tail::Positive, run_seed, b);
+    opts.batch = 7;
+    let problem = PermProblem::ols(&dom, &store, None, &opts).unwrap();
+    assert_eq!(problem.draws(), 0..b);
+    let mut ws = PermWorkspace::new(&problem);
+    let mut signs = vec![1.0; n];
     let mut worst = 0.0f64;
-    for draw in 0..50 {
-        let signs: Vec<f64> = (0..n)
-            .map(|_| if next() < 0.5 { -1.0 } else { 1.0 })
-            .collect();
-        st.t_map(&x, &signs, &mut t);
-        for node in 0..v {
-            let vals: Vec<f64> = (0..n).map(|i| signs[i] * x[i * v + node]).collect();
-            let mean = vals.iter().sum::<f64>() / n as f64;
-            let var = vals.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
-            let want = mean / (var / n as f64).sqrt();
-            let err = (t[node] - want).abs() / want.abs().max(1e-300);
-            worst = worst.max(err);
-            assert!(
-                err <= REL,
-                "G8 draw {draw} node {node}: got {} want {want} rel {err:e}",
-                t[node]
-            );
+    for first in (0..b).step_by(7) {
+        let last = b.min(first + 7);
+        let maps = stat_batch(&problem, first..last, &mut ws);
+        for draw in first..last {
+            if draw == 0 {
+                signs.fill(1.0);
+            } else {
+                gen_sign_flips(n, draw, run_seed, &mut signs).unwrap();
+            }
+            let t = &maps[(draw - first) as usize * v..][..v];
+            for node in 0..v {
+                let vals: Vec<f64> = (0..n).map(|i| signs[i] * y[i * v + node]).collect();
+                let mean = vals.iter().sum::<f64>() / n as f64;
+                let var = vals.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+                let want = mean / (var / n as f64).sqrt();
+                let err = (t[node] - want).abs() / want.abs().max(1e-300);
+                worst = worst.max(err);
+                assert!(
+                    err <= REL,
+                    "G8 draw {draw} node {node}: got {} want {want} rel {err:e}",
+                    t[node]
+                );
+            }
         }
     }
     println!("G8 worst rel error {worst:.3e}");
@@ -92,62 +117,16 @@ fn g9_tfce_into_matches_tfce_bitwise() {
     for name in SMALL.iter().copied().chain(["bench"]) {
         let fx = load(name);
         let dom = fx.domain();
-        for w in [Weighting::MneStep, Weighting::SmithNichols] {
+        for w in [
+            Weighting::MneStep,
+            Weighting::SmithNichols,
+            Weighting::Nilearn,
+        ] {
             let p = params(&fx, w);
             let want = tfce(&dom, &fx.stat, &p).unwrap();
             let mut got = vec![f64::NAN; dom.n_nodes()];
             tfce_into(&dom, &fx.stat, &p, &mut ws, &mut got).unwrap();
             assert_eq!(got, want, "G9 {name} {w:?}");
-        }
-    }
-}
-
-#[test]
-fn g10_exact_union_find_matches_naive() {
-    for name in SMALL {
-        let fx = load(name);
-        let dom = fx.domain();
-        let p = params(&fx, Weighting::Exact);
-        let fast = tfce(&dom, &fx.stat, &p).unwrap();
-        let slow = tfce_naive(&dom, &fx.stat, &p).unwrap();
-        assert_map_close(&format!("G10 {name}"), &fast, &slow, REL, ABS_FLOOR);
-    }
-    // Synthetic: same LCG/mask/quantisation recipe as G1 synthetic.
-    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
-    let mut next = || {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (seed >> 11) as f64 / (1u64 << 53) as f64
-    };
-    for (dims, conn) in [
-        ([6, 5, 4], Conn::Face),
-        ([5, 5, 5], Conn::Edge),
-        ([4, 7, 3], Conn::Vertex),
-    ] {
-        for trial in 0..4 {
-            let n_vox = dims[0] * dims[1] * dims[2];
-            let mask: Vec<bool> = (0..n_vox).map(|_| next() < 0.75).collect();
-            let dom = Domain::from_mask(&mask, dims, conn).unwrap();
-            let stat: Vec<f64> = (0..dom.n_nodes())
-                .map(|_| (next() * 6.0 * 4.0).round() / 4.0)
-                .collect();
-            let p = TfceParams {
-                e: 0.5,
-                h: 2.0,
-                start: 0.25,
-                step: 0.5,
-                weighting: Weighting::Exact,
-            };
-            let fast = tfce(&dom, &stat, &p).unwrap();
-            let slow = tfce_naive(&dom, &stat, &p).unwrap();
-            assert_map_close(
-                &format!("G10 synth {dims:?} {conn:?} t{trial}"),
-                &fast,
-                &slow,
-                REL,
-                ABS_FLOOR,
-            );
         }
     }
 }
@@ -186,13 +165,9 @@ fn g11_exact_is_limit_of_smith_nichols() {
     }
 }
 
-/// Any partition of 0..B merged in any order finalizes bit-identically to the
-/// serial run.
-#[test]
-fn g7_split_merge_is_deterministic() {
-    let fx = load("blob");
-    let dom = fx.domain();
-    let (n, v) = (12usize, dom.n_nodes());
+/// Synthetic data on the `blob` fixture's domain: `n` subjects, the fixture
+/// map as a shared effect plus uniform noise.
+fn blob_data(fx: &Fixture, n: usize, v: usize) -> Vec<f64> {
     let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
     let mut next = || {
         seed = seed
@@ -200,34 +175,112 @@ fn g7_split_merge_is_deterministic() {
             .wrapping_add(1442695040888963407);
         (seed >> 11) as f64 / (1u64 << 53) as f64
     };
-    let x: Vec<f64> = (0..n * v)
+    (0..n * v)
         .map(|k| 0.4 * fx.stat[k % v] + (next() - 0.5) * 2.0)
-        .collect();
+        .collect()
+}
+
+/// A tested regressor and two confounds for `n` subjects (fixed LCG).
+fn design(n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+    };
+    let tested: Vec<f64> = (0..n).map(|_| next()).collect();
+    let confounds: Vec<f64> = (0..2 * n).map(|_| 1.0 + next()).collect();
+    (tested, confounds)
+}
+
+/// Any partition of the draws, merged in any order, with any batch size,
+/// finalizes bit-identically to the serial run with batch 1. Sign flips (the
+/// intercept is tested) and row shuffles (a regressor with confounds), three
+/// tails.
+#[test]
+fn g7_split_merge_is_deterministic() {
+    let fx = load("blob");
+    let dom = fx.domain();
+    let (n, v) = (12usize, dom.n_nodes());
+    let y = blob_data(&fx, n, v);
+    let (tested, confounds) = design(n);
     let p = params(&fx, Weighting::Exact);
-    let problem = OneSampleProblem::new(&dom, &x, n, p, 99).unwrap();
-    let plan = sign_flip_plan(n, 500);
-    assert!(!plan.exact && plan.b == 500);
-    let mut ws = PermWorkspace::new(n, v);
-    let serial = finalize(&problem, &run_range(&problem, &plan, 0..plan.b, &mut ws)).unwrap();
-    let parts = [
-        run_range(&problem, &plan, 0..7, &mut ws),
-        run_range(&problem, &plan, 7..250, &mut ws),
-        run_range(&problem, &plan, 250..251, &mut ws),
-        run_range(&problem, &plan, 251..500, &mut ws),
-    ];
-    for order in [[2usize, 0, 3, 1], [3, 2, 1, 0], [1, 3, 0, 2]] {
-        let mut acc = NullPartial::empty(v);
-        for &k in &order {
-            acc.merge(&parts[k]);
+    let rows: Vec<usize> = (0..n).collect();
+    for (label, tested, confounds) in [
+        ("sign flips", None, &[][..]),
+        ("row shuffles", Some(&tested[..]), &confounds[..]),
+    ] {
+        let basis = nuisance_basis(confounds, n, tested.is_some()).unwrap();
+        let store = Store::from_f64(&y, n, v, &rows, &basis).unwrap();
+        for tail in [Tail::Positive, Tail::Negative, Tail::TwoSided] {
+            let run = |batch: usize, cuts: &[u64], order: &[usize]| -> TfceInference {
+                let mut opts = PermOpts::new(p, tail, 99, 120);
+                opts.batch = batch;
+                let problem = PermProblem::ols(&dom, &store, tested, &opts).unwrap();
+                assert_eq!(problem.draws(), 0..120);
+                let mut ws = PermWorkspace::new(&problem);
+                let parts: Vec<NullPartial> = cuts
+                    .windows(2)
+                    .map(|w| run_range(&problem, w[0]..w[1], &mut ws))
+                    .collect();
+                let mut acc = NullPartial::empty(v);
+                for &k in order {
+                    acc.merge(&parts[k]);
+                }
+                finalize(&problem, &acc).unwrap()
+            };
+            let serial = run(1, &[0, 120], &[0]);
+            for batch in [3usize, 8, 1000] {
+                assert_eq!(
+                    run(batch, &[0, 120], &[0]),
+                    serial,
+                    "G7 {label} {tail:?} batch {batch}"
+                );
+                for order in [[2usize, 0, 3, 1], [3, 2, 1, 0]] {
+                    assert_eq!(
+                        run(batch, &[0, 7, 60, 61, 120], &order),
+                        serial,
+                        "G7 {label} {tail:?} batch {batch} order {order:?}"
+                    );
+                }
+            }
         }
-        let merged = finalize(&problem, &acc).unwrap();
-        assert_eq!(merged.p_fwe, serial.p_fwe, "G7 p_fwe order {order:?}");
-        assert_eq!(merged.p_unc, serial.p_unc, "G7 p_unc order {order:?}");
-        assert_eq!(
-            merged.null_max, serial.null_max,
-            "G7 null_max order {order:?}"
-        );
     }
+}
+
+/// A null that does not hold exactly the run's draws is refused.
+#[test]
+fn finalize_refuses_an_incomplete_null() {
+    let dom = Domain::from_volume([3, 1, 1], Conn::Face);
+    let y = [2.0, 0.3, 0.0, 2.5, -0.4, 0.0, 1.8, 0.1, 0.0, 2.2, -0.2, 0.0];
+    let p = TfceParams {
+        e: 0.5,
+        h: 2.0,
+        start: 0.0,
+        step: 1.0,
+        weighting: Weighting::Exact,
+    };
+    let store = Store::from_f64(&y, 4, 3, &[0, 1, 2, 3], &[]).unwrap();
+    let opts = PermOpts::new(p, Tail::Positive, 1, 10);
+    let problem = PermProblem::ols(&dom, &store, None, &opts).unwrap();
+    let mut ws = PermWorkspace::new(&problem);
+    assert_eq!(
+        finalize(&problem, &NullPartial::empty(3)),
+        Err(neurostats::NeuroError::InvalidParams)
+    );
+    assert_eq!(
+        finalize(&problem, &run_range(&problem, 0..9, &mut ws)),
+        Err(neurostats::NeuroError::InvalidParams)
+    );
+    assert_eq!(
+        finalize(&problem, &NullPartial::empty(2)),
+        Err(neurostats::NeuroError::MismatchedLengths {
+            expected: 3,
+            got: 2
+        })
+    );
+    assert!(finalize(&problem, &run_range(&problem, 0..10, &mut ws)).is_ok());
 }
 
 fn perm_params(fx: &common::PermFixture) -> TfceParams {
@@ -240,6 +293,13 @@ fn perm_params(fx: &common::PermFixture) -> TfceParams {
     }
 }
 
+/// The one-sample test of `tfce_ols`: no tested regressor, no confounds,
+/// positive tail.
+fn one_sample(fx: &common::PermFixture) -> TfceInference {
+    let opts = PermOpts::new(perm_params(fx), Tail::Positive, fx.seed, fx.n_permutations);
+    tfce_ols(&fx.domain(), &fx.x, fx.n, None, &[], &opts).unwrap()
+}
+
 /// Exact enumeration: both sides run every sign pattern, so the null is
 /// RNG-independent. MNE 1.12.1 (`_get_1samp_orders`, tail=1) takes
 /// `bin_perm_rep` rows `1..2^n−1` with `signs = 2·order − 1`, so it never
@@ -249,33 +309,25 @@ fn perm_params(fx: &common::PermFixture) -> TfceParams {
 /// copy of the identity max for the full-negation max; that swapped-in value
 /// is not MNE-sourced, it is computed by neurostats itself (`tfce(-t_obs)`,
 /// exact because negating every subject negates `t` exactly). (a) sorted
-/// null_max == corrected MNE H0, rel 1e-12; (b) |p_fwe − p_mne| ≤ 1/B per node
-/// (a one-element swap moves any p by at most 1/B); (c) t_obs rel 1e-12; (d)
-/// tfce_obs rel 1e-12.
+/// maxima == corrected MNE H0, rel 1e-12; (b) |p_fwe − p_mne| ≤ 1/B per node
+/// (a one-element swap moves any p by at most 1/B); (c) stat_obs rel 1e-12;
+/// (d) tfce_obs rel 1e-12.
 #[test]
 fn g5_exact_enumeration_matches_mne() {
     for name in ["exact_n6_grid4", "exact_n8_blob"] {
         let fx = load_perm(name);
         assert!(fx.exact);
         let dom = fx.domain();
-        let r = tfce_one_sample(
-            &dom,
-            &fx.x,
-            fx.n,
-            &perm_params(&fx),
-            fx.seed,
-            fx.n_permutations,
-        )
-        .unwrap();
+        let r = one_sample(&fx);
         let b = fx.h0.len();
-        assert_eq!(r.null_max.len(), b, "G5 {name}: B");
+        assert_eq!(r.null.maxima.len(), b, "G5 {name}: B");
 
-        let neg: Vec<f64> = r.t_obs.iter().map(|t| -t).collect();
+        let neg: Vec<f64> = r.stat_obs.iter().map(|t| -t).collect();
         let full_neg_max = tfce(&dom, &neg, &perm_params(&fx))
             .unwrap()
             .iter()
             .fold(0.0f64, |m, &v| m.max(v));
-        let ident_max = r.tfce_obs.iter().fold(0.0f64, |m, &v| m.max(v));
+        let ident_max = r.null.tfce_obs.iter().fold(0.0f64, |m, &v| m.max(v));
 
         let mut want = fx.h0.clone();
         let scale = want.iter().fold(0.0f64, |m, &w| m.max(w.abs()));
@@ -295,22 +347,22 @@ fn g5_exact_enumeration_matches_mne() {
         want.sort_unstable_by(f64::total_cmp);
 
         assert_map_close(
-            &format!("G5 {name} null_max"),
-            &r.null_max,
+            &format!("G5 {name} maxima"),
+            &r.null.maxima,
             &want,
             REL,
             ABS_FLOOR,
         );
         assert_map_close(
-            &format!("G5 {name} t_obs"),
-            &r.t_obs,
+            &format!("G5 {name} stat_obs"),
+            &r.stat_obs,
             &fx.t_obs,
             REL,
             ABS_FLOOR,
         );
         assert_map_close(
             &format!("G5 {name} tfce_obs"),
-            &r.tfce_obs,
+            &r.null.tfce_obs,
             &fx.tfce_obs,
             REL,
             ABS_FLOOR,
@@ -331,21 +383,19 @@ fn g5_exact_enumeration_matches_mne() {
 fn g6_monte_carlo_matches_mne_statistically() {
     let fx = load_perm("mc_n20_blob");
     assert!(!fx.exact);
-    let dom = fx.domain();
-    let r = tfce_one_sample(
-        &dom,
-        &fx.x,
-        fx.n,
-        &perm_params(&fx),
-        fx.seed,
-        fx.n_permutations,
-    )
-    .unwrap();
+    let r = one_sample(&fx);
+    let null_max = &r.null.maxima;
     let b = fx.h0.len();
-    assert_eq!(r.null_max.len(), b);
+    assert_eq!(null_max.len(), b);
     let bf = b as f64;
-    assert_map_close("G6 t_obs", &r.t_obs, &fx.t_obs, REL, ABS_FLOOR);
-    assert_map_close("G6 tfce_obs", &r.tfce_obs, &fx.tfce_obs, REL, ABS_FLOOR);
+    assert_map_close("G6 stat_obs", &r.stat_obs, &fx.t_obs, REL, ABS_FLOOR);
+    assert_map_close(
+        "G6 tfce_obs",
+        &r.null.tfce_obs,
+        &fx.tfce_obs,
+        REL,
+        ABS_FLOOR,
+    );
     let mut worst_ratio = 0.0f64;
     for (v, (&p, &q)) in r.p_fwe.iter().zip(&fx.p_fwe).enumerate() {
         let pbar = 0.5 * (p + q);
@@ -358,11 +408,11 @@ fn g6_monte_carlo_matches_mne_statistically() {
     }
     println!("G6 worst |Δp|/tol ratio {worst_ratio:.3}");
     // Kolmogorov distance between the two empirical null-max CDFs.
-    let mut all: Vec<f64> = r.null_max.iter().chain(&fx.h0).copied().collect();
+    let mut all: Vec<f64> = null_max.iter().chain(&fx.h0).copied().collect();
     all.sort_unstable_by(f64::total_cmp);
     let mut ks = 0.0f64;
     for &x in &all {
-        let fa = r.null_max.partition_point(|&m| m <= x) as f64 / bf;
+        let fa = null_max.partition_point(|&m| m <= x) as f64 / bf;
         let fb = fx.h0.partition_point(|&m| m <= x) as f64 / bf;
         ks = ks.max((fa - fb).abs());
     }
@@ -374,29 +424,35 @@ fn g6_monte_carlo_matches_mne_statistically() {
     );
 }
 
-/// One G12 case: a problem plus its permutation settings.
+/// One G12 case: a model plus its permutation settings.
 #[cfg(feature = "parallel")]
 struct Case<'a> {
     label: String,
     dom: &'a Domain,
-    x: &'a [f64],
+    y: &'a [f64],
     n: usize,
+    tested: Option<&'a [f64]>,
+    confounds: &'a [f64],
     p: TfceParams,
+    tail: Tail,
     seed: u64,
     b: u64,
 }
 
-/// G12 — the threaded driver is bit-identical to the serial one, on every
-/// permutation fixture (exact enumeration and Monte Carlo) and on two toy
-/// problems whose `B` is below `4 · threads`, so every chunk is a single draw.
+/// G12 — the threaded driver is bit-identical to the serial one for thread
+/// counts 1, 2, 3 and 7 and for several batch sizes: on every permutation
+/// fixture (exact enumeration and Monte Carlo), on two toy problems with
+/// fewer draws than chunks, and on a model with a tested regressor and
+/// confounds (row shuffles, two-sided, the nilearn weighting, whose two
+/// passes share one threshold grid per draw).
 #[cfg(feature = "parallel")]
 #[test]
 fn g12_threaded_driver_matches_serial_bitwise() {
-    use neurostats::tfce_one_sample_threads;
+    use neurostats::tfce_ols_threads;
 
     let toy_dom = Domain::from_volume([3, 1, 1], Conn::Face);
     // 4 subjects × 3 nodes, subject-major; node 0 strong positive, node 2 zero.
-    let toy_x = vec![
+    let toy_y = vec![
         2.0, 0.3, 0.0, //
         2.5, -0.4, 0.0, //
         1.8, 0.1, 0.0, //
@@ -414,18 +470,24 @@ fn g12_threaded_driver_matches_serial_bitwise() {
         Case {
             label: "toy exact B=16".into(),
             dom: &toy_dom,
-            x: &toy_x,
+            y: &toy_y,
             n: 4,
+            tested: None,
+            confounds: &[],
             p: toy_p,
+            tail: Tail::Positive,
             seed: 1,
             b: 1000,
         },
         Case {
             label: "toy mc B=10".into(),
             dom: &toy_dom,
-            x: &toy_x,
+            y: &toy_y,
             n: 4,
+            tested: None,
+            confounds: &[],
             p: toy_p,
+            tail: Tail::Positive,
             seed: 1,
             b: 10,
         },
@@ -440,19 +502,281 @@ fn g12_threaded_driver_matches_serial_bitwise() {
         cases.push(Case {
             label: format!("fixture n={} B={}", f.n, f.n_permutations),
             dom,
-            x: &f.x,
+            y: &f.x,
             n: f.n,
+            tested: None,
+            confounds: &[],
             p: perm_params(f),
+            tail: Tail::Positive,
             seed: f.seed,
             b: f.n_permutations,
         });
     }
 
+    let blob = load("blob");
+    let blob_dom = blob.domain();
+    let n = 12usize;
+    let blob_y = blob_data(&blob, n, blob_dom.n_nodes());
+    let (tested, confounds) = design(n);
+    cases.push(Case {
+        label: "regressor with confounds, two-sided, nilearn weighting, B=120".into(),
+        dom: &blob_dom,
+        y: &blob_y,
+        n,
+        tested: Some(&tested),
+        confounds: &confounds,
+        p: params(&blob, Weighting::Nilearn),
+        tail: Tail::TwoSided,
+        seed: 5,
+        b: 120,
+    });
+
     for c in cases {
-        let want = tfce_one_sample(c.dom, c.x, c.n, &c.p, c.seed, c.b).unwrap();
-        for threads in [1usize, 2, 3, 7] {
-            let got = tfce_one_sample_threads(c.dom, c.x, c.n, &c.p, c.seed, c.b, threads).unwrap();
-            assert_eq!(got, want, "G12 {} threads {threads}", c.label);
+        let mut opts = PermOpts::new(c.p, c.tail, c.seed, c.b);
+        let want = tfce_ols(c.dom, c.y, c.n, c.tested, c.confounds, &opts).unwrap();
+        for batch in [3usize, opts.batch] {
+            opts.batch = batch;
+            for threads in [1usize, 2, 3, 7] {
+                let got = tfce_ols_threads(c.dom, c.y, c.n, c.tested, c.confounds, &opts, threads)
+                    .unwrap();
+                assert_eq!(got, want, "G12 {} batch {batch} threads {threads}", c.label);
+            }
         }
     }
+}
+
+/// G14 — extending a null. A run of `B_old` draws continued to `B` equals one
+/// run of `B` draws, bit for bit: in one step or two, serial or threaded, and
+/// with another batch size in the continuation. Row shuffles with confounds
+/// and Monte Carlo sign flips, three tails.
+#[test]
+fn g14_extending_a_null_equals_one_run() {
+    let fx = load("blob");
+    let dom = fx.domain();
+    let (n, v) = (12usize, dom.n_nodes());
+    let y = blob_data(&fx, n, v);
+    let (tested, confounds) = design(n);
+    let p = params(&fx, Weighting::Exact);
+    for (label, tested, confounds) in [
+        ("sign flips", None, &[][..]),
+        ("row shuffles", Some(&tested[..]), &confounds[..]),
+    ] {
+        for tail in [Tail::Positive, Tail::Negative, Tail::TwoSided] {
+            let run = |b: u64, batch: usize, extend: Option<&neurostats::NullState>| {
+                let mut opts = PermOpts::new(p, tail, 31, b);
+                opts.batch = batch;
+                opts.extend = extend;
+                tfce_ols(&dom, &y, n, tested, confounds, &opts).unwrap()
+            };
+            let whole = run(100, 8, None);
+            let first = run(40, 8, None);
+            assert_eq!(first.null.maxima.len(), 40);
+            assert_eq!(
+                run(100, 8, Some(&first.null)),
+                whole,
+                "G14 {label} {tail:?}"
+            );
+            assert_eq!(
+                run(100, 3, Some(&first.null)),
+                whole,
+                "G14 {label} {tail:?} batch 3"
+            );
+            let second = run(71, 5, Some(&first.null));
+            assert_eq!(second, run(71, 8, None), "G14 {label} {tail:?} 40 -> 71");
+            assert_eq!(
+                run(100, 8, Some(&second.null)),
+                whole,
+                "G14 {label} {tail:?} 40 -> 71 -> 100"
+            );
+            // A continuation of one draw.
+            assert_eq!(run(41, 8, Some(&first.null)), run(41, 8, None));
+
+            #[cfg(feature = "parallel")]
+            for threads in [1usize, 2, 3, 7] {
+                let mut opts = PermOpts::new(p, tail, 31, 100);
+                opts.extend = Some(&first.null);
+                let got =
+                    neurostats::tfce_ols_threads(&dom, &y, n, tested, confounds, &opts, threads)
+                        .unwrap();
+                assert_eq!(got, whole, "G14 {label} {tail:?} threads {threads}");
+            }
+        }
+    }
+}
+
+/// G14 — through the loop pieces: a problem that continues a null runs only
+/// the new draws, and `finalize` merges them with the stored ones.
+#[test]
+fn g14_a_continued_problem_runs_only_the_new_draws() {
+    let dom = Domain::from_volume([3, 2, 1], Conn::Face);
+    let (n, v) = (10usize, dom.n_nodes());
+    let (tested, confounds) = design(n);
+    let mut seed: u64 = 0x1234_5678_9ABC_DEF1;
+    let y: Vec<f64> = (0..n * v)
+        .map(|_| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        })
+        .collect();
+    let p = TfceParams {
+        e: 0.5,
+        h: 2.0,
+        start: 0.0,
+        step: 1.0,
+        weighting: Weighting::Exact,
+    };
+    let basis = nuisance_basis(&confounds, n, true).unwrap();
+    let rows: Vec<usize> = (0..n).collect();
+    let store = Store::from_f64(&y, n, v, &rows, &basis).unwrap();
+    let first = tfce_ols(
+        &dom,
+        &y,
+        n,
+        Some(&tested),
+        &confounds,
+        &PermOpts::new(p, Tail::TwoSided, 4, 30),
+    )
+    .unwrap();
+
+    let mut opts = PermOpts::new(p, Tail::TwoSided, 4, 50);
+    opts.extend = Some(&first.null);
+    let problem = PermProblem::ols(&dom, &store, Some(&tested), &opts).unwrap();
+    assert_eq!(problem.draws(), 30..50);
+    let mut ws = PermWorkspace::new(&problem);
+    let added = run_range(&problem, problem.draws(), &mut ws);
+    assert_eq!(added.maxima().len(), 20);
+    let merged = finalize(&problem, &added).unwrap();
+    assert_eq!(merged.null.maxima.len(), 50);
+    let whole = tfce_ols(
+        &dom,
+        &y,
+        n,
+        Some(&tested),
+        &confounds,
+        &PermOpts::new(p, Tail::TwoSided, 4, 50),
+    )
+    .unwrap();
+    assert_eq!(merged, whole);
+}
+
+/// G14 — a null is continued only by the test that made it. Every other case
+/// is `InvalidParams`.
+#[test]
+fn g14_a_null_that_does_not_fit_is_refused() {
+    let dom = Domain::from_volume([3, 2, 1], Conn::Face);
+    let (n, v) = (6usize, dom.n_nodes());
+    let (tested, confounds) = design(n);
+    let mut seed: u64 = 0x0FED_CBA9_8765_4321;
+    let y: Vec<f64> = (0..n * v)
+        .map(|_| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        })
+        .collect();
+    let p = TfceParams {
+        e: 0.5,
+        h: 2.0,
+        start: 0.0,
+        step: 1.0,
+        weighting: Weighting::Exact,
+    };
+    let confound = &confounds[..n];
+    let base = PermOpts::new(p, Tail::TwoSided, 4, 30);
+    let first = tfce_ols(&dom, &y, n, Some(&tested), confound, &base).unwrap();
+    let refused = Err(neurostats::NeuroError::InvalidParams);
+    let extend = |y: &[f64], confounds: &[f64], opts: PermOpts| {
+        tfce_ols(&dom, y, n, Some(&tested), confounds, &opts).map(|r| r.null.maxima.len())
+    };
+    fn with(p: TfceParams, state: &neurostats::NullState, n_perm: u64) -> PermOpts<'_> {
+        let mut opts = PermOpts::new(p, Tail::TwoSided, 4, n_perm);
+        opts.extend = Some(state);
+        opts
+    }
+    let state = &first.null;
+    assert_eq!(extend(&y, confound, with(p, state, 31)), Ok(31));
+
+    // The budget is the total number of draws and must grow.
+    assert_eq!(extend(&y, confound, with(p, state, 30)), refused);
+    assert_eq!(extend(&y, confound, with(p, state, 7)), refused);
+    // Another seed, tail or TFCE setting.
+    assert_eq!(
+        extend(
+            &y,
+            confound,
+            PermOpts {
+                seed: 5,
+                ..with(p, state, 60)
+            }
+        ),
+        refused
+    );
+    assert_eq!(
+        extend(
+            &y,
+            confound,
+            PermOpts {
+                tail: Tail::Positive,
+                ..with(p, state, 60)
+            }
+        ),
+        refused
+    );
+    let other = TfceParams { e: 0.6, ..p };
+    assert_eq!(
+        extend(
+            &y,
+            confound,
+            PermOpts {
+                params: other,
+                ..with(p, state, 60)
+            }
+        ),
+        refused
+    );
+    // Other data: the observed TFCE map differs.
+    let mut y2 = y.clone();
+    y2[0] += 1e-9;
+    assert_eq!(extend(&y2, confound, with(p, state, 60)), refused);
+    // Another design: no confound (other q), or another confound (same q).
+    assert_eq!(extend(&y, &[], with(p, state, 60)), refused);
+    assert_eq!(extend(&y, &confounds[n..], with(p, state, 60)), refused);
+    // A state that is not a null of this problem.
+    let mut broken = state.clone();
+    broken.exceed.pop();
+    assert_eq!(extend(&y, confound, with(p, &broken, 60)), refused);
+    let mut broken = state.clone();
+    broken.exceed[0] = 31;
+    assert_eq!(extend(&y, confound, with(p, &broken, 60)), refused);
+    let mut broken = state.clone();
+    broken.maxima.clear();
+    assert_eq!(extend(&y, confound, with(p, &broken, 60)), refused);
+
+    // Sign flips, n = 6: a budget of 2^6 = 64 or more enumerates the
+    // patterns, so it cannot continue a Monte Carlo null of 50 draws, and an
+    // enumerated null cannot be continued at all.
+    let flips = |n_perm: u64, state: Option<&neurostats::NullState>| {
+        let mut opts = PermOpts::new(p, Tail::Positive, 4, n_perm);
+        opts.extend = state;
+        tfce_ols(&dom, &y, n, None, &[], &opts)
+    };
+    let mc = flips(50, None).unwrap();
+    assert_eq!(flips(63, Some(&mc.null)).unwrap(), flips(63, None).unwrap());
+    assert_eq!(
+        flips(64, Some(&mc.null)).map(|_| ()),
+        refused.map(|_: usize| ())
+    );
+    assert_eq!(
+        flips(5000, Some(&mc.null)).map(|_| ()),
+        refused.map(|_: usize| ())
+    );
+    let enumerated = flips(1000, None).unwrap();
+    assert_eq!(enumerated.null.maxima.len(), 64);
+    assert_eq!(
+        flips(2000, Some(&enumerated.null)).map(|_| ()),
+        refused.map(|_: usize| ())
+    );
 }
