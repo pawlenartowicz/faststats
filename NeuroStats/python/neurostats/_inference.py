@@ -89,7 +89,7 @@ class TfceInference:
         missing = [k for k in keys if k not in meta] if isinstance(meta, dict) else list(keys)
         if missing:
             raise ValueError(f"{path} is not a saved result: no meta entry {missing}")
-        null ={"exceed": arrays.pop("exceed"), "n": meta["n"], "q": meta["q"], "engine": meta["engine"]}
+        null = {"exceed": arrays.pop("exceed"), "n": meta["n"], "q": meta["q"], "engine": meta["engine"]}
         return cls(**arrays, params=meta["params"], tail=meta["tail"], seed=meta["seed"],
                    n_perm=meta["n_perm"], origin=None, _null=null)
 
