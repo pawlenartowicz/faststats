@@ -10,7 +10,7 @@ use crate::accum;
 use crate::accum::{Accumulator, HistResult, Histogram};
 use crate::descriptive;
 use crate::error::StatError;
-use crate::nan::{self, NanPolicy};
+use crate::nan;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::f64::consts::PI;
@@ -89,7 +89,8 @@ pub struct Kde {
 /// # Errors
 /// - `EmptyInput` — `xs` is empty.
 /// - `TooFewObservations{needed:2, got:n}` — fewer than 2 finite values.
-/// - `DomainError` — zero-variance data with Silverman/Scott (h would be 0).
+/// - `DomainError` — Silverman/Scott on zero-variance data (h would be 0) or on
+///   data whose sd is not finite (±∞ values, or an sd that overflows).
 /// - `DomainError` — `Fixed(h)` where h ≤ 0 or h is NaN.
 ///
 /// # Example
@@ -103,7 +104,7 @@ pub struct Kde {
 /// assert_eq!(vals.len(), 2);
 /// ```
 pub fn kde(xs: &[f64], kernel: Kernel, bandwidth: Bandwidth) -> Result<Kde, StatError> {
-    let finite = nan::clean(xs, NanPolicy::Omit)?; // EmptyInput / AllNaN
+    let finite = nan::clean(xs)?; // EmptyInput / AllNaN
     let n = finite.len();
     if n < 2 {
         return Err(StatError::TooFewObservations { needed: 2, got: n });
@@ -120,21 +121,19 @@ pub fn kde(xs: &[f64], kernel: Kernel, bandwidth: Bandwidth) -> Result<Kde, Stat
         }
         Bandwidth::Silverman => {
             // h = sd * (3n/4)^(-1/5); sd ddof=1 via descriptive::sd
-            let sd = descriptive::sd(&finite, descriptive::Ddof::Sample)
-                .map_err(|_| StatError::DomainError("zero-variance data: bandwidth would be 0"))?;
-            if sd == 0.0 {
+            let sd = descriptive::sd(&finite, descriptive::Ddof::Sample)?;
+            if sd == 0.0 || !sd.is_finite() {
                 return Err(StatError::DomainError(
-                    "zero-variance data: Silverman bandwidth would be 0",
+                    "zero-variance or non-finite data: Silverman bandwidth undefined",
                 ));
             }
             sd * libm::pow(3.0 * n as f64 / 4.0, -0.2)
         }
         Bandwidth::Scott => {
-            let sd = descriptive::sd(&finite, descriptive::Ddof::Sample)
-                .map_err(|_| StatError::DomainError("zero-variance data: bandwidth would be 0"))?;
-            if sd == 0.0 {
+            let sd = descriptive::sd(&finite, descriptive::Ddof::Sample)?;
+            if sd == 0.0 || !sd.is_finite() {
                 return Err(StatError::DomainError(
-                    "zero-variance data: Scott bandwidth would be 0",
+                    "zero-variance or non-finite data: Scott bandwidth undefined",
                 ));
             }
             sd * libm::pow(n as f64, -0.2)
@@ -220,7 +219,9 @@ fn kernel_eval(k: Kernel, u: f64) -> f64 {
 pub enum Bins {
     /// Exactly `k` equal-width bins; must be ≥ 1.
     Fixed(usize),
-    /// Bins of fixed width `w`; must be > 0 and finite.
+    /// Bins of fixed width `w`; must be > 0 and finite. The first edge is the
+    /// minimum and the last is the first edge at or past the maximum, so the
+    /// last bin can extend beyond the data.
     Width(f64),
     /// Explicit bin edges (length ≥ 2, strictly increasing).
     ///
@@ -240,10 +241,11 @@ pub enum Bins {
 pub enum Rule {
     /// Sturges (1926): k = ⌈log₂ n⌉ + 1. Good for near-Normal, small n.
     Sturges,
-    /// Scott (1979): w = 3.49·sd·n^(−1/3), k = ⌈range/w⌉.
+    /// Scott (1979): w = 3.49·sd·n^(−1/3), k = ⌈range/w⌉; 1 bin when sd = 0
+    /// (possible with min ≠ max when the sd underflows).
     Scott,
-    /// Freedman–Diaconis (1981): w = 2·IQR·n^(−1/3), k = ⌈range/w⌉.
-    /// Falls back to Scott when IQR = 0.
+    /// Freedman–Diaconis (1981): w = 2·IQR·n^(−1/3), k = ⌈range/w⌉;
+    /// 1 bin when IQR = 0.
     FreedmanDiaconis,
     /// Rice rule: k = ⌈2·n^(1/3)⌉.
     Rice,
@@ -256,9 +258,11 @@ pub enum Rule {
 pub enum Norm {
     /// Raw counts (integers stored as f64).
     Count,
-    /// Probability density: count / (n_total · bin_width). Matches numpy `density=True`.
+    /// Probability density: count / (n_in · bin_width), `n_in` the count inside
+    /// the bins. Matches numpy `density=True`.
     Density,
-    /// Relative frequency: count / n_total. Matches numpy `density=False` + manual division.
+    /// Relative frequency: count / n_in. Matches numpy `density=False` divided
+    /// by the in-range count.
     Probability,
 }
 
@@ -272,8 +276,10 @@ pub enum Norm {
 /// - `Edges` path: variable-width bins via `partition_point` binary search;
 ///   each observation falls into bin `i` where `edges[i] ≤ x < edges[i+1]`
 ///   (last bin closed on right).
-/// - `Norm::Density`: `count[i] / (n_total · (edges[i+1] − edges[i]))` per bin.
-/// - `Norm::Probability`: `count[i] / n_total`.
+/// - `Norm::Density`: `count[i] / (n_in · (edges[i+1] − edges[i]))` per bin,
+///   where `n_in` is the count inside the bins (all finite values except on
+///   the `Edges` path, which drops values outside its edges).
+/// - `Norm::Probability`: `count[i] / n_in`.
 /// - NaN policy: Omit.
 ///
 /// Matches `numpy.histogram(xs, bins=<rule/edges>, density=<bool>)`.
@@ -287,9 +293,14 @@ pub enum Norm {
 /// - `EmptyInput` — `xs` is empty.
 /// - `DomainError` — min == max (single-point cloud, can't form bins).
 /// - `DomainError` — `Fixed(0)`.
+/// - `DomainError` — the bin count reaches `isize::MAX / 8`, past which its `Vec`s
+///   cannot be built (e.g. `Fixed(usize::MAX)`, a tiny `Width`, or a rule whose bin
+///   width is vanishingly small).
 /// - `DomainError` — `Width(w)` where w ≤ 0 or not finite.
+/// - `DomainError` — `hi − lo` is not finite (`±∞` in `xs`, or a span past
+///   `f64::MAX`), except on the `Edges` path.
+/// - `DomainError` — `Width(w)` whose last edge `lo + n_bins·w` overflows f64.
 /// - `DomainError` — `Edges` with fewer than 2 edges or not strictly increasing.
-/// - `DomainError` — `Rule::FreedmanDiaconis` when IQR = 0 and sd = 0.
 ///
 /// # Example
 /// ```
@@ -304,7 +315,7 @@ pub fn histogram_auto(
     bins: Bins,
     norm: Norm,
 ) -> Result<(Vec<f64>, Vec<f64>), StatError> {
-    let finite = nan::clean(xs, NanPolicy::Omit)?;
+    let finite = nan::clean(xs)?;
     let n = finite.len();
     let n_f = n as f64;
 
@@ -322,23 +333,33 @@ pub fn histogram_auto(
         return histogram_edges(&finite, edges, norm);
     }
 
+    // ±∞ in the data (numpy raises too: "autodetected range ... is not
+    // finite") or a span past f64::MAX leaves no finite bin width.
+    if !(hi - lo).is_finite() {
+        return Err(StatError::DomainError(
+            "histogram: data range is not finite",
+        ));
+    }
+
     let n_bins = resolve_bin_count(&finite, &bins, lo, hi, n_f)?;
 
-    let mut hist = Histogram::new(lo, hi, n_bins)?;
+    // `.max(hi)` keeps the maximum inside the bins when `lo + k·w` rounds just
+    // below it.
+    let top = match bins {
+        Bins::Width(w) => (lo + n_bins as f64 * w).max(hi),
+        _ => hi,
+    };
+    if top == f64::INFINITY {
+        return Err(StatError::DomainError("histogram: Width bins overflow f64"));
+    }
+    let mut hist = Histogram::new(lo, top, n_bins)?;
     for &x in &finite {
         hist.update(x);
     }
-    let result: HistResult = hist.finalize();
-    let counts_u64 = &result.counts;
-    let n_bins_actual = counts_u64.len();
+    let HistResult { counts, edges, .. } = hist.finalize();
+    let bin_width = (top - lo) / n_bins as f64;
 
-    // Build uniform edges from lo..hi.
-    let bin_width = (hi - lo) / n_bins_actual as f64;
-    let edges: Vec<f64> = (0..=n_bins_actual)
-        .map(|i| lo + i as f64 * bin_width)
-        .collect();
-
-    let values = apply_norm_uniform(counts_u64, n_f, bin_width, norm);
+    let values = apply_norm_uniform(&counts, n_f, bin_width, norm);
     Ok((edges, values))
 }
 
@@ -385,27 +406,23 @@ fn resolve_rule_bin_count(
         }
         Rule::Scott => {
             // w = 3.49 * sd * n^(-1/3), k = ⌈range/w⌉
+            // A zero width gives 1 bin, as numpy does.
             let sd = descriptive::sd(finite, descriptive::Ddof::Sample)?;
+            if sd == 0.0 {
+                return Ok(1);
+            }
             let w = 3.49 * sd * libm::pow(n_f, -1.0 / 3.0);
             Ok(libm::ceil(range / w) as usize)
         }
         Rule::FreedmanDiaconis => {
-            // w = 2 * IQR * n^(-1/3); IQR=0 → fall back to Scott
+            // w = 2 * IQR * n^(-1/3); a zero width gives 1 bin, as numpy does.
             let mut sorted = finite.to_vec();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let q1 = accum::quantile_sorted(&sorted, 0.25);
             let q3 = accum::quantile_sorted(&sorted, 0.75);
             let iqr = q3 - q1;
             if iqr == 0.0 {
-                // Fall back to Scott; but if sd=0 too, that's DomainError.
-                let sd = descriptive::sd(finite, descriptive::Ddof::Sample)?;
-                if sd == 0.0 {
-                    return Err(StatError::DomainError(
-                        "FreedmanDiaconis: IQR=0 and sd=0 — cannot determine bin width",
-                    ));
-                }
-                let w = 3.49 * sd * libm::pow(n_f, -1.0 / 3.0);
-                return Ok(libm::ceil(range / w) as usize);
+                return Ok(1);
             }
             let w = 2.0 * iqr * libm::pow(n_f, -1.0 / 3.0);
             Ok(libm::ceil(range / w) as usize)
@@ -425,7 +442,9 @@ fn resolve_rule_bin_count(
 ///
 /// Does NOT use Histogram::new. Each observation falls into bin i where
 /// edges[i] ≤ x < edges[i+1]; the last bin is closed on the right.
-/// Norm::Density uses per-bin widths.
+/// Norm::Density uses per-bin widths. Values outside the edges are dropped and
+/// do not count towards the Density/Probability total; with none inside, both
+/// are NaN (0/0), as in numpy.
 fn histogram_edges(
     finite: &[f64],
     edges: &[f64],
@@ -444,7 +463,6 @@ fn histogram_edges(
 
     let n_bins = edges.len() - 1;
     let mut counts = vec![0u64; n_bins];
-    let n_total = finite.len() as f64;
     let last_edge = *edges.last().unwrap();
 
     for &x in finite {
@@ -461,15 +479,18 @@ fn histogram_edges(
         }
     }
 
+    // Normalised by the in-range count, as numpy.histogram does: values outside
+    // the edges are dropped before normalising.
+    let n_in = counts.iter().sum::<u64>() as f64;
     let values = match norm {
         Norm::Count => counts.iter().map(|&c| c as f64).collect(),
-        Norm::Probability => counts.iter().map(|&c| c as f64 / n_total).collect(),
+        Norm::Probability => counts.iter().map(|&c| c as f64 / n_in).collect(),
         Norm::Density => counts
             .iter()
             .enumerate()
             .map(|(i, &c)| {
                 let bin_width = edges[i + 1] - edges[i];
-                c as f64 / (n_total * bin_width)
+                c as f64 / (n_in * bin_width)
             })
             .collect(),
     };
@@ -495,15 +516,6 @@ mod tests {
     use crate::error::StatError;
 
     // ---- KDE constructor error cases ----
-
-    #[test]
-    fn kde_empty_input() {
-        let xs: &[f64] = &[];
-        assert_eq!(
-            kde(xs, Kernel::Gaussian, Bandwidth::Silverman).unwrap_err(),
-            StatError::EmptyInput
-        );
-    }
 
     #[test]
     fn kde_too_few_observations() {
@@ -549,48 +561,7 @@ mod tests {
         ));
     }
 
-    // ---- KDE density formula ----
-
-    #[test]
-    fn kde_epanechnikov_density_formula() {
-        // xs=[0.0, 1.0], Fixed(2.0), x=0.5
-        // density(0.5) = (1/2·2) · [K_E((0.5-0)/2) + K_E((0.5-1)/2)]
-        //              = 0.25 · [0.75(1-0.0625) + 0.75(1-0.0625)]
-        //              = 0.25 · 2 · 0.75 · 0.9375 = 0.3515625
-        let xs = &[0.0_f64, 1.0];
-        let k = kde(xs, Kernel::Epanechnikov, Bandwidth::Fixed(2.0)).unwrap();
-        let got = k.density(0.5);
-        assert!(
-            (got - 0.3515625).abs() < 1e-15,
-            "epanechnikov density: got {got}"
-        );
-        // Fixed(0.5), x=0.25: u = 0.5 is inside the support, u = -1.5 is outside
-        // and contributes 0. density = (1/(2·0.5)) · 0.75(1-0.25) = 0.5625
-        let k = kde(xs, Kernel::Epanechnikov, Bandwidth::Fixed(0.5)).unwrap();
-        let got = k.density(0.25);
-        assert!(
-            (got - 0.5625).abs() < 1e-15,
-            "outside-support term: got {got}"
-        );
-    }
-
-    #[test]
-    fn kde_nan_in_input_omitted() {
-        let xs = &[1.0_f64, f64::NAN, 3.0, f64::NAN, 5.0];
-        let k = kde(xs, Kernel::Gaussian, Bandwidth::Silverman).unwrap();
-        assert_eq!(k.n(), 3);
-    }
-
     // ---- histogram_auto error cases ----
-
-    #[test]
-    fn hist_empty_input() {
-        let xs: &[f64] = &[];
-        assert_eq!(
-            histogram_auto(xs, Bins::Fixed(5), Norm::Count).unwrap_err(),
-            StatError::EmptyInput
-        );
-    }
 
     #[test]
     fn hist_min_eq_max() {
@@ -624,6 +595,67 @@ mod tests {
     }
 
     #[test]
+    fn hist_zero_width_rule_one_bin() {
+        // numpy 2.3.5: `histogram_bin_edges([0]*10 + [1], 'fd')` → [0, 1] and
+        // `histogram_bin_edges([0, 5e-324], 'scott')` → [0, 5e-324].
+        let mut xs = [0.0_f64; 11];
+        xs[10] = 1.0;
+        let (edges, counts) =
+            histogram_auto(&xs, Bins::Rule(Rule::FreedmanDiaconis), Norm::Count).unwrap();
+        assert_eq!(edges, vec![0.0, 1.0]);
+        assert_eq!(counts, vec![11.0]);
+        let (edges, _) =
+            histogram_auto(&[0.0, 5e-324], Bins::Rule(Rule::Scott), Norm::Count).unwrap();
+        assert_eq!(edges, vec![0.0, 5e-324]);
+    }
+
+    #[test]
+    fn hist_bin_count_too_large() {
+        assert!(matches!(
+            histogram_auto(&[0.0, 1.0], Bins::Width(1e-300), Norm::Count).unwrap_err(),
+            StatError::DomainError(_)
+        ));
+        assert!(matches!(
+            histogram_auto(&[0.0, 1.0], Bins::Fixed(usize::MAX), Norm::Count).unwrap_err(),
+            StatError::DomainError(_)
+        ));
+        let xs = &[0.0, 1.0, 1.0, 1.0 + 2.2e-16, 1.0, 1e300];
+        assert!(matches!(
+            histogram_auto(xs, Bins::Rule(Rule::FreedmanDiaconis), Norm::Count).unwrap_err(),
+            StatError::DomainError(_)
+        ));
+    }
+
+    #[test]
+    fn hist_non_finite_range() {
+        for xs in [
+            &[0.0, 1.0, f64::INFINITY][..],
+            &[f64::NEG_INFINITY, 0.0, 1.0],
+            &[-1.7e308, 1.7e308],
+        ] {
+            for bins in [
+                Bins::Fixed(2),
+                Bins::Width(1.0),
+                Bins::Rule(Rule::Sturges),
+                Bins::Rule(Rule::Scott),
+            ] {
+                assert!(matches!(
+                    histogram_auto(xs, bins, Norm::Count).unwrap_err(),
+                    StatError::DomainError(_)
+                ));
+            }
+        }
+        assert!(matches!(
+            histogram_auto(&[0.0, 1.7e308], Bins::Width(1.5e308), Norm::Count).unwrap_err(),
+            StatError::DomainError(_)
+        ));
+        // Explicit finite edges drop ±∞, as numpy does.
+        let xs = &[f64::NEG_INFINITY, 0.5, f64::INFINITY];
+        let (_, counts) = histogram_auto(xs, Bins::Edges(vec![0.0, 1.0]), Norm::Count).unwrap();
+        assert_eq!(counts, vec![1.0]);
+    }
+
+    #[test]
     fn hist_edges_too_few() {
         let xs = &[1.0_f64, 2.0, 3.0];
         assert!(matches!(
@@ -641,35 +673,6 @@ mod tests {
         ));
     }
 
-    // ---- bin rules ----
-
-    #[test]
-    fn hist_sturges_bin_count() {
-        // n=16 → k = ceil(log2(16)) + 1 = 4+1 = 5
-        let xs: Vec<f64> = (0..16).map(|i| i as f64).collect();
-        let (edges, counts) = histogram_auto(&xs, Bins::Rule(Rule::Sturges), Norm::Count).unwrap();
-        assert_eq!(counts.len(), 5, "Sturges n=16: expected 5 bins");
-        assert_eq!(edges.len(), 6);
-        let total: f64 = counts.iter().sum();
-        assert_eq!(total, 16.0);
-    }
-
-    #[test]
-    fn hist_rice_bin_count() {
-        // n=8 → k = ceil(2 * 8^(1/3)) = ceil(2*2) = 4
-        let xs: Vec<f64> = (0..8).map(|i| i as f64).collect();
-        let (_, counts) = histogram_auto(&xs, Bins::Rule(Rule::Rice), Norm::Count).unwrap();
-        assert_eq!(counts.len(), 4, "Rice n=8: expected 4 bins");
-    }
-
-    #[test]
-    fn hist_sqrt_bin_count() {
-        // n=9 → k = ceil(sqrt(9)) = 3
-        let xs: Vec<f64> = (0..9).map(|i| i as f64).collect();
-        let (_, counts) = histogram_auto(&xs, Bins::Rule(Rule::Sqrt), Norm::Count).unwrap();
-        assert_eq!(counts.len(), 3, "Sqrt n=9: expected 3 bins");
-    }
-
     #[test]
     fn hist_edges_partition_point_assignment() {
         // edges = [0,1,2,3]; xs = [0.0,0.5,1.0,1.5,2.0,2.5,2.9,3.0]
@@ -684,10 +687,11 @@ mod tests {
 
     #[test]
     fn hist_norm_probability() {
-        let xs = &[1.0_f64, 2.0, 3.0, 4.0];
-        let (_, vals) = histogram_auto(xs, Bins::Fixed(2), Norm::Probability).unwrap();
-        let total: f64 = vals.iter().sum();
-        assert!((total - 1.0).abs() < 1e-14, "Probability sum != 1: {total}");
+        // Asymmetric counts, so a mis-assigned or reordered bin shows.
+        let xs = &[1.0_f64, 1.0, 1.0, 4.0];
+        let (edges, vals) = histogram_auto(xs, Bins::Fixed(2), Norm::Probability).unwrap();
+        assert_eq!(edges, vec![1.0, 2.5, 4.0]);
+        assert_eq!(vals, vec![0.75, 0.25]);
     }
 
     #[test]

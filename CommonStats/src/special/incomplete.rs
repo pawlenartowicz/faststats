@@ -97,7 +97,7 @@ const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
 /// `(1 + gam1(f))/((f + 1)(f + 2)…(f + n − 1))`, `n = ⌊a⌋`, `f = a − n` (exact),
 /// by `Γ(z + 1) = z·Γ(z)`. `exp(−lgamma(a))` would add the rounding of
 /// `ln Γ(a)` (and of its exponential) to the result.
-fn rgamma_small(a: f64) -> f64 {
+pub(crate) fn rgamma_small(a: f64) -> f64 {
     if a < 1.0 {
         return a * (1.0 + gam1(a));
     }
@@ -117,7 +117,7 @@ fn rgamma_small(a: f64) -> f64 {
 /// `Γ(s)` by `ψ(s)·t`, 5e-15 relative near s = 16. `1/Γ(s + t) = (1 −
 /// ψ(s)·t)/Γ(s)` to O(t²), with `ψ(s) ≈ ln(s + ½) − 1/s` (within 0.12 for
 /// s > 0), ample for a correction of order ε.
-fn rgamma_sum(a: f64, b: f64) -> f64 {
+pub(crate) fn rgamma_sum(a: f64, b: f64) -> f64 {
     let (s, t) = two_sum(a, b);
     if t == 0.0 {
         // Also where `s` is subnormal (always exact there), whose `1/s`
@@ -552,7 +552,6 @@ pub fn gammq(a: f64, x: f64) -> f64 {
 /// on the lower-tail side it is `ln m + e` from the kernel, never `ln` of an
 /// exponentiated value; on the other side `log1p(−Q)`. `−∞` for x ≤ 0.
 // For the `dist` quantile solvers, which need the log of tails below 1e-308.
-#[cfg_attr(not(feature = "dist"), allow(dead_code))]
 #[doc(hidden)]
 pub fn ln_gammp(a: f64, x: f64) -> f64 {
     if x <= 0.0 || a <= 0.0 {
@@ -566,7 +565,6 @@ pub fn ln_gammp(a: f64, x: f64) -> f64 {
 /// `ln m + e` on the upper-tail side, `log1p(−P)` on the other. At a
 /// subnormal `a` the factor `a` of `Q ≈ a·E₁(x)` is kept in `e`, so the log
 /// stays finite where `Q` is below 2⁻¹⁰⁷⁴. `0` for x ≤ 0, `−∞` for x = ∞.
-#[cfg_attr(not(feature = "dist"), allow(dead_code))]
 #[doc(hidden)]
 pub fn ln_gammq(a: f64, x: f64) -> f64 {
     if x <= 0.0 || a <= 0.0 {
@@ -614,15 +612,9 @@ pub fn betai(a: f64, b: f64, x: f64) -> f64 {
 /// value; on the other side `log1p(−(1 − I))`. `y = 1 − x`, formed by the
 /// caller where it is more accurate than `1 − x` (the upper tail `1 − I_x(a, b)
 /// = I_y(b, a)` is `ln_betai(b, a, y, x)`). `−∞` for x ≤ 0, `0` for y ≤ 0.
-/// On the continued-fraction (`bfrac`) side the prefactor skips `pow` for
-/// `a ≥ 1` and takes it for `a < 1`, where the exponent's `ln a` would cancel
-/// against the fraction's `1/a` and leave `|ln a|·ε` absolute in an O(1) log.
-/// Skipped, `ln m + e` of the one-f64 exponent `a·ln x + b·ln y − ln B(a, b)`
-/// keeps the rounding of those terms, `ε·(|a·ln x| + |b·ln y| + |ln B|)/2`
-/// absolute, which is not small against an O(1) log where they cancel
-/// (`a·ln x` and `ln B` ~90 each at `ln I_{1.3e-11}(3.46, 2.7e11)`, `b·ln y`
-/// 3.5); the F quantile solver ends on a
-/// step on the mass itself (`polish_root`), which takes the `pow`.
+/// On the continued-fraction (`bfrac`) side the prefactor keeps its powers in
+/// the exponent rather than taking `pow`, which the log does not need (see
+/// `brcomp_small`).
 /// Measured against mpmath (`scripts/accuracy_sweep.py`): error ratio r ≤ 9.4
 /// on every branch (the worst on `bfrac`'s own side with `min(a, b) < 8`).
 #[doc(hidden)]
@@ -662,9 +654,7 @@ pub(crate) fn betai_parts(a: f64, b: f64, x: f64, y: f64) -> (f64, f64, bool) {
 const SAME_SIDE_LAMBDA: f64 = 6.0;
 
 /// [`betai_parts`]; with `ln_i` the caller takes only `ln I` (`ln_betai`),
-/// so where `bfrac` evaluates `I` itself with `a ≥ 1`, `brcomp` skips `pow`:
-/// `ln m + e` of its one-f64 exponent already keeps ~ε relative in the log.
-/// For `a < 1` it does not (see the `bfrac` call below).
+/// so where `bfrac` evaluates `I` itself, `brcomp` skips `pow`.
 fn betai_kernel(a: f64, b: f64, x: f64, y: f64, ln_i: bool) -> (f64, f64, bool) {
     if a.min(b) < f64::MIN_POSITIVE && a.min(b) > 0.0 {
         return subnormal_shape(a, b, x, y, ln_i);
@@ -721,16 +711,12 @@ fn betai_kernel(a: f64, b: f64, x: f64, y: f64, ln_i: bool) -> (f64, f64, bool) 
             return (m, e, x <= 0.5);
         }
     }
-    // The log form's `−ln B(a, b) ≈ ln a` cancels against the `1/a` in the
-    // fraction for `a < 1`, where `ln I` is O(1) and would keep `|ln a|·ε`
-    // absolute (1.3e-15 at a = 0.014, ln I = −0.11). For `a ≥ 1` `ln_i`
-    // skips the `pow` a precise prefactor costs on every step of the t and F
-    // quantile Newton iteration (t: `a = df/2`, so df ≥ 2), at the rounding of
-    // the exponent's terms where they cancel (see `ln_betai`), which the F
-    // solver's last step on the mass removes. The complement is exponentiated by its caller
-    // (`log1p(−(1 − I))`), so it is always precise.
+    // Taking the prefactor's `pow`s for `ln I` too would cost 27% more per
+    // `ln_betai` and 10% per t or F quantile (on whose every Newton step it
+    // runs), for no gain in the log (see `brcomp_small`). The complement is
+    // exponentiated by its caller (`log1p(−(1 − I))`), so it takes them.
     let ((m, e), complement) = if lower {
-        (bfrac(a, b, x, y, lambda, !ln_i || a < 1.0), false)
+        (bfrac(a, b, x, y, lambda, !ln_i), false)
     } else {
         (bfrac(b, a, y, x, -lambda, true), true)
     };
@@ -865,10 +851,10 @@ fn ein(t: f64) -> f64 {
 /// `min(a, b) ≥ 8` it is `√(ab/(a+b))/√(2π)·exp(−a·rlog1(−λ/a) − b·rlog1(λ/b)
 /// − bcorr(a, b))`: `x/x₀ = 1 − λ/a` and `y/y₀ = 1 + λ/b` about the mean
 /// `x₀ = a/(a+b)`, so no large logarithms are formed and cancel. Otherwise
-/// `brcomp_small`; where its scale leaves the normal range (the value is then
-/// below `e^{40}` times the smallest normal) or an argument raised to the
-/// smaller shape is 0 (`ln 0 = −∞` gives 0), or with `precise` unset (the
-/// caller takes only its log and `a ≥ 1`, see `betai_kernel`),
+/// `brcomp_small`, which skips `pow` without `use_pow` (the caller takes only
+/// its log, see `betai_kernel`); where its scale leaves the normal range (the
+/// value is then below `e^{40}` times the smallest normal) or an argument
+/// raised to the smaller shape is 0 (`ln 0 = −∞` gives 0),
 /// `e^{a·ln x + b·ln y − ln B(a,b)}`, whose log keeps ~ε relative.
 ///
 /// Of `x` and `y`, one ≤ 0.375 is taken as exact and the other as `1 −` it,
@@ -876,7 +862,7 @@ fn ein(t: f64) -> f64 {
 /// rounded value and `c` the exact residual (Fast2Sum, as `1 >` the operand),
 /// for `brcomp_small`'s `pow`: `(1 − x)^b` from `1 − x` rounded would carry
 /// `b·ε`, 1e-11 at the t distribution's `b = df/2 = 1e5`.
-pub(crate) fn brcomp(a: f64, b: f64, x: f64, y: f64, lambda: f64, precise: bool) -> (f64, f64) {
+pub(crate) fn brcomp(a: f64, b: f64, x: f64, y: f64, lambda: f64, use_pow: bool) -> (f64, f64) {
     if a.min(b) >= 8.0 {
         let x0 = a / (a + b);
         return (
@@ -897,12 +883,7 @@ pub(crate) fn brcomp(a: f64, b: f64, x: f64, y: f64, lambda: f64, precise: bool)
     } else {
         ((x, 0.0, libm::log(x)), (y, 0.0, libm::log(y)))
     };
-    let small = if precise {
-        brcomp_small(a, b, xs, ys)
-    } else {
-        None
-    };
-    small.unwrap_or_else(|| (1.0, a * xs.2 + b * ys.2 - lbeta(a, b)))
+    brcomp_small(a, b, xs, ys, use_pow).unwrap_or_else(|| (1.0, a * xs.2 + b * ys.2 - lbeta(a, b)))
 }
 
 /// `x^a·y^b/B(a,b)` for `min(a, b) < 8` as `(scale, expo)`, each argument
@@ -929,6 +910,12 @@ pub(crate) fn brcomp(a: f64, b: f64, x: f64, y: f64, lambda: f64, precise: bool)
 /// `v^S` back: 2.7e-8 relative in `F(5.3e11, 6.9).cdf(0.0047)` ≈ 1e-310);
 /// the rest go to the exponent (an `Expo`) as `power·ln`, which there costs
 /// `|power·ln|·ε/2` relative, half the value's own sensitivity to `power`.
+/// Without `use_pow` (the caller takes only the log) every power goes to the
+/// exponent, where its `|power·ln|·ε/2` is absolute in the log and small
+/// against it: no term of `ln B` it would cancel against is formed. The
+/// one-f64 `a·ln x + b·ln y − ln B` would keep that cancellation, 53ε
+/// absolute in `ln I_{1.3e-11}(3.46, 2.7e11)` ≈ −ln 2, whose `a·ln x` and
+/// `ln B` are ~90 each.
 /// (`c` itself carries ε/2 relative, `|power·c|·ε/2` in the exponent, below
 /// 2e-16 for `power < 1e16`.)
 fn brcomp_small(
@@ -936,6 +923,7 @@ fn brcomp_small(
     b: f64,
     (xh, cx, ln_x): (f64, f64, f64),
     (yh, cy, ln_y): (f64, f64, f64),
+    use_pow: bool,
 ) -> Option<(f64, f64)> {
     let (mut scale, mut expo, powers) = if a.max(b) < 8.0 {
         // The larger factor over the sum first: with both shapes tiny the
@@ -986,7 +974,7 @@ fn brcomp_small(
         return None;
     }
     for (hi, c, power, ln) in powers {
-        let f = if (power * ln).abs() <= POW_SWITCH {
+        let f = if !use_pow || (power * ln).abs() <= POW_SWITCH {
             0.0
         } else {
             libm::pow(hi, power)
@@ -1011,7 +999,7 @@ fn brcomp_small(
 /// (a+1) − (a+b)·x`; forming that as `1 − (a+b)·x/(a+1)` loses `a·ε` to
 /// cancellation near the mean at large `a`. Needs `λ > −1`, which holds below
 /// the reflection point.
-fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64, precise: bool) -> (f64, f64) {
+fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64, use_pow: bool) -> (f64, f64) {
     const EPS: f64 = 1e-15;
     const MAXIT: usize = 10_000;
     let c = lambda + 1.0;
@@ -1052,7 +1040,7 @@ fn bfrac(a: f64, b: f64, x: f64, y: f64, lambda: f64, precise: bool) -> (f64, f6
         anp1 = r;
         bnp1 = 1.0;
     }
-    let (scale, expo) = brcomp(a, b, x, y, lambda, precise);
+    let (scale, expo) = brcomp(a, b, x, y, lambda, use_pow);
     (scale * r, expo)
 }
 
@@ -1400,7 +1388,8 @@ mod tests {
     /// `ln I_x(a, b)` below the f64 range and in the normal range, with `x` and
     /// `y = 1 − x` formed as the t and F distributions form them. Truth: the
     /// continued fraction DLMF 8.17.22 in mpmath at 60 dps, at the exact
-    /// complement of whichever of `x`, `y` is smaller.
+    /// complement of whichever of `x`, `y` is smaller (for F(5.3e11, 6.9),
+    /// mpmath `betainc(regularized=True)` at 50 and 80 dps, which agree).
     #[test]
     fn ln_betai_tails_match_mpmath() {
         // In the normal range `ln I` carries betai's own ~2e-15 relative error
@@ -1411,6 +1400,13 @@ mod tests {
         let (df, t2) = (1000.0, 200.0 * 200.0);
         // F(3, 1e6) upper tail at x = 500: I_z(5e5, 1.5), z = dfd/(dfd + dfn·x).
         let (dfd, nx) = (1e6, 3.0 * 500.0);
+        // F(5.3e11, 6.9) upper tail ≈ ½ at x = 1.104487764640769:
+        // I_z(dfd/2, dfn/2) on `bfrac`'s side, where `a·ln z` and `ln B(a, b)`
+        // (~90 each) cancel to an O(1) log.
+        let (dfd2, nx2) = (
+            6.913_288_301_642_686,
+            534_536_453_686.363_83 * 1.104_487_764_640_769,
+        );
         for (a, b, x, y, want, tol) in [
             (
                 500.0,
@@ -1435,6 +1431,14 @@ mod tests {
                 1e-10,
                 1.0 - 1e-10,
                 -1_067.796_120_215_981_5,
+                TOL,
+            ),
+            (
+                0.5 * dfd2,
+                0.5 * 534_536_453_686.363_83,
+                dfd2 / (dfd2 + nx2),
+                nx2 / (dfd2 + nx2),
+                -0.693_147_180_559_956_9,
                 TOL,
             ),
             (2.0, 3.0, 0.4, 0.6, -0.644_738_041_352_257_7, TOL_NORMAL),

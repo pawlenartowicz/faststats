@@ -37,8 +37,8 @@ println!("mean {m}, t = {}, p = {}", result.statistic, result.p_value);
 
 ## API reference
 
-`&[f64]` in, value or struct out. NaNs are dropped by default (the `Omit`
-policy). Fallible items return `Result<T, StatError>`, abbreviated `Result<T>`
+`&[f64]` in, value or struct out. NaNs are dropped (the crate's Omit
+policy, `nan::clean`). Fallible items return `Result<T, StatError>`, abbreviated `Result<T>`
 below; everything is two-sided unless noted.
 
 ### A. Descriptives & moments
@@ -100,10 +100,11 @@ root). Each constructor returns `Result<Self>`. All implement `.cdf(x)`, `.sf(x)
 upper-tail critical value solved on `q` directly), the moment accessors (`.mean()`, `.variance()`,
 `.std_dev()`, `.skewness()`, `.kurtosis()`, `.entropy()`), plus `.density(x)` /
 `.log_density(x)` (continuous) or `.mass(k)` / `.log_mass(k)` (discrete).
-With feature `rng` also on, continuous distributions implement
-`Sampler::sample(&mut rng) -> f64` and discrete ones
+With feature `rng` also on, continuous distributions (all but StudentizedRange)
+implement `Sampler::sample(&mut rng) -> f64` and discrete ones
 `DiscreteSampler::sample(&mut rng) -> i64`. Sampling is inverse-CDF (one uniform
-per draw) by default, with named fast paths: Bernoulli (`u < p`), Poisson
+per draw) by default, with named fast paths: Bernoulli (`u < p`; below
+min(p, 1−p) = 10⁻³ an exact draw of the rarer outcome from a 52-bit uniform), Poisson
 (sequential inversion below λ = 10, PTRS rejection above), Binomial (sequential
 inversion below n·min(p, 1−p) = 10, BTRS rejection above), NegBinomial
 (Gamma–Poisson mixture), Hypergeometric (inversion searched outward from the
@@ -126,6 +127,7 @@ dist::LogNormal::new(mu: f64, sigma: f64)      // Log-normal
 dist::Gamma::new(shape: f64, rate: f64)        // Γ(α, β)
 dist::Beta::new(alpha: f64, beta: f64)         // Beta on [0, 1]
 dist::InverseGaussian::new(mean: f64, shape: f64) // IG(μ, λ), variance μ³/λ
+dist::StudentizedRange::new(k: f64, df: f64)  // Tukey's q(k, ν); 1 < k ≤ 1e6, df = ∞ allowed, no moments
 
 // discrete
 dist::Bernoulli::new(p: f64)                   // Bernoulli(p)

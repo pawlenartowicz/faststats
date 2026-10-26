@@ -3,7 +3,8 @@
 
     python scripts/gen_oracle.py [area ...]        # default: all areas
 
-Areas: special htest dist density transform. mpmath/scipy/numpy/Rscript are
+Areas: special htest dist density transform descriptives studentized_range
+(the last runs for hours without its truth cache). mpmath/scipy/numpy/Rscript are
 *generation-time* tools only — never crate or CI dependencies (CI runs only
 `cargo test` against the committed fixtures).
 
@@ -17,10 +18,12 @@ Two validation axes:
             wrong, not the precision. Tail rows skip the gate (scipy/R are only
             ~1e-8 there); mpmath is the sole arbiter.
 
-All five areas (special, dist, transform, density, htest) are on the three-source
-path; mpmath is the truth arbiter, scipy+R the one-shot convention cross-check.
+Every area in `AREAS` (special, htest, dist, density, transform, descriptives,
+studentized_range) is on the three-source path; mpmath is the truth arbiter,
+scipy+R the one-shot convention cross-check (studentized_range gates each of them
+only where it is accurate; see `gen_studentized_range`).
 """
-import json, os, math, sys, subprocess, tempfile
+import json, os, math, sys, subprocess, tempfile, time, multiprocessing
 import numpy as np
 from scipy import special as sp
 from scipy import stats as st
@@ -65,6 +68,7 @@ TAIL_BANDS = {
     "dist_gamma_ppf":       1.0e-15,  # 6.41e-16
     "dist_inversegaussian_ppf": 1.0e-15,  # 1.89e-16
     "dist_beta_ppf":        1.0e-15,  # 1.57e-16
+    "dist_studentizedrange_ppf": 1.1e-14,  # 9.33e-15
     # isf tail bands. Each residual is formed on the smaller tail mass, never on
     # `1 − near-1`; truth is taken at the exact f64 argument, so the argument itself
     # is not a limit. The gamma worst row (lower tail, q = 1 − 1e-9) scores r = 0.77
@@ -82,6 +86,7 @@ TAIL_BANDS = {
     "dist_gamma_isf":       1.5e-15,  # 1.28e-15
     "dist_inversegaussian_isf": 1.0e-15,  # 2.77e-16
     "dist_beta_isf":        1.0e-15,  # 0
+    "dist_studentizedrange_isf": 1.2e-14,  # 9.84e-15
 }
 
 # --- mpmath truth helpers (delimited section; split to oracle_mp.py if it grows) ---
@@ -344,12 +349,25 @@ def gen_htest():
     diff = [mp.mpf(x) - mp.mpf(y) for x, y in zip(a[:8], b[:8])]
     md = mp.fsum(diff) / 8; vd = mp.fsum([(d - md) ** 2 for d in diff]) / 7
     t_pai = md / (mp.sqrt(vd) / mp.sqrt(8)); df_pai = mp.mpf(7)
-    truth = {
-        "one":    [t_one, _h_t_p(t_one, df_one)],
-        "student":[t_stu, _h_t_p(t_stu, df_stu)],
+    truth = {  # [t, p, df]
+        "one":    [t_one, _h_t_p(t_one, df_one), df_one],
+        "student":[t_stu, _h_t_p(t_stu, df_stu), df_stu],
         "welch":  [t_wel, _h_t_p(t_wel, df_w), df_w],
-        "paired": [t_pai, _h_t_p(t_pai, df_pai)],
+        "paired": [t_pai, _h_t_p(t_pai, df_pai), df_pai],
     }
+    # 95% CIs: estimate ∓ t_crit(0.95, df)·SE with each test's own SE and df (the
+    # one-sample CI is for the mean, the others for the difference a − b).
+    ci_parts = {
+        "one":     (ma, mp.sqrt(va / na), df_one),
+        "student": (ma - mb, mp.sqrt(sp2 * (mp.mpf(1) / na + mp.mpf(1) / nb)), df_stu),
+        "welch":   (ma - mb, se_w, df_w),
+        "paired":  (md, mp.sqrt(vd / 8), df_pai),
+    }
+    ci_truth = {}
+    for key, (est, se, df) in ci_parts.items():
+        tc = _h_t_crit(0.95, df)
+        ci_truth[key] = [est - tc * se, est + tc * se]
+    cohen_d = (ma - mb) / mp.sqrt(sp2)  # pooled-SD Cohen's d
     # scipy values
     sci = {
         "one":     (lambda r: [r.statistic, r.pvalue])(st.ttest_1samp(a, 5.0)),
@@ -357,6 +375,12 @@ def gen_htest():
         "welch":   (lambda r: [r.statistic, r.pvalue, r.df])(st.ttest_ind(a, b, equal_var=False)),
         "paired":  (lambda r: [r.statistic, r.pvalue])(st.ttest_rel(a[:8], b[:8])),
     }
+    sci_ci = {key: (lambda c: [c.low, c.high])(res.confidence_interval(0.95)) for key, res in [
+        ("one", st.ttest_1samp(a, 5.0)),
+        ("student", st.ttest_ind(a, b, equal_var=True)),
+        ("welch", st.ttest_ind(a, b, equal_var=False)),
+        ("paired", st.ttest_rel(a[:8], b[:8])),
+    ]}
     # R jobs (length-tagged payloads; see gen_oracle.R). two-sample payload [na,nb,a…,b…].
     two = [na, nb] + a + b
     paired_pl = [8, 8] + a[:8] + b[:8]
@@ -364,11 +388,14 @@ def gen_htest():
     def addj(key, func, args):
         ri[key] = len(rj); rj.append({"func": func, "args": [float(x) for x in args]})
     addj("one_t", "ttest_one_t", [5.0] + a);        addj("one_p", "ttest_one_p", [5.0] + a)
+    addj("one_cilo", "ttest_one_cilo", [5.0] + a);  addj("one_cihi", "ttest_one_cihi", [5.0] + a)
     addj("stu_t", "ttest_student_t", two);          addj("stu_p", "ttest_student_p", two)
+    addj("stu_cilo", "ttest_student_cilo", two);    addj("stu_cihi", "ttest_student_cihi", two)
     addj("wel_t", "ttest_welch_t", two);            addj("wel_p", "ttest_welch_p", two)
     addj("wel_df", "ttest_welch_df", two)
     addj("wel_cilo", "ttest_welch_cilo", two);      addj("wel_cihi", "ttest_welch_cihi", two)
     addj("pai_t", "ttest_paired_t", paired_pl);     addj("pai_p", "ttest_paired_p", paired_pl)
+    addj("pai_cilo", "ttest_paired_cilo", paired_pl); addj("pai_cihi", "ttest_paired_cihi", paired_pl)
 
     # --- ANOVA truth ---
     g1 = [89, 88, 97, 92]; g2 = [84, 79, 81, 83]; g3 = [91, 95, 94, 88]
@@ -379,9 +406,11 @@ def gen_htest():
     ssw = mp.fsum([(s - 1) * v for s, v in zip(sizes, gvars)])
     an_d1, an_d2 = mp.mpf(k - 1), mp.mpf(grand_n - k)
     an_F = (ssb / an_d1) / (ssw / an_d2); an_p = _h_f_sf(an_F, an_d1, an_d2)
+    an_eta2 = ssb / (ssb + ssw)
     fo = st.f_oneway(g1, g2, g3)
     addj("anova_f", "anova_f", [k] + sizes + g1 + g2 + g3)
     addj("anova_p", "anova_p", [k] + sizes + g1 + g2 + g3)
+    addj("anova_eta2", "anova_eta2", [k] + sizes + g1 + g2 + g3)
 
     # --- chi² truth (gof + independence) ---
     obs = [16, 18, 16, 14, 12, 12]; exp = [16, 16, 16, 16, 12, 12]  # Σobs==Σexp==88
@@ -439,6 +468,7 @@ def gen_htest():
         ("ttest/paired", "p", truth["paired"][1], {"scipy": sci["paired"][1], "r": R["pai_p"]}),
         ("anova", "F", an_F, {"scipy": fo.statistic, "r": R["anova_f"]}),
         ("anova", "p", an_p, {"scipy": fo.pvalue, "r": R["anova_p"]}),
+        ("anova", "eta2", an_eta2, {"scipy": None, "r": R["anova_eta2"]}),
         ("chi2/gof", "chi2", gof_chi2, {"scipy": c1.statistic, "r": R["gof_chi2"]}),
         ("chi2/gof", "p", gof_p, {"scipy": c1.pvalue, "r": R["gof_p"]}),
         ("chi2/ind", "chi2", ind_chi2, {"scipy": chi2_ind.statistic, "r": R["ind_chi2"]}),
@@ -448,40 +478,31 @@ def gen_htest():
         ("ftest", "F", ft_F, {"scipy": float(ft_F), "r": R["ft_f"]}),
         ("ftest", "p", ft_p, {"scipy": f_p_sp, "r": R["ft_p"]}),
     ]
+    RKEY = {"one": "one", "student": "stu", "welch": "wel", "paired": "pai"}
+    for key, rk in RKEY.items():
+        for i, (side, suffix) in enumerate([("ci lower", "_cilo"), ("ci upper", "_cihi")]):
+            gate.append((f"ttest/{key}", side, ci_truth[key][i],
+                         {"scipy": sci_ci[key][i], "r": R[rk + suffix]}))
     _htest_gate(gate)
 
-    # --- Welch-CI verification (ci_mean_diff_welch uses correct Welch SE + df) ---
-    # t_test_two(Welch).ci calls ci_mean_diff_welch (SE = √(vA/nA+vB/nB), Welch–
-    # Satterthwaite df), verified against R t.test(var.equal=FALSE)$conf.int.
-    # The prior pooled-CI latent bug was fixed; this block records the correct CI.
-    tcw = _h_t_crit(0.95, df_w)
-    welch_ci_correct = [float((ma - mb) - tcw * se_w), float((ma - mb) + tcw * se_w)]
-    print(f"\n[htest] Welch CI correct (impl matches R t.test(var.equal=FALSE)$conf.int):")
-    print(f"        mpmath Welch CI: [{welch_ci_correct[0]:.6f}, {welch_ci_correct[1]:.6f}]")
-    print(f"        R conf.int:     [{R['wel_cilo']:.6f}, {R['wel_cihi']:.6f}]")
-
     # --- write fixtures (mpmath truth as expected; xcheck provenance) ---
-    def f2(pair): return [float(pair[0]), float(pair[1])]
+    def fl(xs): return [float(x) for x in xs]
     rows = [
-        {"args": ["one"],     "expected": f2(truth["one"]),
-         "xcheck": _xc(truth["one"][1], sci["one"][1], R["one_p"])},
-        {"args": ["student"], "expected": f2(truth["student"]),
-         "xcheck": _xc(truth["student"][1], sci["student"][1], R["stu_p"])},
-        {"args": ["welch"],   "expected": [float(truth["welch"][0]), float(truth["welch"][1]), float(truth["welch"][2])],
-         "xcheck": _xc(truth["welch"][1], sci["welch"][1], R["wel_p"]),
-         "welch_ci_correct": welch_ci_correct,
-         "welch_ci_note": "t_test_two(Welch).ci asserted against welch_ci_correct "
-                          "(R t.test var.equal=FALSE); the prior pooled-CI was the latent bug, now fixed"},
-        {"args": ["paired"],  "expected": f2(truth["paired"]),
-         "xcheck": _xc(truth["paired"][1], sci["paired"][1], R["pai_p"])},
+        {"args": [key], "expected": fl(truth[key]), "ci": fl(ci_truth[key]),
+         "xcheck": _xc(truth[key][1], sci[key][1], R[rk + "_p"]),
+         "xcheck_ci": [_xc(ci_truth[key][i], sci_ci[key][i], R[rk + sfx])
+                       for i, sfx in enumerate(["_cilo", "_cihi"])]}
+        for key, rk in RKEY.items()
     ]
     with open(os.path.join(OUT, "ttests.json"), "w") as f:
-        json.dump({"a": a, "b": b, "rows": rows}, f, indent=0)
+        json.dump({"a": a, "b": b, "cohen_d": float(cohen_d), "rows": rows}, f, indent=0)
     print("wrote ttests.json")
 
     anova_fix = {"groups": groups, "F": float(an_F), "p": float(an_p),
+                 "df1": float(an_d1), "df2": float(an_d2), "eta2": float(an_eta2),
                  "xcheck": {"F": _xc(an_F, fo.statistic, R["anova_f"]),
-                            "p": _xc(an_p, fo.pvalue, R["anova_p"])}}
+                            "p": _xc(an_p, fo.pvalue, R["anova_p"]),
+                            "eta2": _xc(an_eta2, None, R["anova_eta2"])}}
     with open(os.path.join(OUT, "anova.json"), "w") as f: json.dump(anova_fix, f, indent=0)
 
     chi2_fix = {"gof_obs": obs, "gof_exp": exp, "gof_chi2": float(gof_chi2), "gof_p": float(gof_p),
@@ -1016,31 +1037,40 @@ def gen_density():
     # count/(n·binwidth). scipy/numpy cross-checks density; R n/a (nclass.* differs).
     data_hist = [1.2, 1.5, 2.0, 2.3, 2.8, 3.1, 3.5, 4.0, 4.2, 4.8,
                  5.0, 5.3, 5.7, 6.0, 6.5, 7.0, 7.3, 8.0, 8.5, 9.0]
-    n_hist = len(data_hist)
 
     hist_records, hist_gate_rows = [], []
-    for rule_str in ('sturges', 'scott', 'fd', 'rice', 'sqrt'):
-        edges = np.histogram_bin_edges(data_hist, bins=rule_str)
-        counts_arr, _ = np.histogram(data_hist, bins=edges)
+
+    def hist_record(rule_str, data):
+        n = len(data)
+        edges = np.histogram_bin_edges(data, bins=rule_str)
+        counts_arr, _ = np.histogram(data, bins=edges)
         counts_list = counts_arr.tolist()
         edges_list = edges.tolist()
 
         mp_density, scipy_xcheck = [], []
         for i, c in enumerate(counts_list):
             bw = mp.mpf(edges_list[i + 1]) - mp.mpf(edges_list[i])
-            d_mp = mp.mpf(c) / (mp.mpf(n_hist) * bw)
+            d_mp = mp.mpf(c) / (mp.mpf(n) * bw)
             mp_density.append(d_mp)
-            d_sp = float(c) / (float(n_hist) * float(bw))
+            d_sp = float(c) / (float(n) * float(bw))
             scipy_xcheck.append(d_sp)
             hist_gate_rows.append((rule_str, i, d_mp, {"scipy": d_sp}))
 
-        hist_records.append({
-            "rule": rule_str, "data": data_hist,
+        return {
+            "rule": rule_str, "data": data,
             "edges": edges_list, "counts": counts_list,
             "density": [_f64(t) for t in mp_density],
             "xcheck_density": [{"scipy": {"val": sv, "rel": _rel_err(sv, t)}}
                                for sv, t in zip(scipy_xcheck, mp_density)],
-        })
+        }
+
+    for rule_str in ('sturges', 'scott', 'fd', 'rice', 'sqrt'):
+        hist_records.append(hist_record(rule_str, data_hist))
+    # Exact ceil boundaries of the bin-count rules on 0..n-1: Sturges at n = 16
+    # (log2 n = 4, 5 bins), Rice at n = 8 (2·n^(1/3) = 4, 4 bins), Sqrt at n = 9
+    # (sqrt n = 3, 3 bins).
+    for rule_str, n in (("sturges", 16), ("rice", 8), ("sqrt", 9)):
+        hist_records.append(hist_record(rule_str, [float(i) for i in range(n)]))
 
     _density_gate("histogram_auto", hist_gate_rows)
     with open(os.path.join(OUT, "histogram_auto.json"), "w") as f:
@@ -1415,8 +1445,10 @@ def gen_descriptives():
     Covers mean, var (both ddof), sd (both ddof), median, skewness (g1),
     kurtosis (excess), cov, and pearson.  R is n/a for skewness and kurtosis
     (no base-R function); those are scipy-only in the gate.  `sum`, `count`,
-    `min`, `max`, and `range` return exact integers / comparisons and are
-    covered by inline unit tests — no floating-point oracle fixture needed.
+    `min`, `max`, and `range` return exact integers / comparisons, so they get
+    no floating-point oracle fixture: `range` is tested inline in
+    `src/descriptive.rs`, the other four at the accumulator layer
+    (`src/accum/simple.rs`).
     """
     def _desc_gate(items):
         """items: (label, truth_mpf, {src: val}). Same gate as _htest_gate."""
@@ -1499,11 +1531,13 @@ def gen_descriptives():
         syy = mp.fsum([a**2 for a in dy])
         return sxy / mp.sqrt(sxx * syy)
 
-    # Input vectors: two unary cases + one binary case.
+    # Input vectors: three unary cases + one binary case.
     # v1: numpy-docs classic, non-trivial skewness and kurtosis.
     # v2: mixed signs, exercises negative-skewness path.
     v1 = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
     v2 = [1.0, 3.0, -2.0, 5.0, 0.0, 4.0]
+    # v3: odd n, median is the middle order statistic (3.0)
+    v3 = [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0]
     xs_b = [1.0, 2.0, 3.0, 4.0, 5.0]
     ys_b = [2.0, 1.0, 4.0, 3.0, 6.0]
 
@@ -1511,7 +1545,7 @@ def gen_descriptives():
     rj, ri = [], {}
     def addj(key, func, args):
         ri[key] = len(rj); rj.append({"func": func, "args": [float(x) for x in args]})
-    for tag, v in [("v1", v1), ("v2", v2)]:
+    for tag, v in [("v1", v1), ("v2", v2), ("v3", v3)]:
         addj(f"{tag}_mean",   "desc_mean",   v)
         addj(f"{tag}_var",    "desc_var",    v)
         addj(f"{tag}_sd",     "desc_sd",     v)
@@ -1525,7 +1559,7 @@ def gen_descriptives():
     # Gate + fixture building (computed once, used in both)
     gate = []
     unary_records = []
-    for tag, v in [("v1", v1), ("v2", v2)]:
+    for tag, v in [("v1", v1), ("v2", v2), ("v3", v3)]:
         t_mean  = mp_mean(v)
         t_vs    = mp_var_sample(v)
         t_vp    = mp_var_pop(v)
@@ -1602,6 +1636,178 @@ def gen_descriptives():
     print("wrote descriptives.json")
 
 
+# ===========================================================================
+# Area: studentized range — its own driver, not `generate_three_source`: one
+# truth value costs minutes (accuracy_sweep.StudentizedRangeT), so the truth
+# runs on SR_WORKERS processes and is cached per point, and the scipy/R gate
+# applies only where each of them is accurate (see `gen_studentized_range`).
+# ===========================================================================
+SR_K = [1.5, 2.0, 3.0, 20.0, 100.0]
+SR_DF = [0.5, 2.0, 30.0, 1e3, math.inf]
+SR_TARGETS = [1e-10, 1e-3, 0.5]  # nominal sf at the grid's q
+SR_WORKERS = 4
+# R `ptukey` gates only from df = 30 on, at this relative tolerance: there its
+# worst error on the grid is 7e-7 (k = 100, df = ∞), while at df = 2 it is off
+# by orders of magnitude (k = 100, sf 2.1e-13 for a true 1e-3).
+SR_R_DF = 30
+SR_R_REL = 1e-5
+SR_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".accuracy_cache",
+                        "studentized_range_oracle.json")
+
+
+def _sr_df_json(df):
+    """df as a fixture row carries it: ∞ as 0.0 (JSON has no ∞, and df = 0 is
+    invalid, so it is unambiguous). Mirrors `sr` in tests/dist_oracle.rs —
+    change together."""
+    return 0.0 if df == math.inf else df
+
+
+def _sr_df_r(df):
+    """df as R gets it: ∞ as 1e300, where `ptukey` uses its df = ∞ formula (it
+    does above 25000). Mirrors the `ptukey` entries of gen_oracle.R — change
+    together."""
+    return 1e300 if df == math.inf else df
+
+
+def _sr_job(job):
+    """One truth job in a worker: ("full", k, df, q) → cdf, sf, pdf at q;
+    ("step", k, df, q) → sf, pdf. Values as mpf strings, exact in the cache."""
+    from accuracy_sweep import StudentizedRangeT
+    kind, k, df, q = job
+    T = StudentizedRangeT()
+    P = [k, mp.inf if df == math.inf else df]
+    t0 = time.time()
+    names = ("cdf", "sf", "pdf") if kind == "full" else ("sf", "pdf")
+    return job, {n: str(getattr(T, n)(P, q)) for n in names}, time.time() - t0
+
+
+def _sr_truth(jobs, cache):
+    """Compute the `jobs` not in `cache`; each result is saved to SR_CACHE as it
+    arrives, so an interrupted run resumes."""
+    todo = [j for j in jobs if repr(j) not in cache]
+    print(f"  truth: {len(jobs) - len(todo)} cached, {len(todo)} to compute", flush=True)
+    t0 = time.time()
+    with multiprocessing.Pool(SR_WORKERS) as pool:
+        for i, (job, vals, dt) in enumerate(pool.imap_unordered(_sr_job, todo), 1):
+            cache[repr(job)] = vals
+            tmp = SR_CACHE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(cache, f, indent=0)
+            os.replace(tmp, SR_CACHE)
+            print(f"  [{i}/{len(todo)}] {job}: {dt:.0f} s (elapsed {time.time() - t0:.0f} s)", flush=True)
+
+
+def gen_studentized_range():
+    """Fixtures dist_studentizedrange_{pdf,cdf,sf,ppf,isf}: rows [k, df, x] over
+    SR_K × SR_DF × SR_TARGETS. q is scipy's isf at the target, except the upper
+    tail (target ≤ 0.05) at df < 2, where scipy's deep tail is off by orders of
+    magnitude (k = 2, df = 1: its isf(1e-10) has true sf 1.2e-4) and q is the
+    Bonferroni bound √2·t_df.isf(t/(k(k−1))). Truth: mpmath cdf, sf and pdf at
+    q, and the point is labelled with those, not the target. ppf and isf rows
+    take the f64 truth cdf and sf as input; their expected q is one Newton step
+    from q on the mpmath sf and pdf, since rounding the probability moves the
+    root. At target 1e-10 the ppf input `p ≈ 1 − 1e-10` moves the sf by up to
+    5.5e-7 relative, and those rows take a second step on a new mpmath sf and
+    pdf. The gate, where both tails ≥ 1e-3: scipy (CONV_REL) where df < 1e5 or
+    df = ∞, except at a Bonferroni q, and its pdf only for k ≥ 2 (NaN below);
+    R `ptukey` (lower and upper tail, SR_R_REL) where k ≥ 2 and
+    SR_R_DF ≤ df ≤ 25000 or df = ∞ (scipy and R use their df = ∞ formula past
+    those df). The quantile
+    rows carry the cdf and sf rows' xcheck: the quantile is checked through
+    `ptukey` at the truth quantile, never through `qtukey`."""
+    t_start = time.time()
+    cache = {}
+    if os.path.exists(SR_CACHE):
+        with open(SR_CACHE) as f:
+            cache = json.load(f)
+    points = []
+    for k in SR_K:
+        for df in SR_DF:
+            for t in SR_TARGETS:
+                if df < 2 and t <= 0.05:
+                    q = math.sqrt(2) * float(st.t(df).isf(t / (k * (k - 1))))
+                else:
+                    q = float(st.studentized_range(k, df).isf(t))
+                if not (math.isfinite(q) and q > 0):
+                    sys.exit(f"studentized_range: no q for k={k}, df={df}, target={t}: {q}")
+                points.append((k, df, t, q))
+    _sr_truth([("full", k, df, q) for k, df, _, q in points], cache)
+    truth = {}
+    for k, df, t, q in points:
+        v = {n: mp.mpf(s) for n, s in cache[repr(("full", k, df, q))].items()}
+        p = _f64(v["cdf"])
+        v["q_ppf"] = q + (v["sf"] - (1 - mp.mpf(p))) / v["pdf"]
+        v["q_isf"] = q + (v["sf"] - mp.mpf(_f64(v["sf"]))) / v["pdf"]
+        truth[(k, df, q)] = v
+    second = [("step", k, df, float(truth[(k, df, q)]["q_ppf"])) for k, df, t, q in points if t == 1e-10]
+    _sr_truth(second, cache)
+    for _, k, df, q1 in second:
+        q = next(pq for pk, pdf_, pt, pq in points if (pk, pdf_, pt) == (k, df, 1e-10))
+        v = truth[(k, df, q)]
+        s = {n: mp.mpf(x) for n, x in cache[repr(("step", k, df, q1))].items()}
+        v["q_ppf"] = q1 + (s["sf"] - (1 - mp.mpf(_f64(v["cdf"])))) / s["pdf"]
+
+    # Cross-check values: scipy at every point, R where it applies.
+    r_jobs, r_index = [], []
+    xc = {}
+    for k, df, t, q in points:
+        d = st.studentized_range(k, df)
+        xc[(k, df, q)] = {"scipy": {n: _f64(getattr(d, n)(q)) for n in ("cdf", "sf", "pdf")},
+                          "r": {"cdf": None, "sf": None, "pdf": None}}
+        if k >= 2 and (SR_R_DF <= df <= 25000 or df == math.inf):
+            for n, fn in (("cdf", "ptukey"), ("sf", "ptukey_upper")):
+                r_jobs.append({"func": fn, "args": [q, k, _sr_df_r(df)]})
+                r_index.append(((k, df, q), n))
+    for (key, n), rv in zip(r_index, _run_r(r_jobs)):
+        xc[key]["r"][n] = rv
+
+    failures = []
+    for k, df, t, q in points:
+        v = truth[(k, df, q)]
+        if abs(v["cdf"] + v["sf"] - 1) > 1e-17:
+            failures.append(((k, df, q), "cdf + sf − 1", float(v["cdf"] + v["sf"] - 1), 0.0))
+        if min(v["cdf"], v["sf"]) < 1e-3 * (1 - 1e-6):
+            continue
+        srcs = []
+        if (df < 1e5 or df == math.inf) and not (df < 2 and t <= 0.05):
+            srcs.append("scipy")
+        if k >= 2 and (SR_R_DF <= df <= 25000 or df == math.inf):
+            srcs.append("r")
+        for src in srcs:
+            for n in ("cdf", "sf", "pdf"):
+                got = xc[(k, df, q)][src][n]
+                if n == "pdf" and (src == "r" or k < 2):
+                    continue
+                tol = SR_R_REL if src == "r" else CONV_REL
+                if got is None or abs(mp.mpf(got) - v[n]) > max(CONV_ABS, tol * abs(float(v[n]))):
+                    failures.append(((k, df, q), f"{src} {n}", got, float(v[n])))
+    if failures:
+        print("\n*** CROSS-VALIDATION GATE FAILED — no fixtures written ***")
+        for key, what, got, want in failures:
+            print(f"  (k, df, q) = {key}: {what} = {got} vs mpmath {want!r}")
+        sys.exit(1)
+
+    rows = {n: [] for n in ("pdf", "cdf", "sf", "ppf", "isf")}
+    for k, df, t, q in points:
+        v, x = truth[(k, df, q)], xc[(k, df, q)]
+        stamp = lambda n: {s: {"val": x[s][n], "rel": _rel_err(x[s][n], v[n])} for s in ("scipy", "r")}
+        dfj = _sr_df_json(df)
+        for n in ("pdf", "cdf", "sf"):
+            rows[n].append({"args": [k, dfj, q], "expected": _f64(v[n]), "tier": "bulk", "band": None,
+                            "xcheck": stamp(n)})
+        for n, src, prob in (("ppf", "cdf", _f64(v["cdf"])), ("isf", "sf", _f64(v["sf"]))):
+            tier = "tail" if (prob < TAIL_LO or prob > 1 - TAIL_LO) else "bulk"
+            rows[n].append({"args": [k, dfj, prob], "expected": _f64(v["q_" + n]), "tier": tier,
+                            "band": TAIL_BANDS.get(f"dist_studentizedrange_{n}") if tier == "tail" else None,
+                            "xcheck": stamp(src)})
+    for n, recs in rows.items():
+        with open(os.path.join(OUT, f"dist_studentizedrange_{n}.json"), "w") as f:
+            json.dump(recs, f, indent=0)
+        n_tail = sum(1 for r in recs if r["tier"] == "tail")
+        print(f"wrote dist_studentizedrange_{n}.json ({len(recs)} rows, {n_tail} tail)")
+    print(f"studentized_range: total {time.time() - t_start:.0f} s")
+
+
 AREAS = {
     "special":      gen_special,
     "htest":        gen_htest,
@@ -1609,6 +1815,7 @@ AREAS = {
     "density":      gen_density,
     "transform":    gen_transform,
     "descriptives": gen_descriptives,
+    "studentized_range": gen_studentized_range,
 }
 
 

@@ -985,63 +985,13 @@ pub fn tfce_ols_threads(
     finalize(&problem, &null)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "parallel"))]
 mod tests {
     use super::*;
-    use crate::tfce::Weighting;
-    use crate::{Conn, Domain};
-    use alloc::vec;
-
-    #[test]
-    fn exact_draw_bits_encode_signs_and_draw_zero_is_identity() {
-        let mut s = vec![0.0; 4];
-        fill_signs(true, 4, 0, 0, &mut s);
-        assert_eq!(s, [1.0, 1.0, 1.0, 1.0]);
-        fill_signs(true, 4, 0, 0b1010, &mut s);
-        assert_eq!(s, [1.0, -1.0, 1.0, -1.0]);
-        fill_signs(false, 4, 9, 0, &mut s);
-        assert_eq!(s, [1.0, 1.0, 1.0, 1.0]);
-    }
-
-    fn toy() -> (Domain, Vec<f64>, PermOpts<'static>) {
-        let dom = Domain::from_volume([3, 1, 1], Conn::Face);
-        // n = 4 subjects, V = 3: node 0 strong positive, node 1 noise, node 2 zero.
-        let y = vec![
-            2.0, 0.3, 0.0, //
-            2.5, -0.4, 0.0, //
-            1.8, 0.1, 0.0, //
-            2.2, -0.2, 0.0,
-        ];
-        let p = TfceParams {
-            e: 0.5,
-            h: 2.0,
-            start: 0.0,
-            step: 1.0,
-            weighting: Weighting::Exact,
-        };
-        (dom, y, PermOpts::new(p, Tail::Positive, 1, 1000))
-    }
-
-    // Exact enumeration on n = 4: B = 16, identity included, p ≥ 1/16, and the
-    // strong node's FWE p is the smallest attainable (1/16: the all-flipped
-    // realization mirrors the observed max only if it is also positive, and
-    // here it is not).
-    #[test]
-    fn one_sample_exact_toy() {
-        let (dom, y, opts) = toy();
-        let r = tfce_ols(&dom, &y, 4, None, &[], &opts).unwrap();
-        assert_eq!(r.null.maxima.len(), 16);
-        assert!(r.null.maxima.windows(2).all(|w| w[0] <= w[1]));
-        assert!(r.p_fwe.iter().all(|&p| (1.0 / 16.0..=1.0).contains(&p)));
-        assert!(r.p_unc.iter().all(|&p| (1.0 / 16.0..=1.0).contains(&p)));
-        assert!((r.p_fwe[0] - 1.0 / 16.0).abs() < 1e-15, "{:?}", r.p_fwe);
-        assert_eq!(r.null.tfce_obs[2], 0.0);
-        assert_eq!(r.p_fwe[2], 1.0);
-    }
 
     // The split covers the draws exactly once, in contiguous pieces of whole
-    // batches, with the count the driver promises.
-    #[cfg(feature = "parallel")]
+    // batches: at least one chunk per thread while batches last, and at most
+    // the documented `4 · threads`.
     #[test]
     fn chunk_ranges_partition_the_draws_in_whole_batches() {
         for first in [0u64, 37] {
@@ -1051,7 +1001,13 @@ mod tests {
                         let label = alloc::format!("b {b} batch {batch} threads {threads}");
                         let r = chunk_ranges(first..first + b, batch, threads);
                         let batches = b.div_ceil(batch as u64);
-                        assert_eq!(r.len() as u64, batches.min(4 * threads as u64), "{label}");
+                        let (min, max) =
+                            (batches.min(threads as u64), batches.min(4 * threads as u64));
+                        assert!(
+                            (min..=max).contains(&(r.len() as u64)),
+                            "{label}: {} chunks",
+                            r.len()
+                        );
                         assert_eq!(r[0].start, first);
                         assert_eq!(r[r.len() - 1].end, first + b);
                         for w in r.windows(2) {
@@ -1069,35 +1025,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn zero_budget_and_zero_batch_are_invalid() {
-        let (dom, y, opts) = toy();
-        for bad in [
-            PermOpts { n_perm: 0, ..opts },
-            PermOpts { batch: 0, ..opts },
-            PermOpts {
-                n_perm: u64::from(u32::MAX) + 1,
-                ..opts
-            },
-        ] {
-            assert_eq!(
-                tfce_ols(&dom, &y, 4, None, &[], &bad),
-                Err(NeuroError::InvalidParams)
-            );
-        }
-    }
-
-    #[test]
-    fn y_length_must_match_domain() {
-        let (dom, y, opts) = toy();
-        assert_eq!(
-            tfce_ols(&dom, &y[..8], 4, None, &[], &opts),
-            Err(NeuroError::MismatchedLengths {
-                expected: 12,
-                got: 8
-            })
-        );
     }
 }

@@ -1,6 +1,6 @@
 use commonstats::htest::{
-    CorMethod, EffectSize, VarAssumption, anova_one_way, chi2_gof, chi2_independence, cor_test,
-    f_test_var, t_test_one, t_test_paired, t_test_two,
+    CorMethod, EffectSize, VarAssumption, anova_one_way, chi2_gof, chi2_independence, ci_mean,
+    cor_test, eta_squared, f_test_var, t_test_one, t_test_paired, t_test_two,
 };
 use serde::Deserialize;
 
@@ -35,66 +35,44 @@ const PVAL: Tol = Tol {
 struct TtestFixture {
     a: Vec<f64>,
     b: Vec<f64>,
+    // mpmath pooled-SD Cohen's d of a vs b.
+    cohen_d: f64,
     rows: Vec<Row>,
 }
 #[derive(Deserialize)]
 struct Row {
     args: Vec<String>,
+    // [t, p, df]
     expected: Vec<f64>,
-    // R t.test(var.equal=FALSE)$conf.int (matches mpmath); only on the welch row.
-    #[serde(default)]
-    welch_ci_correct: Option<Vec<f64>>,
+    // 95% CI [lower, upper], mpmath; cross-checked with R t.test()$conf.int.
+    ci: Vec<f64>,
 }
 
 #[test]
 fn ttests_match_scipy() {
     let f: TtestFixture = read("ttests");
     for row in &f.rows {
-        let (got_t, got_p, got_df) = match row.args[0].as_str() {
-            "one" => {
-                let r = t_test_one(&f.a, 5.0).unwrap();
-                (r.statistic, r.p_value, r.df)
-            }
-            "student" => {
-                let r = t_test_two(&f.a, &f.b, VarAssumption::Equal).unwrap();
-                (r.statistic, r.p_value, r.df)
-            }
-            "welch" => {
-                let r = t_test_two(&f.a, &f.b, VarAssumption::Welch).unwrap();
-                (r.statistic, r.p_value, r.df)
-            }
-            "paired" => {
-                let r = t_test_paired(&f.a[..8], &f.b[..8]).unwrap();
-                (r.statistic, r.p_value, r.df)
-            }
+        let name = row.args[0].as_str();
+        let r = match name {
+            "one" => t_test_one(&f.a, 5.0),
+            "student" => t_test_two(&f.a, &f.b, VarAssumption::Equal),
+            "welch" => t_test_two(&f.a, &f.b, VarAssumption::Welch),
+            "paired" => t_test_paired(&f.a[..8], &f.b[..8]),
             other => panic!("unknown row {other}"),
-        };
-        assert_close(&format!("{}: t", row.args[0]), got_t, row.expected[0], STAT);
-        assert_close(&format!("{}: p", row.args[0]), got_p, row.expected[1], PVAL);
-        if row.expected.len() > 2 {
-            assert_close(&format!("{}: df", row.args[0]), got_df, row.expected[2], DF);
         }
+        .unwrap();
+        assert_close(&format!("{name}: t"), r.statistic, row.expected[0], STAT);
+        assert_close(&format!("{name}: p"), r.p_value, row.expected[1], PVAL);
+        assert_close(&format!("{name}: df"), r.df, row.expected[2], DF);
+        let ci = r.ci.as_ref().unwrap_or_else(|| panic!("{name}: no ci"));
+        assert_close(&format!("{name}: ci lower"), ci.lower, row.ci[0], CI);
+        assert_close(&format!("{name}: ci upper"), ci.upper, row.ci[1], CI);
     }
-    // Welch CI must invert to the Welch p-value (the pooled-CI inconsistency was the
-    // prior latent bug). welch_ci_correct = R t.test(var.equal=FALSE)$conf.int.
-    let welch_row = f.rows.iter().find(|r| r.args[0] == "welch").unwrap();
-    let want_ci = welch_row
-        .welch_ci_correct
-        .as_ref()
-        .expect("welch_ci_correct fixture");
-    let ci = t_test_two(&f.a, &f.b, VarAssumption::Welch)
-        .unwrap()
-        .ci
-        .expect("welch ci");
-    assert_close("welch ci lower", ci.lower, want_ci[0], CI);
-    assert_close("welch ci upper", ci.upper, want_ci[1], CI);
 
-    // Cohen's d (pooled SD) paired with Student's t — scipy/numpy pooled value.
+    // Cohen's d (pooled SD) paired with Student's t.
     let student = t_test_two(&f.a, &f.b, VarAssumption::Equal).unwrap();
     match student.effect_size {
-        Some(EffectSize::CohenD(d)) => {
-            assert!((d - (-1.9663081137313068)).abs() < 1e-9, "cohen_d {d}")
-        }
+        Some(EffectSize::CohenD(d)) => assert_close("cohen_d", d, f.cohen_d, STAT),
         _ => panic!("expected CohenD effect size"),
     }
 }
@@ -105,6 +83,9 @@ struct AnovaFix {
     #[serde(rename = "F")]
     f: f64,
     p: f64,
+    df1: f64,
+    df2: f64,
+    eta2: f64,
 }
 #[derive(Deserialize)]
 struct Chi2Fix {
@@ -125,12 +106,13 @@ fn anova_matches_scipy() {
     let r = anova_one_way(&groups).unwrap();
     assert_close("F", r.statistic, fx.f, STAT);
     assert_close("p", r.p_value, fx.p, PVAL);
+    assert_eq!(r.df, fx.df1);
+    assert_eq!(r.df2, Some(fx.df2));
     match r.effect_size {
-        Some(EffectSize::EtaSquared(e)) => {
-            assert!((e - 0.7402447471715539).abs() < 1e-9, "eta2 {e}")
-        }
+        Some(EffectSize::EtaSquared(e)) => assert_close("eta2", e, fx.eta2, STAT),
         _ => panic!("expected EtaSquared effect size"),
     }
+    assert_close("eta_squared", eta_squared(&groups).unwrap(), fx.eta2, STAT);
 }
 #[test]
 fn chi2_matches_scipy() {
@@ -222,4 +204,21 @@ fn f_test_var_zero_variance_denominator_gives_zero() {
     let r = f_test_var(&[1.0, 2.0, 3.0], &[5.0, 5.0, 5.0]).unwrap();
     assert_eq!(r.statistic, f64::INFINITY);
     assert_eq!(r.p_value, 0.0);
+}
+
+#[test]
+fn ci_mean_extreme_level_df1() {
+    // [-1, 1]: mean 0 and se = 1 exactly, so the upper bound is the t critical
+    // value at df 1, cot(π(1 − level)/2) from the f64 level (mpmath, 50 dps).
+    for (level, want) in [
+        (0.999_999_999_999, 636_633_855_803.559_3),
+        (0.999_999_999_999_999, 637_129_015_469_184.3),
+    ] {
+        let ci = ci_mean(&[-1.0, 1.0], level).unwrap();
+        assert!(
+            ((ci.upper - want) / want).abs() < 3e-15,
+            "{level}: {:e}",
+            ci.upper
+        );
+    }
 }

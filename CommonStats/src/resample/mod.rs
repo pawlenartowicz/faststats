@@ -230,17 +230,18 @@ mod tests {
         );
     }
 
+    // Published streams, seed 77, draw 5: NeuroStats and other downstream crates replay these exact draws.
+    // A change here is a breaking change of every downstream p-value and CI.
     #[test]
-    fn indices_are_draw_addressable() {
-        let n = 30;
-        let mut a = vec![0u32; n];
-        let mut b = vec![0u32; n];
-        gen_resample_indices(Scheme::Permutation, n, 5, 77, &mut a).unwrap();
-        gen_resample_indices(Scheme::Permutation, n, 5, 77, &mut b).unwrap();
-        assert_eq!(a, b, "same (seed, draw_id) must reproduce the index set");
-        let mut c = vec![0u32; n];
-        gen_resample_indices(Scheme::Permutation, n, 6, 77, &mut c).unwrap();
-        assert_ne!(a, c, "different draw_id must differ");
+    fn published_streams_known_answers() {
+        let mut idx = [0u32; 10];
+        gen_resample_indices(Scheme::Permutation, 10, 5, 77, &mut idx).unwrap();
+        assert_eq!(idx, [2, 4, 5, 9, 3, 8, 7, 0, 1, 6]);
+        gen_resample_indices(Scheme::Bootstrap, 10, 5, 77, &mut idx).unwrap();
+        assert_eq!(idx, [6, 1, 1, 0, 1, 6, 2, 6, 3, 5]);
+        let mut s = [0.0f64; 12];
+        gen_sign_flips(12, 5, 77, &mut s).unwrap();
+        assert_eq!(s, [1., -1., 1., 1., -1., -1., -1., 1., 1., 1., -1., -1.]);
     }
 
     #[cfg(target_pointer_width = "64")]
@@ -274,40 +275,35 @@ mod tests {
         ));
     }
 
-    // Permutation of a constant statistic: every draw gives the same mean (the
-    // grand mean is permutation-invariant), so every draw ties the observed and
-    // the p-value is exactly 1.0 (all B draws extreme: (B+1)/(B+1)).
+    // run_serial is exactly the loop over draw ids 0..B of gen_resample_indices
+    // (the contract a parallel driver is checked against).
     #[test]
-    fn run_serial_permutation_mean_is_invariant() {
-        let data = [10.0, 20.0, 30.0, 40.0];
+    fn run_serial_is_the_draw_loop() {
+        let data = [3.0, 9.0, 1.0, 7.0, 4.0, 8.0];
         let base: &[&[f64]] = &[&data];
-        let stat = |b: &[&[f64]], idx: &[u32]| {
-            idx.iter().map(|&i| b[0][i as usize]).sum::<f64>() / idx.len() as f64
-        };
-        let observed = stat(base, &[0, 1, 2, 3]);
-        let mut dist = NullDist::new(observed, Sidedness::TwoSided);
-        run_serial(Scheme::Permutation, base, 4, 100, 3, stat, &mut dist).unwrap();
-        assert!((dist.finalize() - 1.0).abs() < 1e-15);
-    }
-
-    // Bootstrap CI of the mean brackets the data mean (the bootstrap distribution
-    // of the sample mean is centred on it).
-    #[test]
-    fn sign_flips_are_signs_both_present_and_reproducible() {
-        let n = 40;
-        let mut a = vec![0.0f64; n];
-        let mut b = vec![0.0f64; n];
-        gen_sign_flips(n, 3, 11, &mut a).unwrap();
-        gen_sign_flips(n, 3, 11, &mut b).unwrap();
-        assert_eq!(a, b, "same (seed, draw_id) must reproduce the sign vector");
-        assert!(a.iter().all(|&s| s == 1.0 || s == -1.0));
-        assert!(
-            a.contains(&1.0) && a.contains(&-1.0),
-            "n = 40 should show both signs"
-        );
-        let mut c = vec![0.0f64; n];
-        gen_sign_flips(n, 4, 11, &mut c).unwrap();
-        assert_ne!(a, c, "different draw_id must differ");
+        let stat =
+            |b: &[&[f64]], idx: &[u32]| (b[0][idx[0] as usize] + b[0][idx[1] as usize]) / 2.0;
+        let observed = stat(base, &[0, 1, 2, 3, 4, 5]); // 6.0, not permutation-invariant
+        let (b, seed) = (200u64, 3u64);
+        let mut got = NullDist::new(observed, Sidedness::Greater);
+        run_serial(
+            Scheme::Permutation,
+            base,
+            data.len(),
+            b,
+            seed,
+            stat,
+            &mut got,
+        )
+        .unwrap();
+        let mut want = NullDist::new(observed, Sidedness::Greater);
+        let mut idx = [0u32; 6];
+        for draw_id in 0..b {
+            gen_resample_indices(Scheme::Permutation, data.len(), draw_id, seed, &mut idx).unwrap();
+            want.update(stat(base, &idx));
+        }
+        assert_eq!(got.finalize(), want.finalize());
+        assert!(got.finalize() < 1.0);
     }
 
     #[test]
@@ -320,19 +316,22 @@ mod tests {
     }
 
     // Bit `i & 31` of word `i / 32` — pinned so the fixture layout never drifts.
+    // n > 2048 crosses the 64-word `fill_u32` chunk.
     #[test]
     fn sign_flips_use_one_bit_per_subject() {
-        let n = 70;
+        let n = 4200;
         let mut out = vec![0.0f64; n];
         gen_sign_flips(n, 2, 5, &mut out).unwrap();
         let mut rng = CommonStatsRng::new_tagged(5, 2, crate::rng::STREAM_TAG_SIGNFLIP);
-        let words = [rng.next_u32(), rng.next_u32(), rng.next_u32()];
+        let words: Vec<u32> = (0..n.div_ceil(32)).map(|_| rng.next_u32()).collect();
         for (i, &s) in out.iter().enumerate() {
             let bit = (words[i / 32] >> (i & 31)) & 1;
             assert_eq!(s, if bit == 1 { -1.0 } else { 1.0 }, "subject {i}");
         }
     }
 
+    // Bootstrap CI of the mean brackets the data mean (the bootstrap distribution
+    // of the sample mean is centred on it).
     #[test]
     fn run_serial_bootstrap_ci_brackets_mean() {
         let data = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];

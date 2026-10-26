@@ -186,13 +186,8 @@ mod tests {
         assert!((feed(Sidedness::Less, 2.0, &xs) - 6.0 / 7.0).abs() < 1e-15);
         // TwoSided |x|>=2: {-2,2,3} extreme → (3+1)/7
         assert!((feed(Sidedness::TwoSided, 2.0, &xs) - 4.0 / 7.0).abs() < 1e-15);
-    }
-
-    #[test]
-    fn nulldist_never_returns_zero() {
-        // No draw beats observed yet p = 1/(B+1) > 0, never 0.
-        let p = feed(Sidedness::Greater, 100.0, &[1.0, 2.0, 3.0]);
-        assert!((p - 1.0 / 4.0).abs() < 1e-15);
+        // No draw as extreme: p = 1/(B+1), never 0.
+        assert!((feed(Sidedness::Greater, 100.0, &[1.0, 2.0, 3.0]) - 0.25).abs() < 1e-15);
     }
 
     // Exact two-sided permutation p by full enumeration of a tiny two-sample

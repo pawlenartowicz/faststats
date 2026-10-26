@@ -4,29 +4,32 @@ use crate::accum::moments::{CoMoment, Moments, Variance, comoment_pairs};
 use crate::accum::simple::{Count, MinMax, Sum};
 use crate::accum::{Accumulator, from_slice, quantile_sorted};
 use crate::error::StatError;
-use crate::nan::{NanPolicy, clean};
+use crate::nan::clean;
 use alloc::vec::Vec;
 
 fn omit(xs: &[f64]) -> Result<Vec<f64>, StatError> {
-    clean(xs, NanPolicy::Omit)
+    clean(xs)
 }
 
-/// Count of finite observations in `xs` (NaN dropped under the Omit default).
+/// Count of non-NaN observations in `xs` (NaN dropped under the Omit policy;
+/// ±∞ counted).
 pub fn count(xs: &[f64]) -> usize {
     let c: Count = from_slice(xs);
     c.finalize() as usize
 }
-/// Neumaier-compensated sum of the finite values in `xs`.
+/// Neumaier-compensated sum of the non-NaN values in `xs`.
 pub fn sum(xs: &[f64]) -> f64 {
     let s: Sum = from_slice(xs);
     s.finalize()
 }
-/// Minimum finite value in `xs`. [`StatError::AllNaN`] if no value is finite.
+/// Minimum non-NaN value in `xs` (can be −∞). [`StatError::AllNaN`] if every
+/// value is NaN.
 pub fn min(xs: &[f64]) -> Result<f64, StatError> {
     let mm: MinMax = from_slice(xs);
     mm.finalize().map(|(lo, _)| lo).ok_or(StatError::AllNaN)
 }
-/// Maximum finite value in `xs`. [`StatError::AllNaN`] if no value is finite.
+/// Maximum non-NaN value in `xs` (can be +∞). [`StatError::AllNaN`] if every
+/// value is NaN.
 pub fn max(xs: &[f64]) -> Result<f64, StatError> {
     let mm: MinMax = from_slice(xs);
     mm.finalize().map(|(_, hi)| hi).ok_or(StatError::AllNaN)
@@ -37,7 +40,7 @@ pub fn max(xs: &[f64]) -> Result<f64, StatError> {
 /// interpolate between order statistics at ⌊h⌋ and ⌈h⌉. Matches
 /// `numpy.percentile(xs, 50, method='linear')` and R's `median()`.
 ///
-/// `xs`: finite observations; NaN dropped under the Omit default.
+/// `xs`: observations; NaN dropped under the Omit policy.
 /// Returns [`StatError::EmptyInput`] when `xs` is empty; [`StatError::AllNaN`]
 /// when every value is NaN. Single observation: returns it as-is. Two
 /// observations: returns their mean.
@@ -50,14 +53,15 @@ pub fn median(xs: &[f64]) -> Result<f64, StatError> {
     v.sort_by(f64::total_cmp); // total order; NaN already dropped by omit
     Ok(quantile_sorted(&v, 0.50)) // type-7: linear interpolation of order statistics
 }
-/// max − min over the finite values of `xs`. [`StatError::AllNaN`] if none finite.
+/// max − min over the non-NaN values of `xs` (±∞ values included).
+/// [`StatError::AllNaN`] if every value is NaN.
 pub fn range(xs: &[f64]) -> Result<f64, StatError> {
     let mm: MinMax = from_slice(xs);
     mm.finalize()
         .map(|(lo, hi)| hi - lo)
         .ok_or(StatError::AllNaN)
 }
-/// Arithmetic mean of the finite values in `xs` (NaN dropped under the Omit
+/// Arithmetic mean of the non-NaN values in `xs` (NaN dropped under the Omit
 /// default). [`StatError::EmptyInput`] if `xs` is empty; [`StatError::AllNaN`]
 /// if every value is NaN.
 ///
@@ -93,11 +97,11 @@ pub enum Ddof {
     Population,
 }
 
-/// Variance of the finite values in `xs` under the chosen degrees-of-freedom
+/// Variance of the non-NaN values in `xs` under the chosen degrees-of-freedom
 /// convention `ddof` ([`Ddof::Sample`] = ddof 1, [`Ddof::Population`] = ddof 0).
 /// Matches `numpy.var(xs, ddof=…)`.
 ///
-/// `xs`: observations; needs ≥ 2 finite values (NaN dropped under the Omit
+/// `xs`: observations; needs ≥ 2 non-NaN values (NaN dropped under the Omit
 /// default). [`StatError::TooFewObservations`] otherwise.
 ///
 /// ```
@@ -113,9 +117,9 @@ pub fn var(xs: &[f64], ddof: Ddof) -> Result<f64, StatError> {
         Ddof::Population => v.var_pop(),
     })
 }
-/// Standard deviation of the finite values in `xs` under the chosen
+/// Standard deviation of the non-NaN values in `xs` under the chosen
 /// degrees-of-freedom convention `ddof` — the square root of [`var`]. Matches
-/// `numpy.std(xs, ddof=…)`. Needs ≥ 2 finite values; [`StatError::TooFewObservations`] otherwise.
+/// `numpy.std(xs, ddof=…)`. Needs ≥ 2 non-NaN values; [`StatError::TooFewObservations`] otherwise.
 ///
 /// ```
 /// use commonstats::{sd, Ddof};
@@ -126,7 +130,7 @@ pub fn sd(xs: &[f64], ddof: Ddof) -> Result<f64, StatError> {
     Ok(libm::sqrt(var(xs, ddof)?))
 }
 
-/// Sample skewness (Fisher–Pearson g1, no bias correction) of the finite values
+/// Sample skewness (Fisher–Pearson g1, no bias correction) of the non-NaN values
 /// in `xs`. Needs ≥ 2. Matches `scipy.stats.skew(xs, bias=True)`.
 ///
 /// ```
@@ -145,7 +149,7 @@ pub fn skewness(xs: &[f64]) -> Result<f64, StatError> {
     let m: Moments = from_slice(&v);
     Ok(m.skewness())
 }
-/// Excess kurtosis (Fisher, no bias correction) of the finite values in `xs`.
+/// Excess kurtosis (Fisher, no bias correction) of the non-NaN values in `xs`.
 /// Needs ≥ 2. Matches `scipy.stats.kurtosis(xs, bias=True, fisher=True)`.
 ///
 /// ```
@@ -204,7 +208,7 @@ pub fn pearson(a: &[f64], b: &[f64]) -> Result<f64, StatError> {
 /// (R/NumPy default) rule; `sd` is ddof = 1; `kurtosis` is excess (Fisher).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Describe {
-    /// Number of finite observations summarized.
+    /// Number of non-NaN observations summarized.
     pub n: usize,
     /// Minimum.
     pub min: f64,
@@ -226,8 +230,8 @@ pub struct Describe {
     pub kurtosis: f64,
 }
 
-/// Five-number summary plus mean/sd/skewness/kurtosis of the finite values in
-/// `xs` (type-7 quantiles; sd ddof = 1; excess kurtosis). Needs ≥ 2 finite
+/// Five-number summary plus mean/sd/skewness/kurtosis of the non-NaN values in
+/// `xs` (type-7 quantiles; sd ddof = 1; excess kurtosis). Needs ≥ 2 non-NaN
 /// values; [`StatError::TooFewObservations`] otherwise.
 ///
 /// ```
@@ -263,14 +267,6 @@ pub fn describe(xs: &[f64]) -> Result<Describe, StatError> {
 mod tests {
     use super::*;
     #[test]
-    fn mean_omits_nan() {
-        assert!((mean(&[1.0, f64::NAN, 3.0]).unwrap() - 2.0).abs() < 1e-15);
-    }
-    #[test]
-    fn mean_empty_errors() {
-        assert_eq!(mean(&[]), Err(crate::StatError::EmptyInput));
-    }
-    #[test]
     fn var_needs_two() {
         assert_eq!(
             var(&[1.0], Ddof::Sample),
@@ -289,25 +285,6 @@ mod tests {
         assert!((range(&[1., 3., 2.]).unwrap() - 2.0).abs() < 1e-13);
     }
     #[test]
-    fn median_odd_n_is_middle() {
-        // [1,2,3] sorted → middle element = 2.0.
-        assert!((median(&[1., 2., 3.]).unwrap() - 2.0).abs() < 1e-12);
-    }
-    #[test]
-    fn median_omits_nan() {
-        // [1, NaN, 3] → effective [1,3] → median = 2.0.
-        assert!((median(&[1., f64::NAN, 3.]).unwrap() - 2.0).abs() < 1e-12);
-    }
-    #[test]
-    fn median_empty_errors() {
-        assert_eq!(median(&[]), Err(crate::StatError::EmptyInput));
-    }
-}
-
-#[cfg(test)]
-mod describe_tests {
-    use super::*;
-    #[test]
     fn describe_five_number() {
         // 1..=9, type-7 quartiles: q1=3, median=5, q3=7
         let d = describe(&[1., 2., 3., 4., 5., 6., 7., 8., 9.]).unwrap();
@@ -321,9 +298,5 @@ mod describe_tests {
         assert!((d.sd - 2.7386127875258306).abs() < 1e-12, "sd {}", d.sd); // √(60/8), ddof=1
         assert!(d.skewness.abs() < 1e-12, "skew {}", d.skewness); // symmetric → 0
         assert!((d.kurtosis - (-1.23)).abs() < 1e-9, "kurt {}", d.kurtosis); // scipy excess kurtosis
-    }
-    #[test]
-    fn describe_empty_errors() {
-        assert_eq!(describe(&[]), Err(crate::StatError::EmptyInput));
     }
 }

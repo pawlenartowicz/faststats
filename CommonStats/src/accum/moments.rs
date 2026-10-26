@@ -3,7 +3,7 @@
 use super::simple::Sum;
 use super::{Accumulator, Mergeable};
 use crate::error::StatError;
-use crate::nan::{NanPolicy, clean};
+use crate::nan::clean;
 use alloc::vec::Vec;
 
 /// Welford running mean. An accumulator-family primitive: batch `mean` currently
@@ -138,7 +138,7 @@ impl Accumulator for Variance {
 /// Validated sample-variance accumulator: omit NaN, require n ≥ 2, two-pass. One
 /// source of truth for the test/CI callers (ttest, effect, ci, anova).
 pub(crate) fn checked_variance(xs: &[f64]) -> Result<Variance, StatError> {
-    let v = clean(xs, NanPolicy::Omit)?;
+    let v = clean(xs)?;
     if v.len() < 2 {
         return Err(StatError::TooFewObservations {
             needed: 2,
@@ -351,9 +351,14 @@ mod tests {
     use crate::accum::from_slice;
 
     #[test]
-    fn mean_basic() {
-        let m: Mean = from_slice(&[1.0, 2.0, 3.0, 4.0]);
-        assert!((m.finalize() - 2.5).abs() < 1e-15);
+    fn mean_update_and_merge() {
+        let xs = [1., 2., 3., 4., 10., 20., 30., 40.];
+        let whole: Mean = from_slice(&xs);
+        assert!((whole.finalize() - 13.75).abs() < 1e-13);
+        // Unequal 3/5 split, so a swapped merge weight shows.
+        let mut a: Mean = from_slice(&xs[..3]);
+        a.merge(&from_slice::<Mean>(&xs[3..]));
+        assert!((a.finalize() - 13.75).abs() < 1e-13);
     }
     #[test]
     fn variance_sample_matches_known() {
@@ -364,11 +369,13 @@ mod tests {
     }
     #[test]
     fn variance_merge_equals_single() {
-        let whole: Variance = from_slice(&[2., 4., 4., 4., 5., 5., 7., 9.]);
-        let mut a: Variance = from_slice(&[2., 4., 4., 4.]);
-        let b: Variance = from_slice(&[5., 5., 7., 9.]);
-        a.merge(&b);
+        let xs = [2., 4., 4., 4., 5., 5., 7., 9.];
+        let whole: Variance = from_slice(&xs);
+        // Unequal 3/5 split: with equal halves a swapped mean weight cancels.
+        let mut a: Variance = from_slice(&xs[..3]);
+        a.merge(&from_slice::<Variance>(&xs[3..]));
         assert!((a.var_sample() - whole.var_sample()).abs() < 1e-12);
+        assert!((a.mean() - whole.mean()).abs() < 1e-14);
         assert_eq!(a.count(), 8);
     }
     #[test]
@@ -388,38 +395,41 @@ mod more_tests {
 
     #[test]
     fn moments_merge_equals_single() {
-        let whole: Moments = from_slice(&[1., 2., 3., 4., 5., 6., 7., 8.]);
-        let mut a: Moments = from_slice(&[1., 2., 3., 4.]);
-        let b: Moments = from_slice(&[5., 6., 7., 8.]);
-        a.merge(&b);
-        assert!((a.kurtosis_excess() - whole.kurtosis_excess()).abs() < 1e-10);
-        assert!((a.skewness() - whole.skewness()).abs() < 1e-10);
-    }
-    #[test]
-    fn pearson_perfect_correlation() {
-        let mut c = CoMoment::empty();
-        for (x, y) in [(1., 2.), (2., 4.), (3., 6.), (4., 8.)] {
-            c.update((x, y));
-        }
-        assert!((c.pearson() - 1.0).abs() < 1e-13);
-        assert!((c.covariance_sample() - 10.0 / 3.0).abs() < 1e-12);
+        let xs = [1., 2., 4., 8., 16., 3., 9.]; // skewed: g1 ≈ 0.908, g2 ≈ −0.327
+        let whole: Moments = from_slice(&xs);
+        let mut a: Moments = from_slice(&xs[..3]);
+        a.merge(&from_slice::<Moments>(&xs[3..]));
+        assert!((a.skewness() - whole.skewness()).abs() < 1e-12);
+        assert!((a.kurtosis_excess() - whole.kurtosis_excess()).abs() < 1e-12);
+        assert!((a.var_sample() - whole.var_sample()).abs() < 1e-12);
+        assert!((a.mean() - whole.mean()).abs() < 1e-13);
     }
     #[test]
     fn comoment_merge_equals_single() {
-        let pairs = [(1., 2.), (2., 1.), (3., 5.), (4., 4.), (5., 9.), (6., 7.)];
-        let mut whole = CoMoment::empty();
-        for &p in &pairs {
-            whole.update(p);
-        }
-        let mut a = CoMoment::empty();
-        for &p in &pairs[..3] {
-            a.update(p);
-        }
-        let mut b = CoMoment::empty();
-        for &p in &pairs[3..] {
-            b.update(p);
-        }
-        a.merge(&b);
+        let pairs = [
+            (1., 2.),
+            (2., 1.),
+            (3., 5.),
+            (4., 4.),
+            (5., 9.),
+            (6., 7.),
+            (7., 12.),
+        ];
+        let fold = |ps: &[(f64, f64)]| {
+            let mut c = CoMoment::empty();
+            for &p in ps {
+                c.update(p);
+            }
+            c
+        };
+        let whole = fold(&pairs);
+        // Three chunks: a merged mean only feeds a later merge, so two chunks
+        // cannot see a wrong mean weight.
+        let mut a = fold(&pairs[..2]);
+        a.merge(&fold(&pairs[2..5]));
+        a.merge(&fold(&pairs[5..]));
+        assert_eq!(a.count(), 7);
         assert!((a.pearson() - whole.pearson()).abs() < 1e-12);
+        assert!((a.covariance_sample() - whole.covariance_sample()).abs() < 1e-12);
     }
 }

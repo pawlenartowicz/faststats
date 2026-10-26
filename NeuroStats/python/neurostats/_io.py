@@ -189,12 +189,12 @@ def export_to(result, target=None) -> dict:
         "logp_fwe": _arrays.neg_log10(result.p_fwe),
         "logp_unc": _arrays.neg_log10(result.p_unc),
     }
-    if _is_masker(host):
-        return {key: host.inverse_transform(vec) for key, vec in maps.items()}
     domain = Domain.from_mask(_arrays.image_mask(mask_img))
     n_nodes = len(result.stat_obs)
     if domain.n_nodes != n_nodes:
         raise ValueError(f"the result has {n_nodes} nodes, the mask of target has {domain.n_nodes} voxels")
+    if _is_masker(host):
+        return {key: host.inverse_transform(vec) for key, vec in maps.items()}
     out = {}
     for key, vec in maps.items():
         volume = _arrays.scatter(vec, domain, 0.0)

@@ -10,10 +10,31 @@ fn chi2_sf(chi2: f64, df: f64) -> f64 {
     gammq(df / 2.0, chi2 / 2.0)
 }
 
+/// `(rows, cols)` of a contingency `table`: `TooFewObservations` for fewer than 2
+/// rows, `DomainError` unless it is rectangular with ≥ 2 columns. Shared by the
+/// independence test and Cramér's V, the two public entry points to
+/// `contingency_chi2`.
+pub(crate) fn table_shape(table: &[&[f64]]) -> Result<(usize, usize), StatError> {
+    let rows = table.len();
+    if rows < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: rows,
+        });
+    }
+    let cols = table[0].len();
+    if cols < 2 || table.iter().any(|r| r.len() != cols) {
+        return Err(StatError::DomainError(
+            "contingency table must be rectangular, ≥2×2",
+        ));
+    }
+    Ok((rows, cols))
+}
+
 /// Pearson χ² statistic and grand total for a contingency `table`, expected cell
 /// e = rowᵢ·colⱼ/grand (cells with e ≤ 0 skipped). Pure — shared by the
 /// independence test and Cramér's V, which stay decoupled by each calling it.
-/// Assumes the caller has validated the shape (rectangular, ≥ 2×2).
+/// Assumes the caller has validated the shape with `table_shape`.
 pub(crate) fn contingency_chi2(table: &[&[f64]]) -> (f64, f64) {
     let cols = table[0].len();
     let row_tot: Vec<f64> = table.iter().map(|r| r.iter().sum()).collect();
@@ -79,19 +100,7 @@ pub fn chi2_gof(observed: &[f64], expected: &[f64]) -> Result<TestResult, StatEr
 /// or < 2 columns). Matches `scipy.stats.chi2_contingency(correction=False)`
 /// (`tests/fixtures/chi2.json`).
 pub fn chi2_independence(table: &[&[f64]]) -> Result<TestResult, StatError> {
-    let rows = table.len();
-    if rows < 2 {
-        return Err(StatError::TooFewObservations {
-            needed: 2,
-            got: rows,
-        });
-    }
-    let cols = table[0].len();
-    if cols < 2 || table.iter().any(|r| r.len() != cols) {
-        return Err(StatError::DomainError(
-            "contingency table must be rectangular, ≥2×2",
-        ));
-    }
+    let (rows, cols) = table_shape(table)?;
     let (chi2, _) = contingency_chi2(table);
     let df = ((rows - 1) * (cols - 1)) as f64;
     Ok(TestResult {

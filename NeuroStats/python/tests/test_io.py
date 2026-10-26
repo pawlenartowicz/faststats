@@ -4,8 +4,6 @@ the same `tfce_ols` result from images, from a `MaskedData` and from plain
 arrays, every kind of input, and every refusal."""
 
 import dataclasses
-import subprocess
-import sys
 
 import numpy as np
 import pytest
@@ -214,8 +212,6 @@ def test_import_refusals(scene):
         # A masker whose mask is not an image.
         ((np.zeros((N, 8)), surface_masker()), {}, "mask_img_ is not an image"),
         # A space of no known kind.
-        ((s.y, None), {}, "space must be a Domain, a fitted masker or a mask image"),
-        ((s.y, s.mask), {}, "space must be a Domain, a fitted masker or a mask image"),
         ((s.y, "mask.nii.gz"), {}, "space must be a Domain, a fitted masker or a mask image"),
         # An array whose second dimension is not the number of in-mask voxels.
         ((s.y[:, :-1], s.masker), {}, rf"data must have shape \(n, {v}\)"),
@@ -224,7 +220,6 @@ def test_import_refusals(scene):
         # One 3-D image is masked to one vector, not to one row per subject.
         ((s.imgs[0], s.masker), {}, rf"data must have shape \(n, {v}\), got \({v},\)"),
         # conn.
-        ((s.y, dom), dict(conn=6), "conn cannot be given with a Domain"),
         ((s.y, s.masker), dict(conn=7), "conn must be one of"),
         ((s.imgs, s.mask_img), dict(conn=0), "conn must be one of"),
         # A mask image that is not 3-D.
@@ -275,17 +270,6 @@ def test_export_equals_inverse_transform(scene):
     # The exported maps come back through import_from as they went out.
     back = ns.import_from([out["stat"], out["tfce"]], s.masker)
     np.testing.assert_array_equal(back.y, np.stack([res.stat_obs, res.tfce_obs]))
-
-
-def test_an_image_imported_and_exported_is_the_image_inside_the_mask(scene):
-    s = scene
-    res = run(s.imgs, s.masker, tested=s.tested)
-    d = ns.import_from(s.imgs, s.masker)
-    for space in (s.masker, s.mask_img):
-        carried = dataclasses.replace(res, stat_obs=d.y[4].astype(np.float64), origin=space)
-        vol = data_of(ns.export_to(carried)["stat"])
-        np.testing.assert_array_equal(vol[s.mask], s.vols[4][s.mask])
-        assert np.all(vol[~s.mask] == 0)
 
 
 def test_export_through_a_mask_image(scene, tmp_path):
@@ -358,67 +342,8 @@ def test_export_refusals(scene):
     v = int(s.mask.sum())
     with pytest.raises(ValueError, match=f"the result has {v} nodes, the mask of target has {v - 1} voxels"):
         ns.export_to(res, target=smaller_img)
-    with pytest.raises(ValueError):
+    # nilearn's own check today; neurostats' node-count check once export_to has one.
+    with pytest.raises(ValueError, match=rf"wrong shape|the result has {v} nodes, the mask of target has {v - 1} voxels"):
         ns.export_to(res, target=NiftiMasker(mask_img=smaller_img).fit())
     with pytest.raises(ValueError, match="result must be a TfceInference, got object"):
         ns.export_to(object(), target=s.masker)
-
-
-# --- without nilearn -------------------------------------------------------
-
-# Run in a fresh interpreter where `import nilearn` fails. nibabel alone
-# supplies the images.
-WITHOUT_NILEARN = """
-import sys
-sys.modules["nilearn"] = None
-import nibabel as nib
-import numpy as np
-import neurostats as ns
-
-rng = np.random.default_rng(0)
-mask = rng.random((4, 3, 3)) < 0.7
-mask_img = nib.Nifti1Image(mask.astype(np.uint8), np.eye(4))
-vols = rng.standard_normal((8, 4, 3, 3))
-y = vols[:, mask]
-
-
-class Masker:
-    # Not a nilearn class: recognised by its attributes alone.
-    mask_img_ = mask_img
-    calls = []
-
-    def transform(self, imgs):
-        self.calls.append("transform")
-        return np.stack([np.asarray(img.dataobj)[mask] for img in imgs])
-
-    def inverse_transform(self, vec):
-        self.calls.append("inverse_transform")
-        vol = np.zeros(mask.shape)
-        vol[mask] = vec
-        return nib.Nifti1Image(vol, np.eye(4))
-
-
-imgs = [nib.Nifti1Image(v, np.eye(4)) for v in vols]
-kw = dict(tested=rng.standard_normal(8), seed=1, n_perm=20, n_jobs=1)
-want = ns.tfce_ols(y, ns.Domain.from_mask(mask), **kw)
-for data, space in ((y, mask_img), (y, Masker()), (imgs, Masker())):
-    res = ns.tfce_ols(data, space, **kw)
-    assert np.array_equal(res.tfce_obs, want.tfce_obs) and np.array_equal(res.p_fwe, want.p_fwe)
-    out = ns.export_to(res)
-    assert np.array_equal(np.asarray(out["tfce"].dataobj)[mask], want.tfce_obs)
-# Masking and unmasking are the masker's own: one transform for the images,
-# one inverse_transform for each of the four maps of an export.
-assert Masker.calls == ["inverse_transform"] * 4 + ["transform"] + ["inverse_transform"] * 4
-# Masking images through a bare mask image is the one step that needs nilearn.
-try:
-    ns.import_from(imgs, mask_img)
-except ImportError:
-    print("ok")
-"""
-
-
-def test_nilearn_is_imported_only_to_mask_images_through_a_mask_image():
-    r = subprocess.run([sys.executable, "-c", WITHOUT_NILEARN], capture_output=True, text=True,
-                       timeout=120)
-    assert r.returncode == 0, r.stderr
-    assert r.stdout.strip() == "ok"

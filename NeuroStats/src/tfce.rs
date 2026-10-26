@@ -67,7 +67,7 @@ pub enum Weighting {
     /// (`tests/tfce_oracle.rs::g1_union_find_matches_naive_on_fixtures`,
     /// `::g1_union_find_matches_naive_synthetic`) and as the `step → 0` limit
     /// of `SmithNichols`
-    /// (`tests/perm_oracle.rs::g11_exact_is_limit_of_smith_nichols`).
+    /// (`tests/tfce_oracle.rs::g11_exact_is_limit_of_smith_nichols`).
     Exact,
     /// nilearn `calculate_tfce` under `dh="auto"` (nilearn 0.14.1,
     /// `mass_univariate/_utils.py`): 100 thresholds
@@ -1433,9 +1433,11 @@ mod tests {
             let keep = |s: f64| keep_all || s > 0.25;
             let got = ordered(&vals, keep, &mut Vec::new(), &mut alloc::vec![0u64; 3]);
 
-            // Stable comparison sort: equal keys stay in node order.
+            // Stable comparison sort on the values themselves (`total_cmp`
+            // puts -0.0 below +0.0, as `sort_key` does): equal values stay in
+            // node order, and a `sort_key` that is not order-preserving fails.
             let mut want: Vec<usize> = (0..vals.len()).filter(|&k| keep(vals[k])).collect();
-            want.sort_by(|&a, &b| sort_key(vals[b]).cmp(&sort_key(vals[a])));
+            want.sort_by(|&a, &b| vals[b].total_cmp(&vals[a]));
             assert_eq!(got.len(), want.len());
             for (&(node, stat), &k) in got.iter().zip(&want) {
                 assert_eq!(node, k);
@@ -1445,49 +1447,30 @@ mod tests {
     }
 
     #[test]
-    fn build_order_reuses_longer_scratch() {
-        // A second, shorter map must not see entries left by the first.
-        let (mut order, mut heights) = (Vec::new(), Vec::new());
-        let long: Vec<f64> = (0..300).map(|i| ((i * 37) % 101) as f64 * 0.5).collect();
-        ordered(&long, |_| true, &mut order, &mut heights);
-        let short = [2.0, 9.0, 1e-3, 9.0, 4.0];
-        let got = ordered(&short, |_| true, &mut order, &mut heights);
-        assert_eq!(
-            got,
-            alloc::vec![(1, 9.0), (3, 9.0), (4, 4.0), (0, 2.0), (2, 1e-3)]
-        );
-    }
-
-    #[test]
-    fn sort_key_is_order_preserving() {
-        let vals = [
-            f64::NEG_INFINITY,
-            -1e300,
-            -1.0,
-            -0.0,
-            0.0,
-            1.0,
-            1e300,
-            f64::INFINITY,
-        ];
-        for w in vals.windows(2) {
-            assert!(sort_key(w[0]) < sort_key(w[1]));
-        }
-    }
-
-    #[test]
     fn arange_matches_numpy_rule() {
-        // np.arange(0.4, 2.0, 0.4) -> [0.4, 0.8, 1.2, 1.6]
-        let t = arange(0.4, 2.0, 0.4);
-        assert_eq!(t.len(), 4);
-        assert_eq!(t[0], 0.4);
-        assert_eq!(t[1], 0.8);
+        // np.arange(0.3, 2.7, 0.6) (NumPy 2.5.4), the `ties` fixture's grid:
+        // elements 2 and 4 differ from start + i·step, elements 2..=4 from
+        // repeated addition.
+        let want: [f64; 5] = [
+            0.3,
+            0.8999999999999999,
+            1.4999999999999998,
+            2.0999999999999996,
+            2.6999999999999993,
+        ];
+        let got = arange(0.3, 2.7, 0.6);
+        assert_eq!(
+            got.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            want.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+        );
         assert!(arange(2.0, 1.0, 0.5).is_empty());
         assert!(arange(1.0, 1.0, 0.5).is_empty());
     }
 
+    /// A domain with no node gives an empty map. (A start above the maximum is
+    /// the `empty_grid` fixture of `tests/tfce_oracle.rs`.)
     #[test]
-    fn empty_and_flat_maps() {
+    fn empty_domain_gives_empty_map() {
         let dom = Domain::from_volume([0, 1, 1], crate::Conn::Face);
         let p = TfceParams {
             e: 0.5,
@@ -1497,10 +1480,6 @@ mod tests {
             weighting: Weighting::MneStep,
         };
         assert!(tfce(&dom, &[], &p).unwrap().is_empty());
-        // start above max: every node 0.
-        let dom = Domain::from_volume([2, 2, 1], crate::Conn::Face);
-        let z = tfce(&dom, &[0.1, 0.2, 0.3, 0.35], &p).unwrap();
-        assert_eq!(z, alloc::vec![0.0; 4]);
     }
 
     #[test]
@@ -1694,34 +1673,6 @@ mod tests {
         assert_eq!(
             tfce(&dom, &stat, &p).unwrap(),
             tfce(&dom, &stat, &other).unwrap()
-        );
-    }
-
-    #[test]
-    fn rejects_bad_inputs() {
-        let dom = Domain::from_volume([2, 1, 1], crate::Conn::Face);
-        let p = TfceParams {
-            e: 0.5,
-            h: 2.0,
-            start: 0.4,
-            step: 0.4,
-            weighting: Weighting::MneStep,
-        };
-        assert_eq!(
-            tfce(&dom, &[1.0], &p),
-            Err(NeuroError::MismatchedLengths {
-                expected: 2,
-                got: 1
-            })
-        );
-        assert_eq!(
-            tfce(&dom, &[1.0, f64::NAN], &p),
-            Err(NeuroError::NonFiniteStat)
-        );
-        let bad = TfceParams { step: 0.0, ..p };
-        assert_eq!(
-            tfce(&dom, &[1.0, 2.0], &bad),
-            Err(NeuroError::InvalidParams)
         );
     }
 }

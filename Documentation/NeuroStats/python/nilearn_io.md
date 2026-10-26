@@ -149,8 +149,9 @@ the band above, `p_fwe`.
 `NiftiMasker`: the masked array equals `masker.transform(images)` for a list of 3-D
 images, a 4-D image and file names; every exported image equals
 `masker.inverse_transform(map)`; and `tfce_ols` gives the same bits from images, from a
-`MaskedData` and from the masked array with a `Domain`. One test runs the array paths in
-an interpreter where nilearn cannot be imported.
+`MaskedData` and from the masked array with a `Domain`.
+`NeuroStats/python/tests/test_without_nilearn.py` runs the array paths, and a masker
+recognised by its attributes, in an interpreter where nilearn cannot be imported.
 
 The tests run against the nilearn installed in the test environment; the rules were
 read from nilearn 0.14.1.

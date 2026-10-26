@@ -124,19 +124,6 @@ impl PyDomain {
     fn n_edges(&self) -> usize {
         self.inner.n_edges()
     }
-
-    /// CSR row pointers. A masked-volume domain stores no neighbour list, so
-    /// this materialises one on every call — `O(edges · log V)` time and memory.
-    fn indptr<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<u32>>> {
-        let (offsets, _) = self.inner.to_csr().map_err(err)?;
-        Ok(PyArray1::from_vec(py, offsets))
-    }
-
-    /// CSR column indices; same cost as [`PyDomain::indptr`].
-    fn indices<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<u32>>> {
-        let (_, neighbours) = self.inner.to_csr().map_err(err)?;
-        Ok(PyArray1::from_vec(py, neighbours))
-    }
 }
 
 /// `neurostats::tfce_bands` over numpy arrays; GIL released for the sweep.

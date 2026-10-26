@@ -112,20 +112,3 @@ pub fn f_test_var(a: &[f64], b: &[f64]) -> Result<TestResult, StatError> {
         ci: None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn anova_one_way_exposes_df2_within_groups() {
-        // 3 groups of 4 → N=12, k=3 → df1=2, df2=9.
-        // Validated against scipy.stats.f_oneway: dfn=2, dfd=9.
-        let g1 = [89., 88., 97., 92.];
-        let g2 = [84., 79., 81., 83.];
-        let g3 = [91., 95., 94., 88.];
-        let r = anova_one_way(&[&g1, &g2, &g3]).unwrap();
-        assert_eq!(r.df, 2.0);
-        assert_eq!(r.df2, Some(9.0)); // within-groups df = N - k = 12 - 3
-    }
-}

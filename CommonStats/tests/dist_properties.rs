@@ -13,7 +13,7 @@
 
 use commonstats::dist::continuous::{
     Beta, Cauchy, ChiSquared, Exponential, FisherF, Gamma, InverseGaussian, LogNormal, Normal,
-    StudentT, Uniform, Weibull,
+    StudentT, StudentizedRange, Uniform, Weibull,
 };
 use commonstats::dist::discrete::{
     Bernoulli, Binomial, Geometric, Hypergeometric, NegBinomial, Poisson,
@@ -51,14 +51,11 @@ const SMALLEST_POSITIVE: f64 = f64::MIN_POSITIVE;
 const BACKWARD_SLACK: f64 = 300.0;
 /// Same shape of slack for the discrete upper-tail identity.
 const UPPER_TAIL_SLACK: f64 = 50.0;
-/// Slack for `quantile(0)`/`quantile(1)` vs the finite support bound, scaled
-/// by the bound's own magnitude. An infinite bound instead requires exact
-/// equality (see the bounds tests): any finite slack there would pass
-/// trivially against `f64::INFINITY`, hiding a finite wrong answer.
-const BOUNDS_SLACK: f64 = 8.0;
-/// Two independently drawn points are almost never within a few ulps of each
-/// other, so a fixed absolute slack (not relative) is simplest for the
-/// monotone-cdf check; it only needs to absorb a correctly-rounded tie.
+/// Relative slack of the monotone checks: two independently drawn points are
+/// almost never within a few ulps of each other, so this only absorbs a
+/// correctly-rounded tie. Relative, not absolute: a deep-tail cdf (or sf) is
+/// compared against its own magnitude, where an absolute 1e-12 would pass any
+/// drop below 1e-12.
 const MONOTONE_SLACK: f64 = 1e-12;
 /// `log_mass` vs `ln(mass)` slack, scaled by the log's own magnitude.
 const LOGMASS_SLACK: f64 = 20.0;
@@ -69,35 +66,21 @@ const RATIO_SLACK: f64 = 20.0;
 /// Slack for a brute-force pmf sum, scaled by the number of terms added (each
 /// contributes at most one rounding).
 const MASS_SUM_SLACK: f64 = 20.0;
-/// Slack for the `sf(t) ≈ cdf(-t)` symmetric-family identity.
-const SYMMETRIC_SLACK: f64 = 50.0;
-/// Slack for the cross-distribution scaling identities.
+/// Slack for the Gamma rate-scaling identity.
 const SCALING_SLACK: f64 = 100.0;
 
 /// 48 cases per property at a fixed seed: enough for the tail branches of
-/// [`tail_prob`] to fire repeatedly while keeping the ~80 generated tests
-/// well under a minute in debug. The seed is fixed (not left to
+/// [`tail_prob`] to fire repeatedly. The seed is fixed (not left to
 /// `PROPTEST_RNG_SEED`, which defaults to random) so `cargo test
 /// --all-features` draws the same inputs on every run, in CI or locally.
+/// That also makes a failure persistence file redundant: a failing case is
+/// redrawn by every run until the strategy changes, and after a strategy
+/// change a persisted seed draws a different input.
 fn config() -> ProptestConfig {
     ProptestConfig {
         cases: 48,
         rng_seed: proptest::test_runner::RngSeed::Fixed(0x636F_6D6D_6F6E_7374),
-        // `SourceParallel` (the default) only ever finds a crate's `lib.rs`
-        // when the failing test itself lives under `src/`, by walking up
-        // from the source file looking for a `lib.rs`/`main.rs` *sibling* at
-        // each level; every test here is an integration test under `tests/`,
-        // which is never inside `src/`, so that walk never succeeds and
-        // regressions silently go unrecorded. `Direct` names the resulting
-        // path explicitly instead, mirroring the layout `SourceParallel`
-        // would have produced had the walk succeeded. The path is relative
-        // to the process's current directory, which `cargo test` sets to the
-        // crate root, matching where `tests/` itself lives.
-        failure_persistence: Some(Box::new(
-            proptest::test_runner::FileFailurePersistence::Direct(
-                "tests/proptest-regressions/dist_properties.txt",
-            ),
-        )),
+        failure_persistence: None,
         ..ProptestConfig::default()
     }
 }
@@ -138,6 +121,21 @@ fn lognormal_sigma() -> impl Strategy<Value = f64> {
 /// found at without every draw landing there.
 fn pos_param() -> impl Strategy<Value = f64> {
     log_uniform(-30, 30)
+}
+
+/// `StudentizedRange`'s `k`: `1 + m`, `m` log-uniform over `[2^−10, 2^8)`, from
+/// just above 1 (where `F_R(w) ~ w^{k−1}` spreads the mass over many decades)
+/// to ~257.
+fn sr_k() -> impl Strategy<Value = f64> {
+    log_uniform(-10, 7).prop_map(|m| 1.0 + m)
+}
+
+/// `StudentizedRange`'s `df`: log-uniform over `[2^−6, 2^30]`, or ∞ one draw
+/// in ten. The floor sits above ν ≈ 0.01, where one quantile costs 1–2 s
+/// (the type's Cost note); tiny ν is checked at fixed points (k = 2) in
+/// `dist_oracle.rs`.
+fn sr_df() -> impl Strategy<Value = f64> {
+    prop_oneof![9 => log_uniform(-6, 30), 1 => Just(f64::INFINITY)]
 }
 
 /// Probability drawn across all magnitudes: bulk `(0, 1)` (weight 3), a
@@ -209,19 +207,11 @@ fn uniform_ab() -> impl Strategy<Value = (f64, f64)> {
 
 // ---- shared assertions ----------------------------------------------------
 
-/// `quantile(0)`/`quantile(1)` vs a support bound. An infinite bound must be
-/// matched exactly (any finite slack there would pass trivially); a finite
-/// one is checked to `BOUNDS_SLACK` ulps.
+/// `quantile`/`isf` at 0 and 1 vs a support bound: exactly, as
+/// `scipy.stats.<dist>.ppf`/`isf` return it. A finite slack would pass a
+/// result just outside the support (`a + 1·(b − a)` rounding past `b`).
 fn assert_bound(got: f64, want: f64, tag: &str) -> Result<(), TestCaseError> {
-    if want.is_infinite() {
-        prop_assert_eq!(got, want, "{}: got {:e}, want {:e}", tag, got, want);
-    } else {
-        let slack = BOUNDS_SLACK * EPS * want.abs().max(1.0);
-        prop_assert!(
-            (got - want).abs() <= slack,
-            "{tag}: got {got:e}, want {want:e}, slack {slack:e}"
-        );
-    }
+    prop_assert!(got == want, "{tag}: got {got:e}, want {want:e}");
     Ok(())
 }
 
@@ -247,14 +237,86 @@ fn straddles(f: impl Fn(f64) -> f64, x: f64, target: f64) -> bool {
         && target <= f(libm::nextafter(x, f64::INFINITY))
 }
 
-/// `sf(t) ≈ cdf(-t)` for a distribution symmetric about 0.
-fn assert_symmetric(sf_t: f64, cdf_neg_t: f64) -> Result<(), TestCaseError> {
-    let scale = sf_t.max(cdf_neg_t).max(1e-300);
-    let diff = (sf_t - cdf_neg_t).abs();
-    let slack = SYMMETRIC_SLACK * EPS * scale;
+/// `lo ≤ hi` ⇒ `cdf(lo) ≤ cdf(hi)` and `sf(lo) ≥ sf(hi)`, all four in
+/// `[0, 1]` and not NaN. The sf half covers the upper tail, where the cdf
+/// saturates at 1.
+fn assert_monotone(
+    (clo, chi): (f64, f64),
+    (slo, shi): (f64, f64),
+    at: &str,
+) -> Result<(), TestCaseError> {
+    for v in [clo, chi, slo, shi] {
+        prop_assert!(
+            (0.0..=1.0).contains(&v),
+            "{at}: cdf/sf {v:e} outside [0, 1] or NaN"
+        );
+    }
     prop_assert!(
-        diff <= slack,
-        "sf(t)={sf_t:e} vs cdf(-t)={cdf_neg_t:e}, diff={diff:e}, slack={slack:e}"
+        clo <= chi * (1.0 + MONOTONE_SLACK),
+        "{at}: cdf not monotone: {clo:e} > {chi:e}"
+    );
+    prop_assert!(
+        shi <= slo * (1.0 + MONOTONE_SLACK),
+        "{at}: sf not monotone: {shi:e} > {slo:e}"
+    );
+    Ok(())
+}
+
+/// One half of `backward_error`: `x`, the root returned for tail mass `prob`
+/// by `quantile` (`upper = false`, residual on `cdf`) or `isf` (`upper =
+/// true`, on `sf`). A NaN root fails. A ±∞ root passes only when the true root
+/// lies past `±f64::MAX` (the mass at `±f64::MAX` has not yet reached `prob`).
+/// A zero root passes when the true root lies below `SMALLEST_POSITIVE`.
+/// Any other root must meet the backward-error bound or straddle the root.
+fn check_root(
+    d: &(impl ContinuousCdf + ContinuousDensity),
+    prob: f64,
+    x: f64,
+    upper: bool,
+) -> Result<(), TestCaseError> {
+    let tag = if upper { "isf" } else { "quantile" };
+    let mass = |t: f64| if upper { d.sf(t) } else { d.cdf(t) };
+    prop_assert!(!x.is_nan(), "{tag}({prob:e}) = NaN");
+    if x.is_infinite() {
+        let edge = mass(x.signum() * f64::MAX);
+        // The mass at the edge is still short of `prob` on the side the
+        // root lies: above `prob` for an increasing cdf at −∞ or a
+        // decreasing sf at +∞, below it otherwise.
+        let beyond = if upper == (x > 0.0) {
+            edge >= prob
+        } else {
+            edge <= prob
+        };
+        prop_assert!(
+            beyond,
+            "{tag}({prob:e}) = {x:e}, but the mass at ±f64::MAX is {edge:e}"
+        );
+        return Ok(());
+    }
+    // `x == 0` is ambiguous: genuine (the true root is below the smallest
+    // representable positive float) or an underflow bug. `cdf` increases and
+    // `sf` decreases, so which one shows at `SMALLEST_POSITIVE`.
+    if x == 0.0 {
+        let m = mass(SMALLEST_POSITIVE);
+        if (!upper && m >= prob) || (upper && m < prob) {
+            return Ok(());
+        }
+    }
+    let resid = (mass(x) - prob).abs();
+    // A quantile built as `exp(location + scale * z)` carries the seed's
+    // rounding scaled by `|ln x|`, not by `x` itself; `cond` extends the
+    // `|x|*pdf(x)` sensitivity by that factor (1 for any other root).
+    let cond = libm::fabs(x).max(1.0).ln().max(1.0);
+    let slack = BACKWARD_SLACK * EPS * (prob + x_pdf(d, x) * cond);
+    let at_root = if upper {
+        straddles(|t| -d.sf(t), x, -prob)
+    } else {
+        straddles(|t| d.cdf(t), x, prob)
+    };
+    prop_assert!(
+        resid <= slack || at_root,
+        "{tag}: p={prob:e} x={x:e} mass={:e} resid={resid:e} slack={slack:e}",
+        mass(x)
     );
     Ok(())
 }
@@ -262,10 +324,9 @@ fn assert_symmetric(sf_t: f64, cdf_neg_t: f64) -> Result<(), TestCaseError> {
 /// `log_mass(k+1) - log_mass(k)` against `ln` of a closed-form successive
 /// mass ratio, derived directly from a pmf's own recurrence (e.g. Binomial's
 /// `mass(k+1)/mass(k) = (n-k)/(k+1) · p/q`), never by exponentiating and
-/// dividing `mass` values. `log_mass_matches_ln_mass` recovers `mass` from
-/// `log_mass` via `exp` and compares against `ln` of that same `mass`, so it
-/// can only ever measure the `exp`/`ln` round-trip, not drift in `log_mass`
-/// itself; this closed form has no such dependency on `log_mass`, so it can.
+/// dividing `mass` values. `log_mass_matches_ln_mass` compares `log_mass`
+/// against `mass`, two mirrored code paths, so it misses a drift both share;
+/// this closed form is independent of both.
 fn assert_log_mass_ratio(
     lm_k: f64,
     lm_k1: f64,
@@ -307,56 +368,8 @@ macro_rules! continuous_dist_suite {
                 runner
                     .run(&($params, tail_prob()), |($p, prob)| {
                         let d: $ty = $ctor;
-                        let x = d.quantile(prob).unwrap();
-                        // A true root outside the f64 range correctly
-                        // saturates to +-infinity (`bracketed_newton`'s own
-                        // documented contract); `cdf` there is trivially 0/1
-                        // and does not exercise the backward-error identity,
-                        // so such a draw is uninteresting, not a failure.
-                        prop_assume!(x.is_finite());
-                        // `x == 0` is ambiguous the same way: genuine
-                        // (the true root itself is below the smallest
-                        // representable positive float, so no nonzero
-                        // answer exists) or a `-ln(1-p)`/`exp`-underflow bug
-                        // that collapsed a representable nonzero root onto 0.
-                        // `cdf` is increasing, so which one it is shows at
-                        // the smallest representable step off 0: if `cdf`
-                        // there already reaches `prob`, the true root is
-                        // smaller still (genuine, skip); if it does not, a
-                        // larger representable root was missed (a bug —
-                        // let the assertion below fail on it).
-                        prop_assume!(x != 0.0 || d.cdf(SMALLEST_POSITIVE) < prob);
-                        let cdf_x = d.cdf(x);
-                        let resid = (cdf_x - prob).abs();
-                        // A quantile built as `exp(location + scale * z)`
-                        // (`LogNormal`, and any other log-space root) carries
-                        // the seed's rounding scaled by `|ln x|`, not by `x`
-                        // itself: one ulp of a mu ~ 500 argument to `exp`
-                        // becomes a ~500-ulp relative error in `x`. `cond`
-                        // extends the `|x|*pdf(x)` sensitivity term by that
-                        // factor; it is 1 for any root not built this way.
-                        let cond = libm::fabs(x).max(1.0).ln().max(1.0);
-                        let slack = BACKWARD_SLACK * EPS * (prob + x_pdf(&d, x) * cond);
-                        prop_assert!(
-                            resid <= slack || straddles(|t| d.cdf(t), x, prob),
-                            "quantile: p={prob:e} x={x:e} cdf={cdf_x:e} resid={resid:e} slack={slack:e}"
-                        );
-                        let xi = d.isf(prob).unwrap();
-                        prop_assume!(xi.is_finite());
-                        // Mirror of the quantile-side check above, for `sf`
-                        // (decreasing): genuine iff `sf` at the smallest
-                        // representable step off 0 has already fallen below
-                        // `prob`.
-                        prop_assume!(xi != 0.0 || d.sf(SMALLEST_POSITIVE) >= prob);
-                        let sf_xi = d.sf(xi);
-                        let residi = (sf_xi - prob).abs();
-                        let condi = libm::fabs(xi).max(1.0).ln().max(1.0);
-                        let slacki = BACKWARD_SLACK * EPS * (prob + x_pdf(&d, xi) * condi);
-                        prop_assert!(
-                            residi <= slacki || straddles(|t| -d.sf(t), xi, -prob),
-                            "isf: q={prob:e} x={xi:e} sf={sf_xi:e} resid={residi:e} slack={slacki:e}"
-                        );
-                        Ok(())
+                        check_root(&d, prob, d.quantile(prob).unwrap(), false)?;
+                        check_root(&d, prob, d.isf(prob).unwrap(), true)
                     })
                     .unwrap();
             }
@@ -368,8 +381,18 @@ macro_rules! continuous_dist_suite {
                 runner
                     .run(&$params, |$p| {
                         let d: $ty = $ctor;
-                        assert_bound(d.quantile(0.0).unwrap(), d.support_min().as_f64(), "quantile(0)")?;
-                        assert_bound(d.quantile(1.0).unwrap(), d.support_max().as_f64(), "quantile(1)")?;
+                        assert_bound(
+                            d.quantile(0.0).unwrap(),
+                            d.support_min().as_f64(),
+                            "quantile(0)",
+                        )?;
+                        assert_bound(
+                            d.quantile(1.0).unwrap(),
+                            d.support_max().as_f64(),
+                            "quantile(1)",
+                        )?;
+                        assert_bound(d.isf(0.0).unwrap(), d.support_max().as_f64(), "isf(0)")?;
+                        assert_bound(d.isf(1.0).unwrap(), d.support_min().as_f64(), "isf(1)")?;
                         Ok(())
                     })
                     .unwrap();
@@ -380,23 +403,41 @@ macro_rules! continuous_dist_suite {
             fn range_monotone_no_nan() {
                 let mut runner = TestRunner::new(config());
                 runner
-                    .run(&($params, any_x(), any_x()), |($p, x1, x2)| {
-                        let d: $ty = $ctor;
-                        let (lo, hi) = if x1 <= x2 { (x1, x2) } else { (x2, x1) };
-                        let (clo, chi) = (d.cdf(lo), d.cdf(hi));
-                        prop_assert!(!clo.is_nan() && !chi.is_nan(), "NaN cdf at {lo:e}/{hi:e}");
-                        prop_assert!(
-                            (0.0..=1.0).contains(&clo) && (0.0..=1.0).contains(&chi),
-                            "cdf out of [0,1]: {clo:e}, {chi:e}"
-                        );
-                        prop_assert!(
-                            clo <= chi + MONOTONE_SLACK,
-                            "cdf not monotone: cdf({lo:e})={clo:e} > cdf({hi:e})={chi:e}"
-                        );
-                        let dens = d.density(lo);
-                        prop_assert!(!dens.is_nan() && dens >= 0.0, "bad density at {lo:e}: {dens:e}");
-                        Ok(())
-                    })
+                    .run(
+                        &($params, any_x(), any_x(), tail_prob()),
+                        |($p, x1, x2, p1)| {
+                            let d: $ty = $ctor;
+                            // Any real pair; and each of `x1` and a tail point
+                            // (`quantile` of a `tail_prob` draw) against its
+                            // neighbour 2^-10 above, where a tail or seam drop
+                            // shows: two independent draws are decades apart,
+                            // and the true increase between them hides any
+                            // local drop.
+                            let q = d.quantile(p1).unwrap();
+                            let up = |t: f64| {
+                                if t.is_finite() {
+                                    t + libm::fabs(t) * (1.0 / 1024.0)
+                                } else {
+                                    t
+                                }
+                            };
+                            for (a, b) in [(x1, x2), (x1, up(x1)), (q, up(q))] {
+                                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                                assert_monotone(
+                                    (d.cdf(lo), d.cdf(hi)),
+                                    (d.sf(lo), d.sf(hi)),
+                                    &format!("x = {lo:e}, {hi:e}"),
+                                )?;
+                            }
+                            let lo = x1.min(x2);
+                            let dens = d.density(lo);
+                            prop_assert!(
+                                !dens.is_nan() && dens >= 0.0,
+                                "bad density at {lo:e}: {dens:e}"
+                            );
+                            Ok(())
+                        },
+                    )
                     .unwrap();
             }
         }
@@ -456,6 +497,11 @@ continuous_dist_suite!(
 continuous_dist_suite!(
     inversegaussian, InverseGaussian, (pos_param(), pos_param()), (mean, shape),
     InverseGaussian::new(mean, shape).unwrap(),
+    backward: cfg(all()), bounds: cfg(all()), monotone: cfg(all()),
+);
+continuous_dist_suite!(
+    studentizedrange, StudentizedRange, (sr_k(), sr_df()), (k, df),
+    StudentizedRange::new(k, df).unwrap(),
     backward: cfg(all()), bounds: cfg(all()), monotone: cfg(all()),
 );
 
@@ -584,17 +630,17 @@ macro_rules! discrete_dist_suite {
                     .run(&($params, tail_prob(), tail_prob()), |($p, p1, p2)| {
                         let d: $ty = $ctor;
                         let (k1, k2) = (discrete_quantile(&d, p1)?, discrete_quantile(&d, p2)?);
-                        let (lo, hi) = if k1 <= k2 { (k1, k2) } else { (k2, k1) };
-                        let (clo, chi) = (d.cdf(lo), d.cdf(hi));
-                        prop_assert!(!clo.is_nan() && !chi.is_nan(), "NaN cdf");
-                        prop_assert!(
-                            (0.0..=1.0).contains(&clo) && (0.0..=1.0).contains(&chi),
-                            "cdf out of [0,1]: {clo:e}, {chi:e}"
-                        );
-                        prop_assert!(
-                            clo <= chi + MONOTONE_SLACK,
-                            "cdf not monotone: cdf({lo})={clo:e} > cdf({hi})={chi:e}"
-                        );
+                        // The drawn pair, and `k1` against its neighbour
+                        // (see the continuous suite's neighbour pairs).
+                        for (a, b) in [(k1, k2), (k1, k1.saturating_add(1))] {
+                            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                            assert_monotone(
+                                (d.cdf(lo), d.cdf(hi)),
+                                (d.sf(lo), d.sf(hi)),
+                                &format!("k = {lo}, {hi}"),
+                            )?;
+                        }
+                        let lo = k1.min(k2);
                         let m = d.mass(lo);
                         prop_assert!(!m.is_nan() && m >= 0.0, "bad mass at {lo}: {m:e}");
                         Ok(())
@@ -823,42 +869,7 @@ fn hypergeometric_log_mass_ratio() {
         .unwrap();
 }
 
-// ---- symmetric-family identity: sf(t) == cdf(-t) --------------------------
-
-#[test]
-fn normal_symmetric_at_zero() {
-    let mut runner = TestRunner::new(config());
-    runner
-        .run(&(pos_param(), log_uniform(-20, 20)), |(sd, t)| {
-            let n = Normal::new(0.0, sd).unwrap();
-            assert_symmetric(n.sf(t), n.cdf(-t))
-        })
-        .unwrap();
-}
-
-#[test]
-fn studentt_symmetric_at_zero() {
-    let mut runner = TestRunner::new(config());
-    runner
-        .run(&(pos_param(), log_uniform(-20, 20)), |(df, t)| {
-            let s = StudentT::new(df).unwrap();
-            assert_symmetric(s.sf(t), s.cdf(-t))
-        })
-        .unwrap();
-}
-
-#[test]
-fn cauchy_symmetric_at_zero() {
-    let mut runner = TestRunner::new(config());
-    runner
-        .run(&(pos_param(), log_uniform(-20, 20)), |(scale, t)| {
-            let c = Cauchy::new(0.0, scale).unwrap();
-            assert_symmetric(c.sf(t), c.cdf(-t))
-        })
-        .unwrap();
-}
-
-// ---- scaling identities ----------------------------------------------------
+// ---- scaling identity ------------------------------------------------------
 
 /// `Gamma(shape, rate)` scaled by `k`: `X/k ~ Gamma(shape, k·rate)`, so
 /// `quantile_{k·rate}(p) = quantile_{rate}(p)/k` — checked on the quantiles
@@ -887,32 +898,6 @@ fn gamma_rate_scaling() {
                     diff <= slack,
                     "Gamma rate scaling: quantile(rate)={x1:e} vs k*quantile(k*rate)={:e}, diff={diff:e}",
                     k * x2
-                );
-                Ok(())
-            },
-        )
-        .unwrap();
-}
-
-/// `Weibull(shape, scale)` is `scale · Exponential(1)^{1/shape}`, so
-/// `Weibull::cdf(x) == Exponential(1).cdf((x/scale)^shape)`.
-#[test]
-fn weibull_via_exponential() {
-    let mut runner = TestRunner::new(config());
-    runner
-        .run(
-            &(log_uniform(-5, 10), pos_param(), tail_prob()),
-            |(shape, scale, p)| {
-                let w = Weibull::new(shape, scale).unwrap();
-                let x = w.quantile(p).unwrap();
-                let e = Exponential::new(1.0).unwrap();
-                let y = libm::pow(x / scale, shape);
-                let (c1, c2) = (w.cdf(x), e.cdf(y));
-                let diff = (c1 - c2).abs();
-                let slack = SCALING_SLACK * EPS * c1.max(c2).max(p);
-                prop_assert!(
-                    diff <= slack,
-                    "Weibull via Exponential: cdf(x)={c1:e} vs Exp.cdf((x/scale)^shape)={c2:e}, diff={diff:e}"
                 );
                 Ok(())
             },

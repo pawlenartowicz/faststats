@@ -26,7 +26,7 @@ fn t_two_sided_p(t: f64, df: f64) -> f64 {
 /// One-sample t-test of mean(`v`) against `mu0`.
 ///
 /// Two-sided p-value; df = n − 1; effect size is Cohen's d = (mean − mu0)/sd.
-/// `v`: observations, NaN dropped under the Omit default, needs ≥ 2 finite values.
+/// `v`: observations, NaN dropped under the Omit policy, needs ≥ 2 finite values.
 /// [`StatError::TooFewObservations`] when fewer than 2 finite values.
 /// Matches `scipy.stats.ttest_1samp` (`tests/fixtures/ttests.json`).
 pub fn t_test_one(v: &[f64], mu0: f64) -> Result<TestResult, StatError> {

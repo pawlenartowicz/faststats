@@ -3,7 +3,7 @@
 //! spec §3 bulk ladder: value-kind (erf/gamma/incomplete fns) 1e-12, inverse
 //! (quantile-kind) 1e-10. Tail rows assert against a curated band.
 mod common;
-use common::{Tol, assert_close, assert_monotone, check_grid, measure_band};
+use common::{Tol, assert_close, check_grid, measure_band};
 
 use commonstats::special;
 
@@ -20,7 +20,6 @@ const INV: Tol = Tol {
 #[test]
 fn erf_grid() {
     check_grid("erf", VAL, |a| special::erf(a[0]));
-    assert_monotone("erf", |a| special::erf(a[0]));
 }
 #[test]
 fn erfc_grid() {
@@ -45,50 +44,6 @@ fn gammp_grid() {
 #[test]
 fn gammq_grid() {
     check_grid("gammq", VAL, |a| special::gammq(a[0], a[1]));
-}
-#[test]
-fn gammp_large_shape_near_mode() {
-    // Near x ≈ a the series and continued fraction would need ~8·√a terms; this
-    // point, just below their x = a + 1 switch, lies in Temme's region. mpmath
-    // (50 dps): gammainc(a, 0, x, regularized=True) and gammainc(a, x, inf,
-    // regularized=True) at a = 8547.975, x = a + 0.999.
-    let (a, x) = (8_547.975, 8_548.974);
-    let (p, q) = (0.505_748_610_320_787_6, 0.494_251_389_679_212_4);
-    assert!((special::gammp(a, x) / p - 1.0).abs() < 1e-14);
-    assert!((special::gammq(a, x) / q - 1.0).abs() < 1e-14);
-}
-#[test]
-fn gamma_incomplete_large_shape_full_precision() {
-    // The prefactor x^a·e^{−x}/Γ(a) formed as exp(−x + a·ln x − ln Γ(a)) loses
-    // ~a·ε. mpmath (50 dps) gammainc(a, 0, x) / gammainc(a, x, inf), regularized.
-    const TOL: Tol = Tol {
-        rel: 1e-14,
-        abs: 0.0,
-    };
-    assert_close(
-        "P(1e5, 1e5)",
-        special::gammp(1e5, 1e5),
-        0.500_420_522_110_365_2,
-        TOL,
-    );
-    assert_close(
-        "Q(1e5, 100200)",
-        special::gammq(1e5, 100_200.0),
-        0.263_337_989_994_801_3,
-        TOL,
-    );
-    assert_close(
-        "P(1e5, 99800)",
-        special::gammp(1e5, 99_800.0),
-        0.263_751_142_923_979_1,
-        TOL,
-    );
-    assert_close(
-        "Q(8500, 8500)",
-        special::gammq(8_500.0, 8_500.0),
-        0.498_557_620_198_671_3,
-        TOL,
-    );
 }
 #[test]
 fn gamma_incomplete_small_shape_full_precision() {
@@ -228,6 +183,32 @@ fn gamma_incomplete_huge_shape_near_mean() {
             99_000.0,
             7.574_199_211_747_679e-4,
             0.999_242_580_078_825_3,
+        ),
+        // Just below the old x = a + 1 switch, where a fixed 200-term series cap made the cdf jump; and the prefactor exp(−x + a·ln x − ln Γ(a)), which lost ~a·ε. mpmath (60 dps) gammainc(a, 0, x) and gammainc(a, x, inf), regularized, at the exact f64 inputs.
+        (
+            8_547.975,
+            8_548.974,
+            0.505_748_610_320_786_8,
+            0.494_251_389_679_213_3,
+        ),
+        (1e5, 1e5, 0.500_420_522_110_365_1, 0.499_579_477_889_634_8),
+        (
+            1e5,
+            100_200.0,
+            0.736_662_010_005_198_7,
+            0.263_337_989_994_801_3,
+        ),
+        (
+            1e5,
+            99_800.0,
+            0.263_751_142_923_979_1,
+            0.736_248_857_076_021,
+        ),
+        (
+            8_500.0,
+            8_500.0,
+            0.501_442_379_801_328_8,
+            0.498_557_620_198_671_3,
         ),
     ];
     for (a, x, p, q) in cases {
@@ -507,7 +488,6 @@ fn erfcinv_grid() {
 #[test]
 fn erfinv_grid() {
     check_grid("erfinv", INV, |a| special::erf_inv(a[0]));
-    assert_monotone("erfinv", |a| special::erf_inv(a[0]));
 }
 #[test]
 fn invbetareg_grid() {

@@ -53,7 +53,8 @@ impl Histogram {
     /// Build a histogram of `n_bins` equal-width bins spanning `[lo, hi]`.
     ///
     /// `lo`/`hi`: the (inclusive) range; require `lo < hi`. `n_bins`: number of
-    /// bins; require `≥ 1`. Returns [`StatError::DomainError`] otherwise.
+    /// bins; require `≥ 1` and below `isize::MAX / 8`, the most 8-byte elements
+    /// a `Vec` holds. Returns [`StatError::DomainError`] otherwise.
     pub fn new(lo: f64, hi: f64, n_bins: usize) -> Result<Self, StatError> {
         // NaN bounds are rejected explicitly: `lo >= hi` alone is false for NaN.
         if lo.is_nan() || hi.is_nan() || lo >= hi {
@@ -61,6 +62,12 @@ impl Histogram {
         }
         if n_bins == 0 {
             return Err(StatError::DomainError("histogram: need n_bins >= 1"));
+        }
+        // The `n_bins` counts and `n_bins + 1` edges must fit a `Vec` of 8-byte
+        // elements (at most `isize::MAX` bytes); past that `vec!` panics with
+        // "capacity overflow".
+        if n_bins >= isize::MAX as usize / core::mem::size_of::<f64>() {
+            return Err(StatError::DomainError("histogram: too many bins"));
         }
         Ok(Self {
             lo,
@@ -129,6 +136,10 @@ impl Mergeable for Histogram {
             *self = o.clone();
             return;
         }
+        // The empty identity on the right adds nothing.
+        if o.n_bins == 0 {
+            return;
+        }
         debug_assert_eq!(
             (self.lo, self.hi, self.n_bins),
             (o.lo, o.hi, o.n_bins),
@@ -191,6 +202,7 @@ mod tests {
         assert!(Histogram::new(1.0, 1.0, 4).is_err());
         assert!(Histogram::new(2.0, 1.0, 4).is_err());
         assert!(Histogram::new(0.0, 1.0, 0).is_err());
+        assert!(Histogram::new(0.0, 1.0, usize::MAX).is_err());
     }
 
     // Edges [0,0.5,1,1.5,2]. In-range binning matches

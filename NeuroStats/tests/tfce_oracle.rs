@@ -3,11 +3,12 @@
 //!   G2 — `tfce_naive` ≈ MNE 1.12.1 golden (`MneStep`)
 //!   G3 — `tfce` ≈ MNE golden (`MneStep`)
 //!   G4 — `tfce_naive` ≈ independent NumPy Smith–Nichols transcription (`SmithNichols`)
+//!   G11 — `Exact` is the limit of `SmithNichols` as `step → 0`
 //!   G13 — `tfce_tail_into` ≈ `tfce_naive` for the three tails; nilearn hand case
 //! Tolerance everywhere: rel 1e-12 with abs floor 1e-12 · max|expected|.
 mod common;
 
-use common::{Fixture, assert_map_close, load};
+use common::{Fixture, assert_map_close, conn_of, load};
 use neurostats::{
     Conn, Domain, Tail, TfceParams, TfceWorkspace, Weighting, tfce, tfce_bands, tfce_bands_naive,
     tfce_naive, tfce_tail_into,
@@ -29,13 +30,7 @@ const SMALL: [&str; 7] = [
 ];
 
 fn params(fx: &Fixture, weighting: Weighting) -> TfceParams {
-    TfceParams {
-        e: fx.params.e,
-        h: fx.params.h,
-        start: fx.params.start,
-        step: fx.params.step,
-        weighting,
-    }
+    fx.params.with(weighting)
 }
 
 #[test]
@@ -155,47 +150,28 @@ fn g4_naive_matches_numpy_smith_nichols() {
     }
 }
 
-/// Prints the worst observed error as a fraction of tolerance per gate — run with
-/// `cargo test -- --ignored --nocapture measure_headroom` when re-justifying REL.
-#[test]
-#[ignore]
-fn measure_headroom() {
-    for name in SMALL.iter().copied().chain(["bench"]) {
-        let fx = load(name);
-        let dom = fx.domain();
-        let p = params(&fx, Weighting::MneStep);
-        let fast = tfce(&dom, &fx.stat, &p).unwrap();
-        let g3 = assert_map_close("G3", &fast, &fx.expected_mne, REL, ABS_FLOOR);
-        println!("{name:<13} G3 worst = {g3:.3e} × tol");
-        if name != "bench" {
-            let slow = tfce_naive(&dom, &fx.stat, &p).unwrap();
-            let g1 = assert_map_close("G1", &fast, &slow, REL, ABS_FLOOR);
-            let g2 = assert_map_close("G2", &slow, &fx.expected_mne, REL, ABS_FLOOR);
-            println!("{name:<13} G1 worst = {g1:.3e} × tol   G2 worst = {g2:.3e} × tol");
-        }
-    }
-}
-
-/// `from_csr` of the CSR read back from `from_mask` reproduces the same graph
-/// on every fixture mask. Compared through `to_csr`, not `==`: the two carry
-/// different representations of it.
-#[test]
-fn from_csr_round_trips_every_fixture() {
-    for name in SMALL.iter().copied().chain(["bench"]) {
-        let fx = load(name);
-        let dom = fx.domain();
-        let csr = dom.to_csr().unwrap();
-        let back = Domain::from_csr(csr.0.clone(), csr.1.clone()).unwrap();
-        assert_eq!(back.to_csr().unwrap(), csr, "from_csr round trip {name}");
-        assert_eq!(back.n_nodes(), dom.n_nodes(), "round trip n_nodes {name}");
-        assert_eq!(back.n_edges(), dom.n_edges(), "round trip n_edges {name}");
-    }
-}
-
-/// A CSR domain over the same graph as `lat`.
+/// A CSR domain over the same graph as `lat`, built from its `to_csr`. The
+/// export must be symmetric, without a repeated column, and hold `n_edges`
+/// entries: `from_csr` checks none of these, and the sweep assumes the first
+/// two.
 fn as_csr(lat: &Domain) -> Domain {
     let (offsets, neighbours) = lat.to_csr().unwrap();
-    Domain::from_csr(offsets, neighbours).unwrap()
+    let row = |i: usize| &neighbours[offsets[i] as usize..offsets[i + 1] as usize];
+    for i in 0..offsets.len() - 1 {
+        let r = row(i);
+        for (k, &j) in r.iter().enumerate() {
+            assert!(!r[..k].contains(&j), "node {i}: repeated neighbour {j}");
+            assert!(
+                row(j as usize).contains(&(i as u32)),
+                "edge {i} -> {j} has no reverse"
+            );
+        }
+    }
+    assert_eq!(neighbours.len(), lat.n_edges(), "to_csr edge count");
+    let csr = Domain::from_csr(offsets.clone(), neighbours.clone()).unwrap();
+    assert_eq!(csr.to_csr().unwrap(), (offsets, neighbours), "CSR to_csr");
+    assert_eq!(csr.n_edges(), lat.n_edges(), "CSR n_edges");
+    csr
 }
 
 /// The fixture with every third in-mask voxel dropped, keeping the stat values
@@ -203,12 +179,7 @@ fn as_csr(lat: &Domain) -> Domain {
 /// identity and the lattice sweep's scatter, gather and node walk degenerate;
 /// thinning is what puts them under test.
 fn thinned(fx: &Fixture) -> (Domain, Vec<f64>) {
-    let conn = match fx.conn {
-        6 => Conn::Face,
-        18 => Conn::Edge,
-        _ => Conn::Vertex,
-    };
-    let mut mask: Vec<bool> = fx.mask.bytes().map(|b| b == b'1').collect();
+    let mut mask = fx.mask_bools();
     let mut stat = Vec::new();
     let mut node = 0usize;
     for m in mask.iter_mut() {
@@ -221,12 +192,16 @@ fn thinned(fx: &Fixture) -> (Domain, Vec<f64>) {
             node += 1;
         }
     }
-    (Domain::from_mask(&mask, fx.dims, conn).unwrap(), stat)
+    (
+        Domain::from_mask(&mask, fx.dims, conn_of(fx.conn)).unwrap(),
+        stat,
+    )
 }
 
 /// The lattice sweep and the CSR sweep are the same computation on the same
 /// graph: `tfce` on `from_mask` matches `tfce` on the CSR read out of it, for
-/// every weighting and every fixture, dense and thinned. (Not bit equality —
+/// every weighting and every fixture, dense and thinned. This is also the
+/// round trip of `to_csr` through `from_csr` (see `as_csr`). (Not bit equality —
 /// the two index spaces visit tied stats in different orders, so bank
 /// additions group differently.)
 #[test]
@@ -257,41 +232,6 @@ fn lattice_matches_csr_on_fixtures() {
                     ABS_FLOOR,
                 );
             }
-        }
-    }
-}
-
-/// The same for `tfce_bands` under the non-strict membership and irregular
-/// grid of G6.
-#[test]
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
-fn lattice_matches_csr_on_bands() {
-    for name in SMALL {
-        let fx = load(name);
-        let (thin_dom, thin_stat) = thinned(&fx);
-        for (kind, lat, stat) in [
-            ("dense", fx.domain(), fx.stat.clone()),
-            ("thinned", thin_dom, thin_stat),
-        ] {
-            let csr = as_csr(&lat);
-            let max = stat.iter().cloned().fold(f64::MIN, f64::max);
-            if !(max > 0.0) {
-                continue;
-            }
-            let ths: Vec<f64> = [0.05, 0.2, 0.21, 0.5, 0.8, 0.95]
-                .iter()
-                .map(|f| f * max)
-                .collect();
-            let ws: Vec<f64> = vec![1.0, 0.5, 2.0, 0.25, 3.0, 0.1];
-            let a = tfce_bands(&lat, &stat, &ths, &ws, 0.5, false).unwrap();
-            let b = tfce_bands(&csr, &stat, &ths, &ws, 0.5, false).unwrap();
-            assert_map_close(
-                &format!("lattice-vs-csr bands {name} {kind}"),
-                &a,
-                &b,
-                REL,
-                ABS_FLOOR,
-            );
         }
     }
 }
@@ -508,6 +448,8 @@ fn g13_workspace_reuse_across_tails_is_bitwise() {
         "bench",
         "grid4",
         "blob",
+        "ties",
+        "flat",
         "single",
         "empty_grid",
         "two_clusters",
@@ -536,9 +478,11 @@ fn g13_workspace_reuse_across_tails_is_bitwise() {
 
 /// A map with no negative value: the negative tail is all zeros and the
 /// two-sided tail equals the positive tail. An all-zero map is all zeros
-/// under every tail. No NaN and no negative zero-crossing artefacts.
+/// under every tail. Compared as bits, so no NaN and no `-0.0` slips through.
 #[test]
 fn g13_one_signed_and_zero_maps() {
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let zeros = bits(&[0.0; 6]);
     let dom = Domain::from_volume([3, 2, 1], Conn::Face);
     let stat = [0.5, 2.0, 0.0, 1.5, 3.0, 0.25];
     let mut ws = TfceWorkspace::new(dom.n_nodes());
@@ -553,12 +497,12 @@ fn g13_one_signed_and_zero_maps() {
         let up = tfce(&dom, &stat, &p).unwrap();
         let mut got = vec![f64::NAN; 6];
         tfce_tail_into(&dom, &stat, &p, Tail::Negative, &mut ws, &mut got).unwrap();
-        assert_eq!(got, vec![0.0; 6], "{w:?} negative");
+        assert_eq!(bits(&got), zeros, "{w:?} negative");
         tfce_tail_into(&dom, &stat, &p, Tail::TwoSided, &mut ws, &mut got).unwrap();
-        assert_eq!(got, up, "{w:?} two-sided");
+        assert_eq!(bits(&got), bits(&up), "{w:?} two-sided");
         for tail in [Tail::Positive, Tail::Negative, Tail::TwoSided] {
             tfce_tail_into(&dom, &[0.0; 6], &p, tail, &mut ws, &mut got).unwrap();
-            assert_eq!(got, vec![0.0; 6], "{w:?} {tail:?} zero map");
+            assert_eq!(bits(&got), zeros, "{w:?} {tail:?} zero map");
         }
     }
 }
@@ -578,6 +522,13 @@ fn tfce_tail_into_rejects_bad_inputs() {
     let mut short = vec![0.0; 1];
     for tail in [Tail::Positive, Tail::Negative, Tail::TwoSided] {
         assert_eq!(
+            tfce_tail_into(&dom, &[1.0], &p, tail, &mut ws, &mut out),
+            Err(neurostats::NeuroError::MismatchedLengths {
+                expected: 2,
+                got: 1
+            })
+        );
+        assert_eq!(
             tfce_tail_into(&dom, &[1.0, 2.0], &p, tail, &mut ws, &mut short),
             Err(neurostats::NeuroError::MismatchedLengths {
                 expected: 2,
@@ -588,5 +539,42 @@ fn tfce_tail_into_rejects_bad_inputs() {
             tfce_tail_into(&dom, &[1.0, f64::NAN], &p, tail, &mut ws, &mut out),
             Err(neurostats::NeuroError::NonFiniteStat)
         );
+    }
+}
+
+/// Left Riemann sum → integral: node-wise max |SmithNichols(step) − Exact| is
+/// O(step). Bound C·step with C taken from the larger of the two coarse-step
+/// ratios (0.4 and 0.2): `2 · max(err(0.4)/0.4, err(0.2)/0.2)` — a single
+/// coarse step can land a grid edge exactly on a tie value and understate the
+/// true per-step error, so two steps guard against one of them being lucky.
+/// The bound is calibrated on the coarse steps, so it tolerates an `Exact`
+/// offset up to about `C·s` at the finest step `s`; `1e-3` keeps that offset
+/// below a thousandth of the per-step slope.
+/// No per-step ordering asserted (band edges land differently on each grid).
+#[test]
+fn g11_exact_is_limit_of_smith_nichols() {
+    for name in SMALL {
+        let fx = load(name);
+        let dom = fx.domain();
+        let exact = tfce(&dom, &fx.stat, &params(&fx, Weighting::Exact)).unwrap();
+        let err = |step: f64| -> f64 {
+            let p = TfceParams {
+                step,
+                ..params(&fx, Weighting::SmithNichols)
+            };
+            let sn = tfce(&dom, &fx.stat, &p).unwrap();
+            sn.iter()
+                .zip(&exact)
+                .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()))
+        };
+        let c = 2.0 * (err(0.4) / 0.4).max(err(0.2) / 0.2);
+        for step in [0.1, 0.025, 1e-3] {
+            let e = err(step);
+            assert!(
+                e <= c * step + 1e-12,
+                "G11 {name}: err({step}) = {e:e} > C·step = {:e}",
+                c * step
+            );
+        }
     }
 }

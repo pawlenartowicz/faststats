@@ -6,42 +6,14 @@
 
 use std::time::Instant;
 
-use neurostats::{Conn, Domain, TfceParams, Weighting, tfce};
-use serde::Deserialize;
+use neurostats::{TfceParams, Weighting, tfce};
 
-#[derive(Deserialize)]
-struct Fixture {
-    dims: [usize; 3],
-    conn: u32,
-    mask: String,
-    stat: Vec<f64>,
-    params: Params,
-    mne_seconds: f64,
-}
-
-#[derive(Deserialize)]
-struct Params {
-    e: f64,
-    h: f64,
-    start: f64,
-    step: f64,
-}
+#[path = "../tests/common/mod.rs"]
+mod common;
 
 fn main() {
-    let path = format!(
-        "{}/tests/fixtures/tfce_bench.json",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture"))
-        .expect("fixture parse");
-    let mask: Vec<bool> = fx.mask.bytes().map(|b| b == b'1').collect();
-    let conn = match fx.conn {
-        6 => Conn::Face,
-        18 => Conn::Edge,
-        26 => Conn::Vertex,
-        c => panic!("bad conn {c}"),
-    };
-    let dom = Domain::from_mask(&mask, fx.dims, conn).unwrap();
+    let fx = common::load("bench");
+    let dom = fx.domain();
     let p = TfceParams {
         e: fx.params.e,
         h: fx.params.h,
@@ -62,10 +34,11 @@ fn main() {
         }
     }
     println!(
-        "nodes {}  edges {}  tfce(union-find) min {:.4} s over {runs} runs  |  MNE 1.12.1 {:.4} s  |  speedup {:.1}x",
+        "nodes {}  edges {}  tfce(union-find) min {:.4} s over {runs} runs  |  MNE {} {:.4} s  |  speedup {:.1}x",
         dom.n_nodes(),
         dom.n_edges() / 2,
         best,
+        fx.mne_version,
         fx.mne_seconds,
         fx.mne_seconds / best
     );

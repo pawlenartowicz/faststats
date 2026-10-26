@@ -12,13 +12,16 @@ readme = "README.md"
 authors = ["Paweł Lenartowicz"]
 keywords = ["statistics", "neuroimaging", "tfce", "permutation", "wasm"]
 categories = ["mathematics", "science", "no-std", "wasm"]
-# Bench inputs, read only by the benches and scripts; not needed to build or test.
-exclude = ["tests/fixtures/bench_reference.npz", "tests/fixtures/tfce_bench.json"]
+# `bench_reference.npz` is written and read only by
+# `scripts/run_bench_reference.py`; nothing in the crate needs it. The
+# 2.8 MB `tests/fixtures/tfce_bench.json` ships: integration tests, an inline
+# test of `src/tfce.rs` and the benches read it.
+exclude = ["tests/fixtures/bench_reference.npz"]
 
 [dependencies]
 libm = "0.2"      # powf under no_std — pure-Rust, WASM-clean
 # Draw generation (sign flips, row shuffles) + Mergeable
-commonstats = { path = "../CommonStats", version = "0.2", features = ["resample"], optional = true }
+commonstats = { path = "../CommonStats", version = "0.3", features = ["resample"], optional = true }
 rayon = { version = "1.12", optional = true }   # thread pool for `run_threads`
 
 [features]

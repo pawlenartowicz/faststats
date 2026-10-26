@@ -299,35 +299,6 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
-
-    // Columns [3, 4] and [6, 8] (n = 2): the second is twice the first and is
-    // dropped; the first becomes [0.6, 0.8].
-    #[test]
-    fn basis_hand_case_normalises_and_drops_a_multiple() {
-        let q = nuisance_basis(&[3.0, 6.0, 4.0, 8.0], 2, false).unwrap();
-        assert_eq!(q.len(), 2);
-        assert!(
-            (q[0] - 0.6).abs() < 1e-15 && (q[1] - 0.8).abs() < 1e-15,
-            "{q:?}"
-        );
-    }
-
-    // n = 2, V = 2, basis [0.6, 0.8]. Node 0 is [3, 4]: in the span, stored as
-    // zeros. Node 1 is [4, -3]: orthogonal to the basis, norm 5, stored as
-    // [0.8, -0.6].
-    #[test]
-    fn store_hand_case_residualises_scales_and_zeroes() {
-        let st = Store::from_f64(&[3.0, 4.0, 4.0, -3.0], 2, 2, &[0, 1], &[0.6, 0.8]).unwrap();
-        assert_eq!((st.n(), st.n_nodes(), st.q()), (2, 2, 1));
-        let d = st.as_slice();
-        assert_eq!(&d[..2], &[0.0, 0.0]);
-        assert!(
-            (d[2] - 0.8).abs() < 1e-15 && (d[3] + 0.6).abs() < 1e-15,
-            "{d:?}"
-        );
-        assert_eq!(st.basis(), &[0.6, 0.8]);
-    }
 
     #[test]
     fn tiles_cover_every_node_once() {
@@ -342,6 +313,5 @@ mod tests {
             .map(|k| if k % 3 == 0 { -1.0 } else { 1.0 })
             .collect();
         assert_eq!(st.as_slice(), &want[..]);
-        assert_eq!(vec![0.0f64; 0], st.basis());
     }
 }

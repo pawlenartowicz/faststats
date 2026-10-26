@@ -38,6 +38,10 @@ jobs:
       # NeuroStats only: permutations without rayon must still build and pass.
       - run: cargo test --no-default-features --features std
         if: matrix.crate == 'NeuroStats'
+      # NeuroStats only: the no_std core (TFCE, store) passes its tests
+      # without `std`; the std-only integration files are gated out.
+      - run: cargo test --no-default-features
+        if: matrix.crate == 'NeuroStats'
 
   wasm:
     name: wasm32 build (${{ matrix.crate }})
@@ -87,5 +91,8 @@ jobs:
         working-directory: NeuroStats/python
       - run: maturin develop --release
         working-directory: NeuroStats/python
+      # The nilearn oracles skip when nilearn does not import; here that must
+      # be an error, not a silent skip.
+      - run: python -c "import nilearn.maskers, nilearn.mass_univariate, scipy.ndimage"
       - run: pytest -q
         working-directory: NeuroStats/python

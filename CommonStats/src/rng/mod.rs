@@ -11,11 +11,6 @@
 //! Float/unit-interval sampling is deferred to the `dist` feature — this module
 //! (integer-only path) generates indices and bounded integers.
 
-/// The Philox4x32-10 block function, re-exported from `rand_philox`.
-pub mod philox {
-    pub use rand_philox::philox4x32_10;
-}
-
 use rand_philox::Philox;
 
 /// Domain-separation tag XOR'd into `draw_id` so the resample stream never
@@ -145,32 +140,28 @@ impl CommonStatsRng {
 mod tests {
     use super::*;
 
-    // Stream layout: key = the halves of splitmix64(seed), block index in
-    // counter words 0–1, `draw_id ^ tag` in words 2–3. A nonzero draw_id pins
-    // the XOR itself, and with it the separation of draws and of tags.
+    // The CommonStats part of the stream contract: each tag is its documented
+    // byte spelling, and `new_tagged` is Philox stream `draw_id ^ tag` of the seed
+    // (layout, splitmix key and block function are rand_philox's, pinned there).
     #[test]
-    fn draw_id_xor_tag_fills_the_upper_counter_words() {
+    fn stream_tags_spell_their_names_and_select_the_philox_stream() {
         let (seed, draw_id) = (42u64, 0x0123_4567_89ab_cdef_u64);
-        let k = rand_philox::splitmix64(seed);
-        let key = [k as u32, (k >> 32) as u32];
-        for tag in [STREAM_TAG_RESAMPLE, STREAM_TAG_SIGNFLIP] {
-            let s = draw_id ^ tag;
-            let mut r = CommonStatsRng::new_tagged(seed, draw_id, tag);
-            for block in 0..2u32 {
-                for want in philox::philox4x32_10([block, 0, s as u32, (s >> 32) as u32], key) {
-                    assert_eq!(r.next_u32(), want);
-                }
+        for (tag, spelling) in [
+            (STREAM_TAG_RESAMPLE, *b"RESAMPLE"),
+            (STREAM_TAG_SIGNFLIP, *b"SIGNFLIP"),
+            (STREAM_TAG_RLRT, *b"RLRTNULL"),
+            (STREAM_TAG_SIMULATE, *b"SIMULATE"),
+        ] {
+            assert_eq!(tag.to_be_bytes(), spelling);
+            let mut got = if tag == STREAM_TAG_RESAMPLE {
+                CommonStatsRng::new(seed, draw_id) // `new` is the RESAMPLE stream
+            } else {
+                CommonStatsRng::new_tagged(seed, draw_id, tag)
+            };
+            let mut want = Philox::from_u64_seed_stream(seed, draw_id ^ tag);
+            for _ in 0..8 {
+                assert_eq!(got.next_u32(), want.next_u32());
             }
-        }
-    }
-
-    // `new` is `new_tagged` with the resample tag — existing fixtures stay byte-identical.
-    #[test]
-    fn new_equals_new_tagged_resample() {
-        let mut a = CommonStatsRng::new(42, 7);
-        let mut b = CommonStatsRng::new_tagged(42, 7, STREAM_TAG_RESAMPLE);
-        for _ in 0..100 {
-            assert_eq!(a.next_u32(), b.next_u32());
         }
     }
 

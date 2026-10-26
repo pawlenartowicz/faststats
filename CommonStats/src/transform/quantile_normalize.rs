@@ -53,7 +53,7 @@ pub enum Infinities {
 /// in and averaged, it would make its target entry infinite and carry that
 /// infinity into the finite values of every other column at the same rank
 /// ([`Infinities::AsExtremes`] ranks it without averaging it in). This is the
-/// documented exception to the crate's Omit default.
+/// documented exception to the crate's NaN-omit policy.
 ///
 /// **Matches** Bolstad et al. (2003), *Bioinformatics* 19(2):185–193
 /// (`tests/fixtures/quantile_normalize.json`); with missing values, Bioconductor

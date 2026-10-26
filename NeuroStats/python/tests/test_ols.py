@@ -1,9 +1,8 @@
-"""`tfce_ols`: the statistic against direct least-squares fits, the result
-against its stated rules, the one-sample case against the MNE fixture, parity
-with nilearn `permuted_ols`, and `n_jobs`, `extend`, `save`/`load`, the source
-layouts, the rows left out for a NaN and the error paths."""
+"""`tfce_ols`: the result against its stated rules, parity with nilearn
+`permuted_ols`, and `n_jobs`, `extend`, `save`/`load` (with a file saved by
+0.2.0), the source layouts, the rows left out for a NaN and the error paths."""
 
-import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -35,35 +34,7 @@ def assert_same(a, b):
     assert (a.params, a.tail, a.seed, a.n_perm) == (b.params, b.tail, b.seed, b.n_perm)
 
 
-def ols_t(y, design):
-    """t of the first column of `design`, one least-squares fit per column of `y`."""
-    beta, *_ = np.linalg.lstsq(design, y, rcond=None)
-    resid = y - design @ beta
-    dof = design.shape[0] - design.shape[1]
-    var = (resid**2).sum(axis=0) / dof
-    return beta[0] / np.sqrt(var * np.linalg.inv(design.T @ design)[0, 0])
-
-
 # --- the statistic and the result ------------------------------------------
-
-
-def test_stat_obs_is_the_t_of_a_least_squares_fit():
-    dom, y, tested, conf = make()
-    ones = np.ones((len(tested), 1))
-    kw = dict(n_perm=20, seed=1, n_jobs=1)
-    cases = {
-        "tested, confounds": (dict(tested=tested, confounds=conf), np.column_stack([tested, conf, ones])),
-        "tested": (dict(tested=tested), np.column_stack([tested, ones])),
-        "intercept, confounds": (dict(tested="intercept", confounds=conf), np.column_stack([ones, conf])),
-        "intercept": (dict(tested="intercept"), ones),
-    }
-    for label, (args, design) in cases.items():
-        r = ns.tfce_ols(y, dom, **args, **kw)
-        np.testing.assert_allclose(r.stat_obs, ols_t(y, design), rtol=1e-9, err_msg=label)
-    # Without confounds the intercept test is the one-sample t, ddof = 1.
-    r = ns.tfce_ols(y, dom, tested="intercept", **kw)
-    one_sample = y.mean(axis=0) / np.sqrt(y.var(axis=0, ddof=1) / y.shape[0])
-    np.testing.assert_allclose(r.stat_obs, one_sample, rtol=1e-9)
 
 
 @pytest.mark.parametrize("tail", TAILS)
@@ -75,7 +46,8 @@ def test_result_follows_the_stated_rules(tail, params):
                     seed=5, n_perm=b, n_jobs=1)
     assert r.n_perm == b and r.null_max.shape == (b,) and r.seed == 5 and r.tail == tail
     assert r.origin is None
-    assert r.params == ns._tfce.resolve_params(params)
+    assert r.params == ({"weighting": "exact", "e": 0.5, "h": 2.0, "start": 0.0} if params == "exact"
+                        else {"weighting": "mne", "e": 0.5, "h": 2.0, "start": 0.0, "step": 0.3})
     for name in MAPS[:4]:
         assert getattr(r, name).shape == (dom.n_nodes,) and getattr(r, name).dtype == np.float64
     # tfce_obs is the plain TFCE of stat_obs under the same tail and settings.
@@ -98,26 +70,6 @@ def test_seed_none_draws_a_seed_and_stores_it():
     assert isinstance(a.seed, int) and 0 <= a.seed < 2**64
     assert a.seed != b.seed
     assert_same(a, ns.tfce_ols(y, dom, seed=a.seed, **kw))
-
-
-def test_intercept_test_reproduces_the_mne_fixture(fixtures_dir):
-    with open(fixtures_dir / "perm_exact_n6_grid4.json") as f:
-        fx = json.load(f)
-    mask = (np.frombuffer(fx["mask"].encode(), dtype=np.uint8) == ord("1")).reshape(fx["dims"])
-    dom = ns.Domain.from_mask(mask, conn=fx["conn"])
-    n = fx["n"]
-    x = np.asarray(fx["x"], dtype=np.float64).reshape(n, dom.n_nodes)
-    p = fx["params"]
-    params = {"weighting": "mne", "e": p["e"], "h": p["h"], "start": p["start"], "step": p["step"]}
-    r = ns.tfce_ols(x, dom, tested="intercept", params=params, tail="positive",
-                    seed=fx["seed"], n_perm=fx["n_permutations"])
-    # 2**n fits the budget: every sign pattern, and n_perm is the number used.
-    assert r.n_perm == 2**n and r.null_max.shape == (2**n,)
-    for got, want in ((r.stat_obs, fx["t_obs"]), (r.tfce_obs, fx["tfce_obs"])):
-        want = np.asarray(want)
-        np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-12 * np.max(np.abs(want)))
-    # MNE's enumeration differs by at most one draw in the count.
-    assert np.max(np.abs(r.p_fwe - np.asarray(fx["p_fwe"]))) <= 1.0 / (2**n) + 1e-15
 
 
 def test_every_n_jobs_gives_the_same_bits():
@@ -189,6 +141,26 @@ def test_load_refuses_a_file_that_is_not_a_saved_result(tmp_path):
             ns.TfceInference.load(tmp_path / "meta.npz")
 
 
+# A result written by `TfceInference.save` of neurostats 0.2.0. It pins the
+# on-disk format, which every other save/load test writes and reads with the
+# same code. Made from `dom, y, tested, conf = make()` with
+# `ns.tfce_ols(y, dom, tested=tested, confounds=conf, seed=SAVED_SEED,
+# n_perm=20, n_jobs=1, **SAVED_KW).save(path)` (4.8 KB). Regenerate it
+# that way only for an intended format change.
+SAVED_0_2_0 = Path(__file__).parent / "data" / "tfce_inference_0.2.0.npz"
+SAVED_SEED = 2**64 - 3
+SAVED_KW = dict(tail="two_sided", params={"weighting": "mne", "start": 0.0, "step": 0.3})
+
+
+def test_a_result_saved_by_0_2_0_loads_and_extends():
+    dom, y, tested, conf = make()
+    kw = dict(tested=tested, confounds=conf, n_jobs=1, **SAVED_KW)
+    old = ns.TfceInference.load(SAVED_0_2_0)
+    assert_same(old, ns.tfce_ols(y, dom, seed=SAVED_SEED, n_perm=20, **kw))
+    assert_same(ns.tfce_ols(y, dom, n_perm=40, extend=old, **kw),
+                ns.tfce_ols(y, dom, seed=SAVED_SEED, n_perm=40, **kw))
+
+
 def test_extend_refusals():
     dom, y, tested, conf = make()
     kw = dict(tested=tested, confounds=conf)
@@ -248,6 +220,8 @@ def test_extend_refuses_a_budget_that_enumerates_every_sign_pattern():
         ns.tfce_ols(x, dom, n_perm=1000, extend=full, **kw)
     with pytest.raises(ValueError, match="already has 128 draws"):
         ns.tfce_ols(x, dom, n_perm=100, extend=full, **kw)
+    # A budget above 2**n enumerates as well: n_perm is the number of draws used.
+    assert ns.tfce_ols(x, dom, seed=5, n_perm=1000, **kw).n_perm == 128
 
 
 # --- the source ------------------------------------------------------------

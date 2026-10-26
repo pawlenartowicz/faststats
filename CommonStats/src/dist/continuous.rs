@@ -1,8 +1,9 @@
-//! The 12 continuous distributions of the `dist` suite.
+//! The 13 continuous distributions of the `dist` suite.
 //!
-//! Quantile strategy for t, χ², F, Gamma, and the inverse Gaussian:
-//! Cornish–Fisher, Wilson–Hilferty, or (inverse Gaussian) normal-term seed
-//! (Abramowitz & Stegun §26.7; Wilson & Hilferty 1931), then one shared
+//! Quantile strategy for t, χ², F, Gamma, the inverse Gaussian and the
+//! studentized range: Cornish–Fisher, Wilson–Hilferty, (inverse Gaussian)
+//! normal-term or (studentized range) Bonferroni seed (Abramowitz & Stegun
+//! §26.7; Wilson & Hilferty 1931), then one shared
 //! bracketed Newton solver, `bracketed_newton`, on the log of the smaller tail
 //! mass: `ln cdf` below the median and `ln sf` above it. t, by symmetry, always
 //! solves on its upper half: `ln sf`, or near the median the central mass
@@ -13,7 +14,7 @@
 //! ## Accuracy
 //!
 //! Worst error ratio `r` measured by `scripts/accuracy_sweep.py` against
-//! mpmath (82477 points): `r` = relative error / (max(κ, 1)·ε), κ the
+//! mpmath (82488 points): `r` = relative error / (max(κ, 1)·ε), κ the
 //! condition number over all real inputs, ε = 2⁻⁵²; for a log output the
 //! absolute error over the sensitivity of the log. `r ≤ 10`: at the accuracy
 //! the problem allows; `(review)` up to 1000; `(bug)` above it, a structural error;
@@ -25,7 +26,7 @@
 //! |---|---|---|---|---|---|---|
 //! | Normal | 0.54 | 0.58 | 0.96 | 1.1 | 1.1 | 0.97 |
 //! | StudentT | 2.2 | 2.2 | 2.3e2 (review) | 6.2 | 4.2 | 4.2 |
-//! | ChiSquared | 1.8 | 3.1 | 6.3 | 5.4 | 1.1 | 2.2 |
+//! | ChiSquared | 1.8 | 3.1 | 6.3 | 5.4 | 1.1 | 1.5e2 (review) |
 //! | FisherF | 5.8 | 5.8 | 5.6 | 6.2 | 9.9 | 14 (review) |
 //! | Uniform | 0.46 | 0.63 | 0.44 | 0.32 | 0.47 | 0.71 |
 //! | Exponential | 0.43 | 0.46 | 0.63 | 0.77 | 0.5 | 0.57 |
@@ -35,6 +36,7 @@
 //! | Gamma | 1.3 | 3.8 | 6.1 | 5.7 | 1.8 | 1.3 |
 //! | Beta | 3.3 | 4.2 | 1.5e2 (review) | 1.5e2 (review) | 5.5 | 1.8 |
 //! | InverseGaussian | 1.1 | 2.5 | 1.5e2 (review) | 3.3 | 2.1 | 2.2 |
+//! | StudentizedRange | 0.55 | 2.1 | 0.97 | – | – | – |
 //! <!-- accuracy:end -->
 
 #[cfg(feature = "rng")]
@@ -751,10 +753,9 @@ fn bracketed_newton(
 /// `F(0.072, 0.020).isf(0.065)`, 63ε kept from 161ε) or the mass jumps by more
 /// than that between adjacent floats (an `InverseGaussian` of spread `√(μ/λ)`
 /// below 1e-15: `IG(3.2e-22, 3.9e10).isf(0.54)` moved 4e4 ulp unchecked), the
-/// step does not lower it. In the bulk it also corrects the log solve's own
-/// `ln` mass errors (`F(5.3e11, 6.9).isf(0.5)`: r 36 → 1). And only for a step
-/// below 1e-10 relative, the band's width at most, which also leaves `x` where
-/// the log density is NaN or infinite (`IG(1e300, 1e-300).quantile(1e-300)`,
+/// step does not lower it. And only for a step below 1e-10 relative, the
+/// band's width at most, which also leaves `x` where the log density is NaN
+/// or infinite (`IG(1e300, 1e-300).quantile(1e-300)`,
 /// `IG(1, 5e-324).isf(1e-100)`), and for a subnormal mass, which has no bits
 /// to compare.
 fn polish_root(
@@ -854,8 +855,8 @@ const LN_SERIES_CUTOFF: f64 = -39.143_947_206_188_2;
 /// for `isf`), and otherwise `solve(target, side)` on whichever tail mass is
 /// ≤ 0.5. `1 − t` is exact in f64 for `t ∈ [0.5, 1]` (Sterbenz), so flipping
 /// the tail costs nothing, while a Newton residual formed on the near-1 mass
-/// would keep only ~8 digits. Serves `FisherF`, `Gamma` (and so `ChiSquared`)
-/// and `InverseGaussian`.
+/// would keep only ~8 digits. Serves `FisherF`, `Gamma` (and so `ChiSquared`),
+/// `InverseGaussian` and `StudentizedRange`.
 fn positive_quantile(
     t: f64,
     upper: bool,
@@ -953,9 +954,13 @@ impl ContinuousDensity for FisherF {
     /// log would round with the size of `ln x`: for `dfn, dfd < 16`,
     /// `small_df_upper` or `small_df_lower`; for one `≥ 16`, `mixed_parts`.
     /// With both `≥ 16`, and where `q` is not normal, `exp` of `log_density`.
+    /// At `x = 0` it is the limit (`density_at_zero`).
     fn density(&self, x: f64) -> f64 {
-        if x <= 0.0 {
+        if x < 0.0 {
             return 0.0;
+        }
+        if x == 0.0 {
+            return self.density_at_zero();
         }
         if let Some((m, e)) = self.prefactor(x) {
             let s = m / x;
@@ -990,13 +995,18 @@ impl ContinuousDensity for FisherF {
     fn log_density(&self, x: f64) -> f64 {
         // One evaluation: form only the constants the small-df branch at `x`
         // reads (`c₂` for `u ≥ 1`, else `k` and `c₁`), not all three as the
-        // solvers do once per solve.
+        // solvers do once per solve. For `u < 1` and `dfn < 1`, `1/(x·B(a, b))`
+        // from `inv_x_beta` in place of `k`: at a tiny `dfn`, `k ≈ ln a` and
+        // `(a − 1)·ln x` are each hundreds and cancel.
         let (a, b) = (0.5 * self.dfn, 0.5 * self.dfd);
         if a < 8.0 && b < 8.0 && x > 0.0 && x < f64::INFINITY {
             let u = self.dfn / self.dfd * x;
             if u >= 1.0 {
                 let (q, t) = self.small_df_upper(small_df_c2(a, b), x, u, self.ln_1pu(x, u));
                 return libm::log(q) + t;
+            }
+            if let Some(s) = inv_x_beta(a, b, x) {
+                return libm::log(s) + a * self.ln_u(x, u) - (a + b) * libm::log1p(u);
             }
             let k = -crate::special::lbeta(a, b);
             return self.log_density_with((k, a * libm::log(self.dfn / self.dfd), f64::NAN), x);
@@ -1006,6 +1016,18 @@ impl ContinuousDensity for FisherF {
 }
 
 impl FisherF {
+    /// The density's limit as `x → 0⁺`: `∞` for `dfn < 2`, `1` for `dfn = 2`
+    /// (`(2/dfd)/B(1, dfd/2)`), `0` for `dfn > 2`. Matches R `df(0, dfn, dfd)`
+    /// and `ChiSquared`'s value at 0.
+    fn density_at_zero(&self) -> f64 {
+        if self.dfn < 2.0 {
+            f64::INFINITY
+        } else if self.dfn == 2.0 {
+            1.0
+        } else {
+            0.0
+        }
+    }
     /// `(m, e)` with `y^a·z^b/B(a, b) = m·e^{e}` at `x > 0` (`brcomp`, see
     /// `density`); `None` at `x = ∞` and where `y` or `z` is subnormal.
     fn prefactor(&self, x: f64) -> Option<(f64, f64)> {
@@ -1091,7 +1113,10 @@ impl FisherF {
     ///   and cancel (`F(16, 1e-100)`, `x = 5.7e-100`, `ln f = −2.5`).
     #[inline(always)]
     fn log_density_with(&self, (k, c1, c2): (f64, f64, f64), x: f64) -> f64 {
-        if x <= 0.0 || x == f64::INFINITY {
+        if x == 0.0 {
+            return libm::log(self.density_at_zero());
+        }
+        if x < 0.0 || x == f64::INFINITY {
             return f64::NEG_INFINITY;
         }
         let (m, n) = (self.dfn, self.dfd);
@@ -1309,6 +1334,28 @@ fn lgamma_1p(s: f64) -> f64 {
     } else {
         crate::special::lgamma(1.0 + s)
     }
+}
+
+/// `1/(x·B(a, b))` for `a < 0.5`, as `(a/x)·(1 + gam1(a))·Γ(a + b)/Γ(b)`
+/// (`1/Γ(a) = a·(1 + gam1(a))`), with `Γ(a + b)/Γ(b)` from `rgamma_small(b)/
+/// rgamma_sum(a, b)` for `b < 8`, else `e^{−algdiv(a, b)}`. Forming `a/x`
+/// first keeps `ln a` and `−ln x` from entering a log density as two terms of
+/// up to 745 each at a tiny `a`, whose sum keeps their rounding (`ln(α/x)` in
+/// `gamma_log_density_with`). `None` for `a ≥ 0.5` and where a factor or the
+/// product leaves the normal range.
+fn inv_x_beta(a: f64, b: f64, x: f64) -> Option<f64> {
+    if a >= 0.5 {
+        return None;
+    }
+    let ratio = if b < 8.0 {
+        use crate::special::incomplete::{rgamma_small, rgamma_sum};
+        rgamma_small(b) / rgamma_sum(a, b)
+    } else {
+        libm::exp(-crate::special::elementary::algdiv(a, b))
+    };
+    let (q, r) = (a / x, (1.0 + crate::special::elementary::gam1(a)) * ratio);
+    let normal = |v: f64| (f64::MIN_POSITIVE..f64::INFINITY).contains(&v);
+    (normal(q) && normal(r) && normal(q * r)).then_some(q * r)
 }
 
 /// Below this, `FisherF` hands the incomplete-beta kernel the small one of
@@ -1559,7 +1606,10 @@ impl Sampler for FisherF {
 /// Continuous uniform on `[a, b]`.
 ///
 /// Convention: `a < b`, inclusive support, constant density `1/(b−a)`. Matches
-/// `scipy.stats.uniform(loc=a, scale=b−a)`.
+/// `scipy.stats.uniform(loc=a, scale=b−a)`. Where `b − a` overflows (e.g.
+/// `Uniform(-1e308, 1e308)`), the density, cdf, sf and entropy use the halved
+/// terms `½b − ½a` and `½x − ½a`, which stay finite; draws come from
+/// `quantile`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Uniform {
     a: f64,
@@ -1585,6 +1635,17 @@ impl Uniform {
         }
         Ok(Uniform { a, b })
     }
+    /// `(s, s·(b − a))`: `s = 1`, or `s = ½` where `b − a` overflows (then
+    /// `a < 0 < b`, so `½b − ½a` is finite). Every caller scales its own
+    /// differences by `s` too, and `1·v` is exact.
+    fn scaled_width(&self) -> (f64, f64) {
+        let w = self.b - self.a;
+        if w.is_finite() {
+            (1.0, w)
+        } else {
+            (0.5, 0.5 * self.b - 0.5 * self.a)
+        }
+    }
 }
 
 impl Distribution for Uniform {
@@ -1595,11 +1656,20 @@ impl Distribution for Uniform {
         Bound::Finite(self.b)
     }
     fn mean(&self) -> Option<f64> {
-        Some(0.5 * (self.a + self.b))
+        // `a + b` overflows only when both are huge and of one sign; halving
+        // each first is then exact.
+        let m = 0.5 * (self.a + self.b);
+        Some(if m.is_finite() {
+            m
+        } else {
+            0.5 * self.a + 0.5 * self.b
+        })
     }
     fn variance(&self) -> Option<f64> {
+        // `w · (w/12)`, not `w²/12`: `w²` overflows for w past ≈ 1.3e154 while
+        // the variance stays finite up to ≈ 4.6e154.
         let w = self.b - self.a;
-        Some(w * w / 12.0)
+        Some(w * (w / 12.0))
     }
     fn skewness(&self) -> Option<f64> {
         Some(0.0)
@@ -1608,7 +1678,8 @@ impl Distribution for Uniform {
         Some(-6.0 / 5.0)
     }
     fn entropy(&self) -> Option<f64> {
-        Some(libm::log(self.b - self.a))
+        let (s, w) = self.scaled_width();
+        Some(libm::log(w) - libm::log(s))
     }
 }
 
@@ -1622,7 +1693,8 @@ impl ContinuousDensity for Uniform {
         } else if x < self.a || x > self.b {
             0.0
         } else {
-            1.0 / (self.b - self.a)
+            let (s, w) = self.scaled_width();
+            s / w
         }
     }
     fn log_density(&self, x: f64) -> f64 {
@@ -1631,7 +1703,8 @@ impl ContinuousDensity for Uniform {
         } else if x < self.a || x > self.b {
             f64::NEG_INFINITY
         } else {
-            -libm::log(self.b - self.a)
+            let (s, w) = self.scaled_width();
+            -(libm::log(w) - libm::log(s))
         }
     }
 }
@@ -1643,7 +1716,8 @@ impl ContinuousCdf for Uniform {
         } else if x >= self.b {
             1.0
         } else {
-            (x - self.a) / (self.b - self.a)
+            let (s, w) = self.scaled_width();
+            (s * x - s * self.a) / w
         }
     }
     /// `(b − x)/(b − a)`: `b − x` is exact near `b` (Sterbenz), where
@@ -1654,28 +1728,61 @@ impl ContinuousCdf for Uniform {
         } else if x >= self.b {
             0.0
         } else {
-            (self.b - x) / (self.b - self.a)
+            let (s, w) = self.scaled_width();
+            (s * self.b - s * x) / w
         }
     }
+    /// Closed form `a + p·(b − a)`, clamped to `[a, b]`; `quantile(0)` is `a`
+    /// and `quantile(1)` is `b` exactly (the product can round past `b`, and
+    /// `0 · (b − a)` is NaN when `b − a` overflows). When `b − a` overflows
+    /// (e.g. `Uniform(-1e308, 1e308)`) it uses `a·(1 − p) + b·p`, whose terms
+    /// stay finite.
     fn quantile(&self, p: f64) -> Result<f64, StatError> {
         if !(0.0..=1.0).contains(&p) {
             return Err(StatError::ProbabilityOutOfRange(p));
         }
-        Ok(self.a + p * (self.b - self.a))
+        if p == 0.0 {
+            return Ok(self.a);
+        }
+        if p == 1.0 {
+            return Ok(self.b);
+        }
+        let w = self.b - self.a;
+        let x = if w.is_finite() {
+            self.a + p * w
+        } else {
+            self.a * (1.0 - p) + self.b * p
+        };
+        Ok(x.min(self.b))
     }
-    /// Closed form `b − q·(b − a)`.
+    /// Closed form `b − q·(b − a)`, clamped to `[a, b]`; `isf(0)` is `b` and
+    /// `isf(1)` is `a` exactly. When `b − a` overflows it uses
+    /// `b·(1 − q) + a·q`, as `quantile` does.
     fn isf(&self, q: f64) -> Result<f64, StatError> {
         if !(0.0..=1.0).contains(&q) {
             return Err(StatError::ProbabilityOutOfRange(q));
         }
-        Ok(self.b - q * (self.b - self.a))
+        if q == 0.0 {
+            return Ok(self.b);
+        }
+        if q == 1.0 {
+            return Ok(self.a);
+        }
+        let w = self.b - self.a;
+        let x = if w.is_finite() {
+            self.b - q * w
+        } else {
+            self.b * (1.0 - q) + self.a * q
+        };
+        Ok(x.max(self.a))
     }
 }
 
 #[cfg(all(feature = "dist", feature = "rng"))]
 impl Sampler for Uniform {
     fn sample(&self, rng: &mut CommonStatsRng) -> f64 {
-        self.a + (self.b - self.a) * rng.uniform()
+        self.quantile(rng.uniform())
+            .expect("uniform() ∈ (0,1) is a valid quantile arg")
     }
 }
 
@@ -2303,8 +2410,8 @@ impl Gamma {
     /// ```
     /// use commonstats::dist::continuous::Gamma;
     /// use commonstats::dist::Distribution;
-    /// let g = Gamma::new(2.0, 1.0).unwrap();
-    /// assert_eq!(g.mean(), Some(2.0));
+    /// let g = Gamma::new(2.0, 4.0).unwrap(); // shape 2, rate 4
+    /// assert_eq!(g.mean(), Some(0.5));
     /// assert!(Gamma::new(0.0, 1.0).is_err());
     /// ```
     pub fn new(shape: f64, rate: f64) -> Result<Self, StatError> {
@@ -2598,9 +2705,12 @@ impl ContinuousDensity for Beta {
     /// ln(1 + e₁)) − β·(e₂ − ln(1 + e₂))`, `1 + e₁ = x/x₀`, `1 + e₂ = y/y₀`
     /// about the mean `x₀ = α/(α+β)`; the sum `(α−1)·ln x + (β−1)·ln y −
     /// ln B(α, β)` would keep the rounding of terms of size `α·|ln x|`.
-    /// Otherwise that sum, with `ln y = log1p(−x)` (`ln` of the rounded `1 − x`
-    /// errs by up to ε/2 absolute against `|ln y| ≈ x` for small `x`) and
-    /// `0·ln 0 = 0`:
+    /// For `α < 0.5`, `ln(1/(x·B(α, β))) + α·ln x + (β − 1)·ln y` with
+    /// `1/(x·B)` from `inv_x_beta` where that is normal: at a tiny `α` the
+    /// sum's `(α − 1)·ln x` and `−ln B ≈ ln α` are each up to 745 and cancel
+    /// (6e-14 absolute at `Beta(1e-310, 0.5)`, `x ≈ 2e-310`). Otherwise that
+    /// sum, with `ln y = log1p(−x)` (`ln` of the rounded `1 − x` errs by up to
+    /// ε/2 absolute against `|ln y| ≈ x` for small `x`) and `0·ln 0 = 0`:
     /// `x = 0` at `α = 1` and `x = 1` at `β = 1` are the finite `ln β` and
     /// `ln α`.
     fn log_density(&self, x: f64) -> f64 {
@@ -2619,6 +2729,9 @@ impl ContinuousDensity for Beta {
                 - libm::log1p(-x);
         }
         let xlogy = |c: f64, l: f64| if c == 0.0 { 0.0 } else { c * l };
+        if let Some(s) = inv_x_beta(a, b, x) {
+            return libm::log(s) + a * libm::log(x) + xlogy(b - 1.0, libm::log1p(-x));
+        }
         xlogy(a - 1.0, libm::log(x)) + xlogy(b - 1.0, libm::log1p(-x)) - crate::special::lbeta(a, b)
     }
 }
@@ -2720,6 +2833,7 @@ impl InverseGaussian {
     /// assert_eq!(ig.mean(), Some(1.5));
     /// assert!((ig.cdf(ig.quantile(0.9).unwrap()) - 0.9).abs() < 1e-14);
     /// assert!(InverseGaussian::new(1.5, 0.0).is_err());
+    /// assert!(InverseGaussian::new(1.5, f64::NAN).is_err());
     /// ```
     pub fn new(mean: f64, shape: f64) -> Result<Self, StatError> {
         if !mean.is_finite() || !shape.is_finite() || mean <= 0.0 || shape <= 0.0 {
@@ -3045,4 +3159,634 @@ impl Sampler for InverseGaussian {
             mu * w
         }
     }
+}
+
+/// Studentized range distribution `q(k, ν)` (Tukey's `q`): `W = R/S`, `R` the
+/// range of `k` iid `N(0, 1)` variables and `ν·S² ~ χ²_ν` independent of `R`,
+/// `ν = df`.
+///
+/// Convention: range cdf `F_R(w) = k∫φ(z)·D(z, w)^{k−1} dz`, `D(z, w) = Φ(z) −
+/// Φ(z − w)`, and `P(W ≤ q) = ∫ g_ν(u)·F_R(q√u) du`, `g_ν` the Gamma(shape
+/// ν/2, rate ν/2) density of `U = S²`. `df = ∞` drops the mixing: `P(W ≤ q) =
+/// F_R(q)`. For a real `k > 1` that is not an integer the same formulas define
+/// a distribution on `[0, ∞)`, with no "range of k means" reading. Moments are
+/// not computed: `mean`, `variance` and the other moments return `None`, which
+/// here means "not computed", not "undefined". No `Sampler`.
+/// Matches mpmath (`tests/fixtures/dist_studentizedrange_*.json`), and where
+/// both tails are at least 1e-3, `scipy.stats.studentized_range(k, df)` (its
+/// pdf for k ≥ 2; NaN below) for df < 1e5 or df = ∞ to 1e-9, and R
+/// `ptukey(q, nmeans = k, df)` for k ≥ 2 and 30 ≤ df ≤ 25000 or df = ∞ to
+/// 1e-5. Past those df both switch to the df = ∞ formula (scipy is 1.6e-4
+/// relative off at df = 1e5, k = 5, q = 4); this type has no such switch. At
+/// df = 2 `ptukey`'s upper tail is off by orders of magnitude (k = 100,
+/// q = 159.7: 2.1e-13 for 1e-3), and at df < 2 so is scipy's far tail (k = 2,
+/// df = 0.5, q = 5.8e5: 1.8e-11 for 1e-3).
+///
+/// Computation: two nested integrals, the range part in `z` inside the
+/// mixing part in `x = ln u`, both by `ln_quad` (a mode-centred trapezoidal
+/// rule after `x = μ + s·sinh t`, `h` halved until two levels agree to 1e-10)
+/// and both summed as `e^{ℓ − M}` in logs.
+/// - Complements: `cdf` and `sf` are each their own integral where they are
+///   at most ½, and `1 −` the other above it (a tail ≤ ½, so no
+///   cancellation; see `ln_cdf`); `ln_cdf`/`ln_sf` likewise with `log1p`. The
+///   range sf integrand `Φ(z)^{k−1} − D^{k−1}` is formed as
+///   `−Φ(z)^{k−1}·expm1((k − 1)·ln(1 − r))`, `r = Φ(z − w)/Φ(z)`, with
+///   `ln(1 − r)` from `log1p(−r)` where `r` is small.
+/// - Large logs: the Gamma mixing density uses `gamma_log_density_consts` and,
+///   for `ν ≥ 16`, the saddle-point exponent `−(ν/2)·rlog1(expm1(x))`.
+/// - Range edges: `ln_cdf`, `ln_sf` and `log_density` stay finite where the
+///   value underflows (k = 100 at small q, where `cdf ~ q^{k−1}`). As `k → 1⁺`,
+///   `F_R(w) ~ w^{k−1}` and the mass spreads over many decades of `q`; as
+///   `ν → 0⁺` the mixing density's left tail `e^{ν·x/2}` is heavy and `sf(q)`
+///   decays like `q^{−ν}`; at `q = 0` the density is ∞ for k < 2, 0 for
+///   k > 2, and `√2·t_ν.density(0)` at k = 2.
+/// - Resolution: on the grid k ∈ {1.5, 2, 3, 5, 20, 100}, df ∈ {0.5, 1, 2, 5,
+///   30, 1e3, 1e5, ∞}, tails 1e-10 to 0.999, `ln_cdf`, `ln_sf` and
+///   `log_density` agree with the same rule at a 1e-13 stopping tolerance to
+///   16ε absolute, and the k = 2 closed form holds to 1e-12 relative for
+///   ν ∈ [0.1, 1e8] and tails down to 1e-300, at ν = 1e-4 and 0.01 with q up
+///   to 1e30, and in `log_density` and `ln_sf` at ν up to 1e7 with q up to
+///   1e6. Against the mpmath fixtures
+///   (k ∈ {1.5, 2, 3, 20, 100}, df ∈ {0.5, 2, 30, 1e3, ∞}, tails 1e-10 to ½)
+///   the worst relative errors are 1.1e-15 (cdf), 8.3e-15 (pdf), 1.1e-14
+///   (sf) and 9.8e-15 (quantiles).
+/// - Cost: one `cdf`, `sf` or `density` is a 2-D quadrature, about 100
+///   evaluations of the range integrand per mixing node and 100–1200 mixing
+///   nodes: 2–30 ms per call and 20–80 ms per quantile (release build,
+///   x86-64). At ν ≤ 0.01 or k ≤ 1.001 the mixing integral needs more
+///   halvings: 50–120 ms per call and 1–2 s per quantile.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StudentizedRange {
+    k: f64,
+    df: f64,
+}
+
+impl StudentizedRange {
+    /// Construct `q(k, df)` with `1 < k ≤ 1e6` and `df > 0`; `df = ∞` is
+    /// allowed. The cap on `k` bounds the cost: the range integral's nodes
+    /// grow with `k`, to seconds per call at k = 1e50.
+    ///
+    /// # Errors
+    /// `DomainError` if `k` is NaN, `≤ 1` or `> 1e6`, or `df` is NaN or `≤ 0`.
+    ///
+    /// Tukey's HSD: a pairwise `t` on `df` maps to `q = √2·|t|`, and its
+    /// p-value is `sf(q)`. With two means that is the two-sided t-test:
+    /// ```
+    /// use commonstats::dist::continuous::{StudentT, StudentizedRange};
+    /// use commonstats::dist::ContinuousCdf;
+    /// let (t, df) = (2.5, 10.0);
+    /// let p = StudentizedRange::new(2.0, df).unwrap().sf(2f64.sqrt() * t);
+    /// let want = 2.0 * StudentT::new(df).unwrap().sf(t);
+    /// assert!(((p - want) / want).abs() < 1e-12);
+    /// assert!(StudentizedRange::new(1.0, df).is_err());
+    /// ```
+    pub fn new(k: f64, df: f64) -> Result<Self, StatError> {
+        if !(k > 1.0 && k <= 1e6) || df.is_nan() || df <= 0.0 {
+            return Err(StatError::DomainError(
+                "StudentizedRange: k must be in (1, 1e6], df > 0 (df = ∞ allowed)",
+            ));
+        }
+        Ok(StudentizedRange { k, df })
+    }
+}
+
+impl Distribution for StudentizedRange {
+    fn support_min(&self) -> Bound {
+        Bound::Finite(0.0)
+    }
+    fn support_max(&self) -> Bound {
+        Bound::PosInfinity
+    }
+}
+
+impl ContinuousDensity for StudentizedRange {
+    fn density(&self, q: f64) -> f64 {
+        libm::exp(self.log_density(q))
+    }
+    fn log_density(&self, q: f64) -> f64 {
+        if q.is_nan() {
+            return f64::NAN;
+        }
+        if q < 0.0 || q == f64::INFINITY {
+            return f64::NEG_INFINITY;
+        }
+        // At q = 0, `f_R(0)` is ∞ for k < 2 (`f_R(w) ~ w^{k−2}`) and 0 for k > 2.
+        if q == 0.0 && self.k != 2.0 {
+            return if self.k < 2.0 {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            };
+        }
+        self.ln_mix(RangePart::Pdf, q)
+    }
+}
+
+impl ContinuousCdf for StudentizedRange {
+    fn cdf(&self, q: f64) -> f64 {
+        if q.is_nan() {
+            return f64::NAN;
+        }
+        if q <= 0.0 {
+            return 0.0;
+        }
+        if q == f64::INFINITY {
+            return 1.0;
+        }
+        // `ln_cdf` is `log1p(−sf)` above ½. A sum near 1 can round past it;
+        // `clamp` keeps NaN, as in `InverseGaussian`.
+        libm::exp(self.ln_cdf(q)).clamp(0.0, 1.0)
+    }
+    fn sf(&self, q: f64) -> f64 {
+        if q.is_nan() {
+            return f64::NAN;
+        }
+        if q <= 0.0 {
+            return 1.0;
+        }
+        if q == f64::INFINITY {
+            return 0.0;
+        }
+        libm::exp(self.ln_sf(q)).clamp(0.0, 1.0)
+    }
+    fn quantile(&self, p: f64) -> Result<f64, StatError> {
+        positive_quantile(p, false, |t, upper| self.solve(t, upper))
+    }
+    /// Newton on `ln sf(q) − ln α` for `α ≤ 0.5`; see `positive_quantile` and `solve`.
+    fn isf(&self, q: f64) -> Result<f64, StatError> {
+        positive_quantile(q, true, |t, upper| self.solve(t, upper))
+    }
+}
+
+/// Which integral `StudentizedRange` evaluates: the cdf, the sf or the density.
+#[derive(Clone, Copy, PartialEq)]
+enum RangePart {
+    Cdf,
+    Sf,
+    Pdf,
+}
+
+impl StudentizedRange {
+    /// `ln cdf(q)`: the log of the cdf integral, or `log1p(−sf)` where the cdf
+    /// is above ½. The log of a sum near 1 keeps only ε absolute, and the
+    /// integrand of the larger mass can have two features far apart that one
+    /// quadrature does not resolve to f64: at ν = 0.0625, q = 1.8e31 the cdf
+    /// integrand has the Gamma mode near `x = 0` and the knee of
+    /// `F_R(q·e^{x/2})` ~144 away (1e-12 off), while the sf integrand, the
+    /// Gamma tail cut at that knee, has one.
+    #[doc(hidden)]
+    pub fn ln_cdf(&self, q: f64) -> f64 {
+        if q.is_nan() {
+            return f64::NAN;
+        }
+        if q <= 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        if q == f64::INFINITY {
+            return 0.0;
+        }
+        let l = self.ln_mix(RangePart::Cdf, q);
+        if l > -core::f64::consts::LN_2 {
+            libm::log1p(-libm::exp(self.ln_mix(RangePart::Sf, q)))
+        } else {
+            l
+        }
+    }
+    /// `ln sf(q)`, the mirror of `ln_cdf`.
+    #[doc(hidden)]
+    pub fn ln_sf(&self, q: f64) -> f64 {
+        if q.is_nan() {
+            return f64::NAN;
+        }
+        if q <= 0.0 {
+            return 0.0;
+        }
+        if q == f64::INFINITY {
+            return f64::NEG_INFINITY;
+        }
+        let l = self.ln_mix(RangePart::Sf, q);
+        if l > -core::f64::consts::LN_2 {
+            libm::log1p(-libm::exp(self.ln_mix(RangePart::Cdf, q)))
+        } else {
+            l
+        }
+    }
+
+    /// Root of `cdf(q) = target` (`upper = false`) or `sf(q) = target`
+    /// (`upper = true`), `target ∈ (0, ½]`: `bracketed_newton` in `ln q`, then
+    /// `polish_root`, as `FisherF` does. Upper-tail seed: the Bonferroni bound
+    /// `P(W > q) ≤ k(k − 1)·P(T_ν > q/√2)` over the `k(k − 1)/2` pairs, so
+    /// `q = √2·t_ν.isf(α/(k(k − 1)))` (the normal isf at ν = ∞), which holds
+    /// for a real k and any ν > 0. A lower-tail target, or `α/(k(k − 1)) ≥ ½`,
+    /// has no seed and Newton starts from 1.
+    fn solve(&self, target: f64, upper: bool) -> f64 {
+        let (k, nu) = (self.k, self.df);
+        let alpha = target / (k * (k - 1.0));
+        let seed = if upper && alpha < 0.5 {
+            let t = if nu == f64::INFINITY {
+                -norm_quantile(alpha)
+            } else {
+                StudentT { df: nu }.isf(alpha).unwrap_or(f64::NAN)
+            };
+            core::f64::consts::SQRT_2 * t
+        } else {
+            f64::NAN
+        };
+        // Below half the smallest subnormal the mass reads as 0, as in
+        // `FisherF::solve`.
+        let ln_mass = |q: f64| {
+            let l = if upper { self.ln_sf(q) } else { self.ln_cdf(q) };
+            if l < -1075.0 * core::f64::consts::LN_2 {
+                f64::NEG_INFINITY
+            } else {
+                l
+            }
+        };
+        let q = bracketed_newton(seed, target, upper, true, ln_mass, |q| self.log_density(q));
+        polish_root(
+            q,
+            target,
+            upper,
+            |q| if upper { self.sf(q) } else { self.cdf(q) },
+            |q| self.log_density(q),
+        )
+    }
+
+    /// ln of `part` at `q ≥ 0` finite: the mixing integral over `x = ln u`,
+    /// where `g_ν(u) du = a^a/Γ(a)·e^{a·x − a·eˣ} dx`, `a = ν/2`, with the range
+    /// part at `w = q·e^{x/2}` (the density takes `√u·f_R(w)`, `√u = e^{x/2}`).
+    /// The walk starts at `x = 0` (the Gamma mode) and at `x* = 2·(ln w* −
+    /// ln q)`, where `F_R(q√u)` turns from 0 to 1; `w* = 2Φ⁻¹((k − 0.375)/(k +
+    /// 0.25))` is Blom's approximation to the expected range.
+    fn ln_mix(&self, part: RangePart, q: f64) -> f64 {
+        let ln_q = libm::log(q);
+        if self.df == f64::INFINITY {
+            return self.ln_range(part, q, ln_q);
+        }
+        let k = self.k;
+        let a = 0.5 * self.df;
+        let (c, ln_gamma) = gamma_log_density_consts(a, a);
+        // `gamma_log_density` in `x` (plus the Jacobian `ln u = x`), with `eˣ`
+        // free to underflow. For `a ≥ 8` the saddle-point form `c − a·(eˣ − 1 −
+        // x)`, `eˣ − 1 − x = rlog1(e)`, `e = expm1(x)` (`1 + e = eˣ`): near the
+        // mode `x ~ 1/√a`, and recovering `e` from a rounded `a·eˣ`, as
+        // `gamma_saddle_dev` does, would cost `√a·ε` (1e-13 at ν = 3e7).
+        let weight = |x: f64| {
+            if a >= 8.0 {
+                let e = libm::expm1(x);
+                let dev = if libm::fabs(e) <= 0.6 {
+                    crate::special::saddle::rlog1(e)
+                } else {
+                    e - x
+                };
+                c - a * dev
+            } else if a >= 0.5 {
+                c + a * x - a * libm::exp(x) - ln_gamma
+            } else {
+                c + a * x + libm::log(a) - a * libm::exp(x) - ln_gamma
+            }
+        };
+        let ell = |x: f64| {
+            let ln_w = ln_q + 0.5 * x;
+            let r = self.ln_range(part, libm::exp(ln_w), ln_w);
+            weight(x) + r + if part == RangePart::Pdf { 0.5 * x } else { 0.0 }
+        };
+        let w_star = 2.0 * norm_quantile((k - 0.375) / (k + 0.25));
+        let x_star = 2.0 * (libm::log(w_star) - ln_q);
+        // The Gamma width at its mode, at most 2.
+        ln_quad(ell, &[0.0, x_star], (1.0 / libm::sqrt(a)).min(2.0))
+    }
+
+    /// ln of the range cdf `F_R(w)`, sf `S_R(w)` or density `f_R(w)` at `w ≥ 0`
+    /// (`ln_w` its log, which stays finite where `w` underflows), each from its
+    /// own non-negative integrand in `z`:
+    /// cdf `k∫φ(z)·D^{k−1}`; sf `k∫φ(z)·Φ(z)^{k−1}·(−expm1((k−1)·ln(1 − r)))`,
+    /// `r = Φ(z − w)/Φ(z)`, from `k∫φ·Φ^{k−1} = 1` and with no subtraction (or
+    /// `(k−1)·r` in logs where that underflows); density
+    /// `k(k−1)∫φ(z)·φ(z − w)·D^{k−2}`, the last factor dropped at `k = 2`
+    /// so that `w = 0` gives `1/√π`. The walk starts at `{0, w/2, w}`, where
+    /// the mass sits.
+    fn ln_range(&self, part: RangePart, w: f64, ln_w: f64) -> f64 {
+        let k = self.k;
+        if w == f64::INFINITY {
+            return if part == RangePart::Cdf {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            };
+        }
+        let ln_k = libm::log(k);
+        let ln_km1 = libm::log(k - 1.0);
+        let ell = |z: f64| {
+            let (ln_p, ln_d, ln_r, ln_1mr) = range_ln_d(z, w, ln_w);
+            let ln_phi = -0.5 * z * z - LN_SQRT_2PI;
+            match part {
+                RangePart::Cdf => ln_phi + (k - 1.0) * ln_d,
+                RangePart::Sf => {
+                    let v = -libm::expm1((k - 1.0) * ln_1mr);
+                    let ln_v = if v >= f64::MIN_POSITIVE {
+                        libm::log(v)
+                    } else {
+                        ln_km1 + ln_r
+                    };
+                    ln_phi + (k - 1.0) * ln_p + ln_v
+                }
+                RangePart::Pdf => {
+                    let m = z - w;
+                    let pow = if k == 2.0 { 0.0 } else { (k - 2.0) * ln_d };
+                    ln_phi - 0.5 * m * m - LN_SQRT_2PI + pow
+                }
+            }
+        };
+        let s = ln_quad(ell, &[0.0, 0.5 * w, w], 1.0 / libm::sqrt(k));
+        s + ln_k + if part == RangePart::Pdf { ln_km1 } else { 0.0 }
+    }
+}
+
+/// `½·ln(2π)`.
+const LN_SQRT_2PI: f64 = crate::special::elementary::LN_SQRT_2PI;
+/// Each side of `ln_quad` stops at the first node this far (in ln) below the
+/// running maximum: `e^{−40} ≈ 4e-18`.
+const QUAD_DROP: f64 = 40.0;
+/// Relative agreement of two successive trapezoid sums at which `ln_quad`
+/// stops halving `h`.
+const QUAD_TOL: f64 = 1e-10;
+/// Halvings of `h` after the first level (`h = ½ → 2⁻¹⁰`). The bulk stops after
+/// 2–3; at ν ≤ 0.01 the mixing integrand's knee lies about `2·ln q` from the
+/// Gamma mode (140 at q = 1e30), where the nodes are `h·140` apart, and needs
+/// 8–9 (cdf 1.4e-9 off at ν = 1e-4, q = 1e30 after 7). Toward ν = 1e-9 or
+/// k = 1 + 1e-6 some integrals do not converge even after 12, so a higher cap
+/// only adds cost there.
+const QUAD_LEVELS: i64 = 9;
+/// Parabola or bisection steps of `quad_mode` (17–27 at ν ≥ 1e5 with q ≥ 1e3).
+const QUAD_MODE_ITERS: usize = 40;
+/// Nodes per side at the first level: reached only by an `ℓ` that never falls
+/// `QUAD_DROP` below its maximum.
+const QUAD_MAX_NODES: i64 = 2000;
+
+/// `ln ∫ e^{ℓ(x)} dx` over the real line, `ℓ` unimodal, by the trapezoidal
+/// rule after the substitution `x = μ + s·sinh(t)`, summed as `Σ e^{ℓᵢ − M}`
+/// with `M` the running maximum and returned as `ln(sum) + M`, so it stays
+/// finite where the integral underflows.
+///
+/// `μ` and `s` are the mode and `1/√(−ℓ″)` there (`quad_mode`, from the
+/// start point with the largest `ℓ` and scale `scale0`). On the real line the
+/// trapezoidal rule converges exponentially in `1/h` for an integrand analytic
+/// in a strip, and the substitution turns a tail that decays slowly in `x`
+/// (`e^{ν·x/2}` at small ν) into one that decays double exponentially in `t`.
+/// Each side stops at the first node with `ℓ + ln(s·cosh t) < M − QUAD_DROP`.
+/// `h` starts at ½ and is halved, adding only the new midpoints, until two
+/// successive sums agree to `QUAD_TOL` relative; the error then falls roughly
+/// as its square per halving, and the result is the finer sum (at most
+/// `QUAD_LEVELS` halvings). Non-finite start points are ignored; NaN for a NaN
+/// `ℓ`.
+fn ln_quad(ell: impl Fn(f64) -> f64, starts: &[f64], scale0: f64) -> f64 {
+    let (mut mu, mut l_mu) = (f64::NAN, f64::NEG_INFINITY);
+    for &x in starts {
+        if x.is_finite() {
+            let l = ell(x);
+            if l.is_nan() {
+                return f64::NAN;
+            }
+            if l > l_mu || mu.is_nan() {
+                (mu, l_mu) = (x, l);
+            }
+        }
+    }
+    if l_mu == f64::NEG_INFINITY || mu.is_nan() {
+        return f64::NEG_INFINITY;
+    }
+    let Some((mu, l_mu, s)) = quad_mode(&ell, mu, l_mu, scale0) else {
+        return f64::NAN;
+    };
+    let node = |t: f64| {
+        let x = mu + s * libm::sinh(t);
+        if x.is_finite() {
+            ell(x) + libm::log(s * libm::cosh(t))
+        } else {
+            f64::NEG_INFINITY
+        }
+    };
+    let mut sum = LogSum {
+        m: l_mu + libm::log(s),
+        sum: 0.0,
+    };
+    let mut h = 0.5;
+    sum.add(node(0.0));
+    // Outermost node index on each side at the first level.
+    let mut ends = [0_i64; 2];
+    for (side, dir) in [-1.0, 1.0].into_iter().enumerate() {
+        let mut j = 1_i64;
+        loop {
+            let v = node(dir * h * j as f64);
+            if v.is_nan() {
+                return f64::NAN;
+            }
+            sum.add(v);
+            if v < sum.m - QUAD_DROP || j >= QUAD_MAX_NODES {
+                break;
+            }
+            j += 1;
+        }
+        ends[side] = j;
+    }
+    let mut prev = sum.m + libm::log(h * sum.sum);
+    for level in 1..=QUAD_LEVELS {
+        h *= 0.5;
+        let scale = 1_i64 << level;
+        for (side, dir) in [-1.0, 1.0].into_iter().enumerate() {
+            for j in (1..ends[side] * scale).step_by(2) {
+                sum.add(node(dir * h * j as f64));
+            }
+        }
+        let cur = sum.m + libm::log(h * sum.sum);
+        if cur.is_nan() {
+            return f64::NAN;
+        }
+        if cur == f64::NEG_INFINITY || libm::fabs(libm::expm1(cur - prev)) <= QUAD_TOL {
+            return cur;
+        }
+        prev = cur;
+    }
+    prev
+}
+
+/// Mode `μ`, `ℓ(μ)` and scale `s = 1/√(−ℓ″(μ))` of a unimodal `ℓ` for
+/// `ln_quad`, from `x0` (with `ℓ(x0) = l0`) and a first scale `s0`; `None` for
+/// a NaN `ℓ`. It walks uphill in steps that double until `ℓ` falls, which
+/// brackets the mode, then fits parabolas through the bracket and its middle,
+/// moving to the vertex, until both ends lie within `2s` of the middle. The
+/// points stay at least about `s` apart, so the differences that give `ℓ″`
+/// are `O(1)` and not rounding noise: Newton steps on central differences at
+/// a fixed small spacing read that noise as curvature where `ℓ` is nearly
+/// linear (the `e^{ν·x/2}` tail) and collapse `s`. Where one side of the
+/// bracket is more than 10 times the other, it bisects the wider side instead
+/// of moving to the vertex, as Brent's method falls back to bisection: a far
+/// end whose `ℓ` lies far below sets the parabola's curvature, and the vertex
+/// then creeps toward the mode by about `s` per step (the mixing integrand at
+/// ν = 1e6, q = 1e5: 20 steps moved it 0.06 of the 2.5 to go, and `ln_quad`
+/// needed 11 halvings around the wrong centre). Where no parabola is concave
+/// (`ℓ` flat to rounding), `s` stays at its last value.
+fn quad_mode(ell: &impl Fn(f64) -> f64, x0: f64, l0: f64, s0: f64) -> Option<(f64, f64, f64)> {
+    let mut s = s0;
+    let at = |x: f64| (x, ell(x));
+    let (mut lo, mut mid, mut hi) = (at(x0 - s), (x0, l0), at(x0 + s));
+    for _ in 0..200 {
+        if lo.1.is_nan() || hi.1.is_nan() {
+            return None;
+        }
+        if hi.1 > mid.1 && hi.0 < f64::MAX {
+            let step = 2.0 * (hi.0 - mid.0);
+            (lo, mid) = (mid, hi);
+            hi = at(mid.0 + step);
+        } else if lo.1 > mid.1 && lo.0 > -f64::MAX {
+            let step = 2.0 * (mid.0 - lo.0);
+            (hi, mid) = (mid, lo);
+            lo = at(mid.0 - step);
+        } else {
+            break;
+        }
+    }
+    for _ in 0..QUAD_MODE_ITERS {
+        // A parabola needs finite values: pull an end where ℓ = −∞ halfway in.
+        if lo.1 == f64::NEG_INFINITY || hi.1 == f64::NEG_INFINITY {
+            if lo.1 == f64::NEG_INFINITY {
+                lo = at(0.5 * (lo.0 + mid.0));
+            }
+            if hi.1 == f64::NEG_INFINITY {
+                hi = at(0.5 * (hi.0 + mid.0));
+            }
+            if lo.1.is_nan() || hi.1.is_nan() {
+                return None;
+            }
+            continue;
+        }
+        let (d1, d3) = (lo.0 - mid.0, hi.0 - mid.0);
+        let (r1, r3) = ((lo.1 - mid.1) / d1, (hi.1 - mid.1) / d3);
+        let c = 2.0 * (r1 - r3) / (d1 - d3);
+        if !(c < 0.0 && c.is_finite()) {
+            break;
+        }
+        s = 1.0 / libm::sqrt(-c);
+        if d3 <= 2.0 * s && -d1 <= 2.0 * s {
+            break;
+        }
+        let vertex = (mid.0 - (r1 - 0.5 * c * d1) / c).clamp(lo.0, hi.0);
+        // A lopsided bracket is bisected on its wider side. At the middle
+        // already: probe `s` out on the wider side instead.
+        let x = if d3 > 10.0 * -d1 {
+            mid.0 + 0.5 * d3
+        } else if -d1 > 10.0 * d3 {
+            mid.0 + 0.5 * d1
+        } else if libm::fabs(vertex - mid.0) > 0.1 * s {
+            vertex
+        } else if d3 > -d1 {
+            mid.0 + s
+        } else {
+            mid.0 - s
+        };
+        let p = at(x);
+        if p.1.is_nan() {
+            return None;
+        }
+        if x > mid.0 {
+            if p.1 >= mid.1 {
+                (lo, mid) = (mid, p);
+            } else {
+                hi = p;
+            }
+        } else if p.1 >= mid.1 {
+            (hi, mid) = (mid, p);
+        } else {
+            lo = p;
+        }
+    }
+    Some((mid.0, mid.1, s))
+}
+
+/// A sum `e^{m}·sum` of terms added as logs, rescaled as the largest log grows.
+struct LogSum {
+    m: f64,
+    sum: f64,
+}
+
+impl LogSum {
+    fn add(&mut self, l: f64) {
+        if l > self.m {
+            self.sum *= libm::exp(self.m - l);
+            self.m = l;
+        }
+        self.sum += libm::exp(l - self.m);
+    }
+}
+
+/// `ln Φ(x)`: `ln(½·erfcx(−x/√2)) − x²/2` for `x < 0`, which stays finite
+/// where `Φ` underflows, else `log1p(−½·erfc(x/√2))`.
+fn ln_ncdf(x: f64) -> f64 {
+    let s = core::f64::consts::SQRT_2;
+    if x < 0.0 {
+        libm::log(0.5 * erfcx(-x / s)) - 0.5 * x * x
+    } else {
+        libm::log1p(-0.5 * crate::special::erfc(x / s))
+    }
+}
+
+/// `(ln Φ(z), ln D, ln r, ln(1 − r))` for the range integrands, `D = Φ(z) −
+/// Φ(z − w) = Φ(z)·(1 − r)`, `r = Φ(z − w)/Φ(z)`, `w ≥ 0` (`ln_w = ln w`, kept
+/// where `w` underflows), without cancellation:
+///
+/// - `h·max(1, |m|) ≤ ¼`, `m = z − w/2`, `h = w/2` (`D` small against `Φ(z)`,
+///   a small `w`: k = 1.5 at cdf 1e-3 has `w ≈ 2e-6`): Taylor's series of `Φ`
+///   about `m`, `D = 2h·φ(m)·Σⱼ He₂ⱼ(m)·h^{2j}/(2j + 1)!` (`He` the probabilists'
+///   Hermite polynomials, `He_{n+1} = m·He_n − n·He_{n−1}`). Ten terms: the
+///   `j`-th is below `(h·max(1, |m|) + h·√(2j))^{2j}/(2j + 1)!`, 1e-17 at `j = 10`.
+/// - `m ≤ 0`: `ln r` from the scaled `erfcx`, `ln r = ln(erfcx((w − z)/√2)/
+///   erfcx(−z/√2)) + w·m` for `z ≤ 0` (`(z − w)² − z² = −2w·m`), which forms
+///   neither `Φ`; for `0 < z ≤ w/2`, `ln Φ(z − w) − ln Φ(z)`. Then `ln(1 − r)`
+///   by `ln_1m_exp`, and `ln D = ln Φ(z) + ln(1 − r)`.
+/// - `m > 0`: `D(z, w) = D(w − z, w)`, so `ln D` is the case above at the
+///   reflected point `w − z`. `ln r = ln Φ(z − w) − ln Φ(z)`, and `ln(1 − r)`
+///   is `log1p(−r)` while `r < ½` (where `r` is below ε, `ln D − ln Φ(z)` would
+///   read 0, and the sf integrand is `(k − 1)·r`), else `ln D − ln Φ(z)`, which
+///   differ by at least `ln 2`.
+fn range_ln_d(z: f64, w: f64, ln_w: f64) -> (f64, f64, f64, f64) {
+    let ln_p = ln_ncdf(z);
+    let (h, m) = (0.5 * w, z - 0.5 * w);
+    if h * libm::fabs(m).max(1.0) <= 0.25 {
+        let (mut he_prev, mut he) = (1.0, m);
+        let (mut sum, mut pow) = (1.0, 1.0);
+        for j in 1..=10 {
+            let j2 = (2 * j) as f64;
+            let he_even = m * he - (j2 - 1.0) * he_prev;
+            pow *= h * h / (j2 * (j2 + 1.0));
+            sum += he_even * pow;
+            (he_prev, he) = (he_even, m * he_even - j2 * he);
+        }
+        let ln_d = ln_w - 0.5 * m * m - LN_SQRT_2PI + libm::log(sum);
+        let ln_1mr = ln_d - ln_p;
+        return (ln_p, ln_d, ln_1m_exp(ln_1mr), ln_1mr);
+    }
+    let s = core::f64::consts::SQRT_2;
+    // ln r at a point `y ≤ w/2`, where `y − w < 0`.
+    let ln_r_low = |y: f64| {
+        if y <= 0.0 {
+            libm::log(erfcx(-(y - w) / s) / erfcx(-y / s)) + w * (y - 0.5 * w)
+        } else {
+            ln_ncdf(y - w) - ln_ncdf(y)
+        }
+    };
+    if m <= 0.0 {
+        let ln_r = ln_r_low(z);
+        let ln_1mr = ln_1m_exp(ln_r);
+        return (ln_p, ln_p + ln_1mr, ln_r, ln_1mr);
+    }
+    let y = w - z;
+    let ln_d = ln_ncdf(y) + ln_1m_exp(ln_r_low(y));
+    let ln_r = ln_ncdf(z - w) - ln_p;
+    let ln_1mr = if ln_r < -core::f64::consts::LN_2 {
+        libm::log1p(-libm::exp(ln_r))
+    } else {
+        ln_d - ln_p
+    };
+    (ln_p, ln_d, ln_r, ln_1mr)
 }

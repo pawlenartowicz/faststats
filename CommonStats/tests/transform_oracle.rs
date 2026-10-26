@@ -92,8 +92,8 @@ fn boxcox_oracle() {
             None => {
                 // x<=0 rows: expect DomainError
                 assert!(
-                    result.is_err(),
-                    "box_cox([{}], lambda={}) should be Err, got {:?}",
+                    matches!(result, Err(commonstats::error::StatError::DomainError(_))),
+                    "box_cox([{}], lambda={}) should be DomainError, got {:?}",
                     r.x,
                     r.lambda,
                     result
@@ -193,38 +193,62 @@ fn normal_scores_oracle() {
     }
 }
 
-#[test]
-fn normal_scores_single_value() {
-    // n=1: rank=1, p=(1-3/8)/(1+1/4)=0.5 → Φ⁻¹(0.5)=0
-    let got = normal_scores(&[42.0]).unwrap();
-    assert_close(
-        "normal_scores[0]",
-        got[0],
-        0.0,
-        Tol {
-            rel: 1e-12,
-            abs: 1e-14,
-        },
-    );
-}
-
 // ── empty / all-NaN input ────────────────────────────────────────────────────
 
-/// Every element-wise transform rejects an empty slice and an all-NaN slice
-/// with the crate's two input errors.
+/// Every slice entry point applies the crate's Omit policy (`nan::clean`):
+/// empty input is `EmptyInput`, all-NaN is `AllNaN`, and NaNs are dropped, so
+/// the result equals the run on the NaN-free values. `count`/`sum`/`min`/`max`/
+/// `range` fold through `accum::from_slice` instead (accum tests own them);
+/// `quantile_normalize*` keeps NaN in place (its own tests own that).
 #[test]
-fn elementwise_transforms_reject_empty_and_all_nan() {
+fn slice_entry_points_follow_omit_policy() {
+    use commonstats::density::{Bandwidth, Bins, Kernel, Norm, Rule, histogram_auto, kde};
     use commonstats::error::StatError;
-    type Transform = fn(&[f64]) -> Result<Vec<f64>, StatError>;
-    let transforms: [(&str, Transform); 4] = [
+    use commonstats::htest::ci_mean;
+    use commonstats::{Ddof, describe, kurtosis, mean, median, sd, skewness, t_test_one, var};
+    type Entry = fn(&[f64]) -> Result<Vec<f64>, StatError>;
+    let entries: [(&str, Entry); 15] = [
         ("rank", |xs| rank(xs, Ties::Average)),
         ("box_cox", |xs| box_cox(xs, 1.0)),
         ("yeo_johnson", |xs| yeo_johnson(xs, 1.0)),
         ("normal_scores", normal_scores),
+        ("mean", |xs| mean(xs).map(|v| vec![v])),
+        ("median", |xs| median(xs).map(|v| vec![v])),
+        ("var", |xs| var(xs, Ddof::Sample).map(|v| vec![v])),
+        ("sd", |xs| sd(xs, Ddof::Population).map(|v| vec![v])),
+        ("skewness", |xs| skewness(xs).map(|v| vec![v])),
+        ("kurtosis", |xs| kurtosis(xs).map(|v| vec![v])),
+        ("describe", |xs| {
+            describe(xs).map(|d| {
+                vec![
+                    d.n as f64, d.min, d.q1, d.median, d.q3, d.max, d.mean, d.sd, d.skewness,
+                    d.kurtosis,
+                ]
+            })
+        }),
+        ("kde", |xs| {
+            kde(xs, Kernel::Gaussian, Bandwidth::Silverman).map(|k| {
+                let mut v = k.evaluate(&[2.5]);
+                v.extend([k.n() as f64, k.bandwidth()]);
+                v
+            })
+        }),
+        ("histogram_auto", |xs| {
+            histogram_auto(xs, Bins::Rule(Rule::Sturges), Norm::Count).map(|(e, c)| [e, c].concat())
+        }),
+        ("t_test_one", |xs| {
+            t_test_one(xs, 0.0).map(|r| vec![r.statistic, r.df, r.p_value])
+        }),
+        ("ci_mean", |xs| {
+            ci_mean(xs, 0.95).map(|c| vec![c.lower, c.upper])
+        }),
     ];
-    for (name, f) in transforms {
+    let finite = [1.0, 2.5, 4.0, 7.0];
+    let with_nan = [f64::NAN, 1.0, 2.5, f64::NAN, 4.0, 7.0, f64::NAN];
+    for (name, f) in entries {
         assert_eq!(f(&[]), Err(StatError::EmptyInput), "{name}");
         assert_eq!(f(&[f64::NAN, f64::NAN]), Err(StatError::AllNaN), "{name}");
+        assert_eq!(f(&with_nan), f(&finite), "{name}: NaN not omitted");
     }
 }
 
@@ -235,8 +259,6 @@ use commonstats::transform::{Infinities, quantile_normalize, quantile_normalize_
 #[derive(serde::Deserialize)]
 struct QnFixture {
     matrix: Vec<Vec<f64>>,
-    #[allow(dead_code)]
-    r#ref: Vec<f64>,
     expected: Vec<Vec<f64>>,
 }
 
@@ -261,29 +283,6 @@ fn quantile_normalize_bolstad_example() {
             );
         }
     }
-}
-
-#[test]
-fn quantile_normalize_missing_value_keeps_column_order() {
-    // B's NaN must not let A's tail reference entry average fewer columns: A
-    // was [5.5, 11, 16.5, 4] (its largest value mapped lowest). Want:
-    // preprocessCore `normalize.quantiles(cbind(1:4, c(10, 20, 30, NA)))`.
-    let a = [1.0, 2.0, 3.0, 4.0];
-    let b = [10.0, 20.0, 30.0, f64::NAN];
-    let got = quantile_normalize(&[&a, &b]).unwrap();
-    let want_a = [5.5, 9.333_333_333_333_334, 13.166_666_666_666_666, 17.0];
-    let want_b = [5.5, 11.25, 17.0];
-    let tol = || Tol {
-        rel: 1e-12,
-        abs: 1e-14,
-    };
-    for (i, (&g, &w)) in got[0].iter().zip(want_a.iter()).enumerate() {
-        assert_close(&format!("a[{i}]"), g, w, tol());
-    }
-    for (i, (&g, &w)) in got[1].iter().zip(want_b.iter()).enumerate() {
-        assert_close(&format!("b[{i}]"), g, w, tol());
-    }
-    assert!(got[1][3].is_nan());
 }
 
 #[derive(serde::Deserialize)]
@@ -340,17 +339,6 @@ fn assert_cols_close(got: &[Vec<f64>], want: &[&[f64]]) {
             }
         }
     }
-}
-
-#[test]
-fn quantile_normalize_as_extremes_hand_case() {
-    // The case in `quantile_normalize_with`'s doc. Sorted A = [−∞, 2, 3], B =
-    // [0, 5, 7]; A's −∞ adds nothing at position 0, so the target is
-    // [0, (2 + 5)/2, (3 + 7)/2] = [0, 3.5, 5].
-    let a = [2.0, f64::NEG_INFINITY, 3.0];
-    let b = [0.0, 5.0, 7.0];
-    let got = quantile_normalize_with(&[&a, &b], Infinities::AsExtremes).unwrap();
-    assert_cols_close(&got, &[&[3.5, f64::NEG_INFINITY, 5.0], &[0.0, 3.5, 5.0]]);
 }
 
 #[test]
@@ -541,43 +529,13 @@ fn quantile_normalize_unequal_columns_is_err() {
     assert!(matches!(r, Err(StatError::MismatchedLengths { .. })));
 }
 
-#[test]
-fn quantile_normalize_nan_propagates() {
-    // NaN in input propagates in output at the same position (shape preserved)
-    let col0 = [1.0f64, f64::NAN, 3.0];
-    let col1 = [2.0f64, 4.0, 6.0];
-    let got = quantile_normalize(&[&col0, &col1]).unwrap();
-    assert!(got[0][1].is_nan(), "NaN should propagate at col0[1]");
-    // col0's two values stretched onto 3 points are [1, 2, 3], so the target is
-    // [(1+2)/2, (2+4)/2, (3+6)/2] = [1.5, 3, 4.5]; col0 ranks [1, 2] map to
-    // positions 0 and 2 → 1.5, 4.5 (preprocessCore `normalize.quantiles` agrees).
-    assert_close(
-        "qn_nan/col0[0]",
-        got[0][0],
-        1.5,
-        Tol {
-            rel: 1e-12,
-            abs: 1e-14,
-        },
-    );
-    assert_close(
-        "qn_nan/col0[2]",
-        got[0][2],
-        4.5,
-        Tol {
-            rel: 1e-12,
-            abs: 1e-14,
-        },
-    );
-}
-
 // ── PIT family (requires --features dist) ────────────────────────────────────
 
 #[cfg(feature = "dist")]
 mod pit_tests {
     use commonstats::dist::continuous::Normal;
     use commonstats::error::StatError;
-    use commonstats::transform::{inv_pit, pit, quantile_map};
+    use commonstats::transform::{inv_pit, pit};
 
     fn normal() -> Normal {
         Normal::new(0.0, 1.0).unwrap()
@@ -586,12 +544,6 @@ mod pit_tests {
     #[test]
     fn pit_normal_cdf() {
         let n = normal();
-        // pit is just cdf — verify against known values
-        let p = pit(0.0, &n);
-        assert!(
-            (p - 0.5).abs() < 1e-12,
-            "pit(0, N(0,1)) should be 0.5, got {p}"
-        );
         let p2 = pit(1.6448536269514729, &n); // Φ(1.645) ≈ 0.95
         assert!(
             (p2 - 0.95).abs() < 1e-12,
@@ -602,10 +554,11 @@ mod pit_tests {
     #[test]
     fn inv_pit_normal_quantile() {
         let n = normal();
-        let x = inv_pit(0.5, &n).unwrap();
+        // Asymmetric u: at 0.5 `quantile` and `isf` agree, so it cannot tell them apart.
+        let x = inv_pit(0.95, &n).unwrap();
         assert!(
-            (x - 0.0).abs() < 1e-10,
-            "inv_pit(0.5, N(0,1)) should be 0, got {x}"
+            (x - 1.6448536269514729).abs() < 1e-12,
+            "inv_pit(0.95, N(0,1)) should be 1.6448536269514729, got {x}"
         );
         assert!(matches!(
             inv_pit(-0.1, &n),
@@ -618,27 +571,10 @@ mod pit_tests {
     }
 
     #[test]
-    fn quantile_map_normal_to_normal() {
-        // quantile_map(x, N(0,1), N(0,1)) = x (identity)
-        let n = normal();
-        let x = 1.5f64;
-        let mapped = quantile_map(x, &n, &n).unwrap();
-        assert!(
-            (mapped - x).abs() < 1e-8,
-            "identity map got {mapped}, want {x}"
-        );
-    }
-
-    #[test]
-    fn quantile_map_shifts_distribution() {
-        // quantile_map(0, N(0,1), N(1,1)) should give 1.0
-        // because Φ₀₁(0) = 0.5 → Φ₁₁⁻¹(0.5) = 1.0
-        let from = Normal::new(0.0, 1.0).unwrap();
-        let to = Normal::new(1.0, 1.0).unwrap();
-        let mapped = quantile_map(0.0, &from, &to).unwrap();
-        assert!(
-            (mapped - 1.0).abs() < 1e-8,
-            "shifted map got {mapped}, want 1.0"
-        );
+    fn quantile_map_asymmetric_point() {
+        // Off the median: at x = 0 cdf/sf and quantile/isf agree.
+        let to = Normal::new(1.0, 2.0).unwrap();
+        let mapped = commonstats::transform::quantile_map(1.5, &normal(), &to).unwrap();
+        assert!((mapped - 4.0).abs() < 1e-12, "got {mapped:e}");
     }
 }

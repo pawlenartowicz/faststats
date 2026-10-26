@@ -6,12 +6,12 @@
 use crate::accum::moments::{checked_variance, pooled_var};
 use crate::error::StatError;
 use crate::htest::anova::anova_sums;
-use crate::htest::chi2::contingency_chi2;
+use crate::htest::chi2::{contingency_chi2, table_shape};
 
 /// Cohen's d for two independent samples, using the pooled standard deviation
 /// (ddof = 1) as denominator; sign follows mean(`a`) − mean(`b`).
 ///
-/// `a`, `b`: observations, NaN dropped under the Omit default; each needs ≥ 2
+/// `a`, `b`: observations, NaN dropped under the Omit policy; each needs ≥ 2
 /// finite values, else [`StatError::TooFewObservations`]. No dedicated oracle
 /// fixture — the pooled-SD definition matches the d reported alongside
 /// `scipy.stats.ttest_ind`.
@@ -24,14 +24,21 @@ pub fn cohen_d(a: &[f64], b: &[f64]) -> Result<f64, StatError> {
 /// η² (eta-squared) for one-way ANOVA: SSB / (SSB + SSW), the proportion of total
 /// variance lying between groups; range [0, 1].
 ///
-/// `groups`: one slice per group (`&[&[f64]]`), NaN dropped under Omit; each group
-/// needs ≥ 2 finite values, else [`StatError::TooFewObservations`].
+/// `groups`: one slice per group (`&[&[f64]]`), NaN dropped under Omit; needs ≥ 2
+/// groups, each with ≥ 2 finite values, else [`StatError::TooFewObservations`].
 ///
-/// Matches `scipy.stats.f_oneway` (η² = SSB/SST, manual verification).
+/// Validated against: mpmath SSB/SST, cross-checked with R `summary(aov(y ~ g))` sums of
+/// squares (`tests/fixtures/anova.json`).
 ///
 /// Formula is duplicated in `anova_one_way` — mirrors `htest::anova::anova_one_way`,
 /// change both together.
 pub fn eta_squared(groups: &[&[f64]]) -> Result<f64, StatError> {
+    if groups.len() < 2 {
+        return Err(StatError::TooFewObservations {
+            needed: 2,
+            got: groups.len(),
+        });
+    }
     let (_grand_n, ssb, ssw) = anova_sums(groups)?;
     Ok(ssb / (ssb + ssw))
 }
@@ -41,12 +48,14 @@ pub fn eta_squared(groups: &[&[f64]]) -> Result<f64, StatError> {
 /// shared `contingency_chi2` helper (pure, no shared state) so it stays
 /// independent of the test fn.
 ///
-/// `table`: a rectangular ≥2×2 grid of non-negative counts (shape validated by the
-/// caller, e.g. [`chi2_independence`](crate::htest::chi2_independence)).
+/// `table`: a rectangular ≥2×2 grid of non-negative counts.
+/// [`StatError::TooFewObservations`] for fewer than 2 rows,
+/// [`StatError::DomainError`] for a ragged table or fewer than 2 columns.
 ///
 /// Matches `scipy.stats.contingency.association(table, method='cramer')`.
 pub fn cramers_v(table: &[&[f64]]) -> Result<f64, StatError> {
+    let (rows, cols) = table_shape(table)?;
     let (chi2, grand) = contingency_chi2(table);
-    let k = ((table.len() - 1).min(table[0].len() - 1)) as f64;
+    let k = ((rows - 1).min(cols - 1)) as f64;
     Ok(libm::sqrt(chi2 / (grand * k)))
 }

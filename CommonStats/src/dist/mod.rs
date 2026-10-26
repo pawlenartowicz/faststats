@@ -2,7 +2,7 @@
 //!
 //! A decomposed trait set: [`Distribution`] (support + moments),
 //! [`ContinuousDensity`]/[`DiscreteMass`] (pdf/pmf), [`ContinuousCdf`]/
-//! [`DiscreteCdf`] (cdf + quantile), and [`Sampler`]/[`DiscreteSampler`]
+//! [`DiscreteCdf`] (cdf + quantile), and `Sampler`/`DiscreteSampler`
 //! (sampling, by the algorithm each type names on its impl; also gated on
 //! `rng`). Every constructor returns `Result<_, StatError>`; quantiles
 //! return `Err(ProbabilityOutOfRange)` for `p ∉ [0,1]`.
@@ -43,7 +43,7 @@ impl Bound {
 ///
 /// Moments are `None` when undefined for the parameters. `kurtosis` is
 /// **excess** (Kurt − 3). The `std_dev` default (`variance().map(sqrt)`) is
-/// correct for all 18 distributions in this suite.
+/// correct for all 19 distributions in this suite.
 pub trait Distribution {
     /// Lower edge of the support.
     fn support_min(&self) -> Bound;
@@ -338,6 +338,7 @@ pub use continuous::InverseGaussian;
 pub use continuous::LogNormal;
 pub use continuous::Normal;
 pub use continuous::StudentT;
+pub use continuous::StudentizedRange;
 pub use continuous::Uniform;
 pub use continuous::Weibull;
 pub use discrete::Bernoulli;
@@ -346,16 +347,3 @@ pub use discrete::Geometric;
 pub use discrete::Hypergeometric;
 pub use discrete::NegBinomial;
 pub use discrete::Poisson;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bound_is_copy_and_eq() {
-        let b = Bound::Finite(1.0);
-        let c = b; // Copy
-        assert_eq!(b, c);
-        assert_eq!(Bound::NegInfinity, Bound::NegInfinity);
-    }
-}

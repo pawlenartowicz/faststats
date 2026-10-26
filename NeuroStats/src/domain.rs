@@ -16,8 +16,9 @@
 //! The module's tests have no external oracle: lattice rows are checked against
 //! a transcription of the plain `dx, dy, dz` triple loop
 //! (`lattice_rows_match_transcribed_dxdydz_scan`), and the CSR round trip is
-//! checked over every masked-volume fixture in `tests/fixtures/tfce_*.json`
-//! (`tests/tfce_oracle.rs::from_csr_round_trips_every_fixture`). The node order
+//! checked over every masked-volume fixture in `tests/fixtures/tfce_*.json`,
+//! dense and thinned, by sweeping both domains
+//! (`tests/tfce_oracle.rs::lattice_matches_csr_on_fixtures`). The node order
 //! itself is what the MNE goldens are generated in, so it is validated wherever
 //! the TFCE fixtures are.
 
@@ -508,9 +509,14 @@ mod tests {
             Domain::from_csr(alloc::vec![], alloc::vec![]).unwrap_err(),
             NeuroError::InvalidAdjacency
         );
-        // non-monotone offsets
+        // non-monotone offsets (offsets[n] == neighbours.len(), offsets[0] == 0)
         assert_eq!(
-            Domain::from_csr(alloc::vec![0, 2, 1], alloc::vec![1, 0]).unwrap_err(),
+            Domain::from_csr(alloc::vec![0, 2, 1, 2], alloc::vec![1, 2]).unwrap_err(),
+            NeuroError::InvalidAdjacency
+        );
+        // offsets[0] != 0
+        assert_eq!(
+            Domain::from_csr(alloc::vec![1, 1], alloc::vec![0]).unwrap_err(),
             NeuroError::InvalidAdjacency
         );
         // offsets[n] != neighbours.len()

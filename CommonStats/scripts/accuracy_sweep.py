@@ -6,7 +6,8 @@
 
 Covers every function and distribution method of `src/special/incomplete.rs`,
 `src/dist/continuous.rs` and `src/dist/discrete.rs` (with the crate-private log
-variants the quantile solvers use), plus `lgamma`, `lbeta` and `inv_beta_reg`.
+variants the quantile solvers use), plus `lgamma`, `lbeta` and `inv_beta_reg`;
+`StudentizedRange` only at its cited points, without quantiles (CITED_ONLY).
 The crate is evaluated by `scripts/accuracy_probe.rs` (built here with
 `cargo build --release --example accuracy_probe --features dist`, a no-op when
 current); mpmath is a development tool only, never a crate or CI dependency.
@@ -177,6 +178,22 @@ def gamma_tail(a, x, upper):
         return mpf(1) if upper else mpf(0)
     if mpmath.isinf(x):
         return mpf(0) if upper else mpf(1)
+    if a < 1e-10 and x < 1:
+        # P = x^a/Γ(1 + a)·(1 + a·S), S = Σ_{n≥1} (−x)^n/(n!·(a + n)), from
+        # γ(a, x) = Σ (−1)^n·x^{a+n}/(n!·(a + n)); Q through expm1. Q ≈ a·E₁(x)
+        # while P rounds to 1, so the quadrature's 1 − t loses it, and its
+        # x·v^{1/a} takes minutes at a ~ 1e-300. lnΓ(1 + a) ≈ −γ·a resolves
+        # only once 1 + a does, hence the −log10(a) digits.
+        with mp.extradps(10):
+            with mp.extradps(int(-mp.log10(a))):
+                lg1 = mp.loggamma(1 + a)
+            s, term, n = mpf(0), mpf(1), 0
+            while abs(term) > mpf(10) ** (-(mp.dps + 5)):
+                n += 1
+                term *= -x / n
+                s += term / (a + n)
+            ln_p = a * mp.log(x) - lg1 + mp.log1p(a * s)
+        return +(-mp.expm1(ln_p) if upper else mp.exp(ln_p))
     if 1e-10 <= a < 1e6:
         try:
             if upper:
@@ -299,7 +316,9 @@ def _beta_quad(a, b, x, y):
             pre = mp.exp(a * mp.log(x) - mp.log(a) - lnb)
 
         def logg(v):
-            return (b - 1) * mp.log1p(-x * v ** (1 / a))
+            # v^{1/a} as exp(ln v/a): at a ~ 1e-300 the power takes mpmath's
+            # integer-exponent path, ~6 ms per node.
+            return (b - 1) * mp.log1p(-x * mp.exp(mp.log(v) / a))
         pts = [1 - mpf(2) ** -k for k in range(1, 64)]
         return +(pre * _quad_log(logg, mpf(0), mpf(1), pts, mpf(0) if b >= 1 else mpf(1)))
 
@@ -657,12 +676,167 @@ class InverseGaussianT(Cont):
         return mp.log(lam / (2 * mp.pi)) / 2 - mpf(3) / 2 * mp.log(x) - lam * (x - mu) ** 2 / (2 * mu * mu * x)
 
 
+class StudentizedRangeT(Cont):
+    """Studentized range `W = R/S`, P = [k, df] (`df = mp.inf` allowed): `R` the
+    range of k iid N(0, 1), `ν·S² ~ χ²_ν` independent. Written apart from the
+    Rust code: the mixing integral runs over the scale `s` (not `ln u`) and
+    both integrals use mpmath's tanh-sinh `quad` through `_quad_log`, each on its
+    own non-negative integrand, so the sf is never `1 − cdf`.
+
+    Range part at `w`, `D = Φ(z) − Φ(z − w)`: cdf `k∫φ(z)·D^{k−1}`, sf
+    `k∫φ(z)·(Φ(z)^{k−1} − D^{k−1})` with the bracket as
+    `−Φ(z)^{k−1}·expm1((k−1)·ln(D/Φ(z)))`, pdf `k(k−1)∫φ(z)φ(z−w)·D^{k−2}`.
+    Mixing part: `∫ f_S(s)·F_R(q·s) ds` (the pdf takes `s·f_R(q·s)`), with
+    `f_S(s) = 2(ν/2)^{ν/2}/Γ(ν/2)·s^{ν−1}·e^{−νs²/2}`; for ν < 2 over `t = s^ν`
+    (`s^{ν−1} ds = dt/ν`), which removes the singularity at 0.
+
+    At k = 2 the closed form instead: `W = √2·|T|`, T ~ t_ν (N(0, 1) at ν = ∞).
+
+    Not in CONT: one value costs minutes. Used by gen_oracle.py's
+    `studentized_range` area (at 20 digits) and by the sweep's cited points
+    (CITED_ONLY, at 30). Values are memoised per instance: a sweep point asks
+    for the same cdf, sf or pdf more than once (a log variant and its
+    sensitivity)."""
+
+    def __init__(self, dps=20):
+        self.DPS = dps
+        self._memo = {}
+
+    @staticmethod
+    def _ln_d(z, w):
+        """(ln Φ(z), ln D, ln(1 − r)), r = Φ(z − w)/Φ(z), so D = Φ(z)·(1 − r).
+        D cancels for a small w (or a large |z| with z·w small) by at most
+        −log10(w) digits, which are added; it is taken from the two upper tails
+        where both arguments are positive. 1 − r is log1p(−r) while r < ½ (where
+        r is far below the precision, ln D − ln Φ(z) would read 0), else D/Φ(z)."""
+        with mp.extradps(max(0, int(-mp.log10(w))) + 5):
+            p, pw = ncdf(z), ncdf(z - w)
+            d = ncdf(w - z) - ncdf(-z) if z > w else p - pw
+            r = pw / p
+            ln1mr = mp.log1p(-r) if r < 0.5 else mp.log(d / p)
+            return +mp.log(p), +mp.log(d), +ln1mr
+
+    def _ln_range(self, kind, k, w):
+        """ln of the range cdf, sf or pdf at w > 0. The mass sits at 0, w/2 or
+        w; for w > 8 breakpoints also 4 and 16 either side of each, since there
+        each is a bump of width O(1) whose tail a long interval would miss (with
+        ±4 alone the cdf at w = 8e18 reads 1 − 4e-10); past 16 the tail is
+        below e^−128."""
+        ln_phi = lambda z: -z * z / 2 - mp.log(2 * mp.pi) / 2
+        cache = {}
+
+        def lf(z):
+            # Memoised: `_quad_log` integrates twice when the first value is
+            # below 1, over the same nodes.
+            if z not in cache:
+                ln_p, ln_d, ln1mr = self._ln_d(z, w)
+                if kind == "cdf":
+                    v = ln_phi(z) + (k - 1) * ln_d
+                elif kind == "sf":
+                    v = ln_phi(z) + (k - 1) * ln_p + mp.log(-mp.expm1((k - 1) * ln1mr))
+                else:
+                    v = ln_phi(z) + ln_phi(z - w) + (k - 2) * ln_d
+                cache[z] = v
+            return cache[z]
+        js = (-16, -4, 0, 4, 16) if w > 8 else (0,)
+        pts = sorted(set(c + j for c in (mpf(0), w / 2, w) for j in js))
+        peak = max(pts, key=lf)
+        v = _quad_log(lf, -mp.inf, mp.inf, pts, peak)
+        return mp.log(k * (k - 1) * v if kind == "pdf" else k * v)
+
+    @staticmethod
+    def _k2(kind, nu, q):
+        """cdf, sf or pdf at k = 2, through T at x = q/√2. Each tail is its own
+        incomplete beta, with u = x²/d and v = ν/d formed at as many extra
+        digits as the smaller one lacks: the other is then within that of 1 and
+        must keep its distance from 1 (ν = 0.5, q = 5.8e5: u = 1 − 3e-12, which
+        at the working precision put the cdf 3e-14 off)."""
+        x = q / mp.sqrt(2)
+        if nu == mp.inf:
+            if kind == "cdf":
+                return mp.erf(x / mp.sqrt(2))
+            return 2 * ncdf(-x) if kind == "sf" else mp.sqrt(2) * mp.npdf(x)
+        nu = mpf(nu)
+        if kind == "pdf":
+            return mp.sqrt(2) * mp.exp(StudentTT().logpdf([nu], x))
+        with mp.extradps(max(0, int(-mp.log10(min(x * x, nu) / (nu + x * x)))) + 5):
+            d = nu + x * x
+            u, v = x * x / d, nu / d
+            if kind == "cdf":
+                return +beta_lower(mpf(1) / 2, nu / 2, u, v)
+            return +beta_lower(nu / 2, mpf(1) / 2, v, u)
+
+    def _value(self, kind, P, q):
+        key = (kind, repr(P[0]), repr(P[1]), repr(q))
+        if key not in self._memo:
+            self._memo[key] = self._integrate(kind, P, q)
+        return self._memo[key]
+
+    def _integrate(self, kind, P, q):
+        k, nu = mpf(P[0]), P[1]
+        with mp.workdps(self.DPS):
+            q = mpf(q)
+            if k == 2:
+                return +self._k2(kind, nu, q)
+            if nu == mp.inf:
+                return +mp.exp(self._ln_range(kind, k, q))
+            nu = mpf(nu)
+            with mp.extradps(extra_digits([nu]) + 5):
+                c = +(mp.log(2) + nu / 2 * mp.log(nu / 2) - mp.loggamma(nu / 2))
+            cache = {}
+            sub = nu < 2
+
+            def lf(t):
+                # Memoised, as in `_ln_range`. `t = s^ν` where `sub`, else `t = s`.
+                if t not in cache:
+                    if t <= 0:
+                        cache[t] = mpf("-inf")
+                    else:
+                        ln_s = mp.log(t) / nu if sub else mp.log(t)
+                        s = mp.exp(ln_s)
+                        with mp.extradps(extra_digits([nu]) + 5):
+                            g = +(c - nu * s * s / 2 + (-mp.log(nu) if sub else (nu - 1) * ln_s))
+                        r = self._ln_range(kind, k, q * s)
+                        cache[t] = g + r + (ln_s if kind == "pdf" else 0)
+                return cache[t]
+            sig = 1 / mp.sqrt(2 * nu)
+            w_star = 2 * mp.sqrt(2) * mp.erfinv(2 * (k - mpf(3) / 8) / (k + mpf(1) / 4) - 1)
+            s_star = w_star / q
+            pts = sorted(set(p ** nu if sub else p
+                             for p in (1 - 4 * sig, mpf(1), 1 + 4 * sig, s_star / 10, s_star, 10 * s_star)
+                             if p > 0))
+            peak = max(pts, key=lf)
+            return +_quad_log(lf, mpf(0), mp.inf, pts, peak)
+
+    def cdf(self, P, x):
+        return self._value("cdf", P, x)
+
+    def sf(self, P, x):
+        return self._value("sf", P, x)
+
+    def pdf(self, P, x):
+        return self._value("pdf", P, x)
+
+    def logpdf(self, P, x):
+        with mp.workdps(self.DPS):
+            return mp.log(self.pdf(P, x))
+
+
 CONT = {
     "normal": NormalT(), "studentt": StudentTT(), "chisquared": ChiSquaredT(),
     "fisherf": FisherFT(), "uniform": UniformT(), "exponential": ExponentialT(),
     "cauchy": CauchyT(), "weibull": WeibullT(), "lognormal": LogNormalT(),
     "gamma": GammaT(), "beta": BetaT(), "inversegaussian": InverseGaussianT(),
 }
+
+# Distributions swept only at their CITED_POINTS, never at random parameter
+# sets: one truth value costs minutes. Their sensitivity K comes from x alone
+# (|x·pdf|), not the parameters, which would cost at least four more such values
+# per point, so r is an upper bound. No quantile truth (an mpmath root solve
+# over such values). CITED_TIMEOUT replaces TRUTH_TIMEOUT for them.
+CITED_ONLY = {"studentizedrange": StudentizedRangeT(dps=30)}
+CITED_METHODS = {"cdf": "prob", "sf": "prob", "pdf": "value", "ln_cdf": "log", "ln_sf": "log"}
+CITED_TIMEOUT = 4 * 3600
 
 
 # ---- discrete distributions -------------------------------------------------
@@ -918,8 +1092,8 @@ def value_fn(name):
         f, dx = SPECIAL_VALUE[name]
         return f, None, True, dx
     ty, method = name.split(".")
-    if ty in CONT:
-        d = CONT[ty]
+    if ty in CONT or ty in CITED_ONLY:
+        d = CONT.get(ty) or CITED_ONLY[ty]
 
         def xpdf(P, x):
             return abs(x) * d.pdf(P, x)
@@ -932,7 +1106,7 @@ def value_fn(name):
             "ln_sf": (lambda P, x: -mp.inf if x >= d.support(P)[1] else ln_tail(d.sf(P, x), lambda: d.cdf(P, x)),
                       lambda P, x: xpdf(P, x) / d.sf(P, x)),
         }[method]
-        return f, None, True, dx
+        return f, ([] if ty in CITED_ONLY else None), True, dx
     d = DISC[ty]
     f = {"mass": d.mass, "log_mass": d.logmass, "cdf": d.cdf, "sf": d.sf}[method]
     return f, d.real, False, None
@@ -1284,6 +1458,15 @@ def mstr(v):
         return "nan"
     if mpmath.isinf(v):
         return "inf" if v > 0 else "-inf"
+    # Past 2^±2^4096 a value scores as 0 or ±inf. nstr's time grows with the
+    # length of the binary exponent (under a second at 4096 bits), and
+    # Weibull's e^{−(x/λ)^k} reaches exponents of thousands of digits, which
+    # take minutes or exceed Python's int-to-str digit limit.
+    mag = mpmath.mag(v)
+    if mag < -2 ** 4096:
+        return "0"
+    if mag > 2 ** 4096:
+        return "inf" if v > 0 else "-inf"
     return mpmath.nstr(v, 30, min_fixed=0, max_fixed=0)
 
 
@@ -1294,7 +1477,7 @@ def truth_job(job):
     key = cache_key(params, x)
     entry = {}
     old = signal.signal(signal.SIGALRM, _timeout)
-    signal.alarm(TRUTH_TIMEOUT)
+    signal.alarm(CITED_TIMEOUT if FN[name]["dist"] in CITED_ONLY else TRUTH_TIMEOUT)
     try:
         P = [to_mp(s) for s in params]
         X = to_mp(x)
@@ -1374,6 +1557,9 @@ for _t in CONT:
         FN[f"{_t}.{_m}"] = {"group": "continuous", "kind": _k, "dist": _t}
     for _m in LN_VARIANTS.get(_t, ()):
         FN[f"{_t}.{_m}"] = {"group": "continuous", "kind": "log", "dist": _t}
+for _t in CITED_ONLY:
+    for _m, _k in CITED_METHODS.items():
+        FN[f"{_t}.{_m}"] = {"group": "continuous", "kind": _k, "dist": _t}
 for _t in DISC:
     for _m, _k in DISC_METHODS.items():
         FN[f"{_t}.{_m}"] = {"group": "discrete", "kind": _k, "dist": _t}
@@ -1499,6 +1685,8 @@ DIST_REGIME = {
     "gamma": lambda P: "shape " + shape_bucket(P[0]),
     "beta": lambda P: "min " + ("subnormal" if min(P) < TINY else shape_bucket(min(P), (8, 100))),
     "inversegaussian": lambda P: "shape/mean<1" if P[1] < P[0] else "shape/mean>=1",
+    # The Gamma mixing weight's branches in `StudentizedRange::ln_mix` (a = df/2).
+    "studentizedrange": lambda P: "df=inf" if P[1] == math.inf else "df/2 " + shape_bucket(P[1] / 2, (0.5, 8)),
     "bernoulli": lambda P: "all",
     "binomial": lambda P: "n<1e6" if P[0] < 1e6 else "n>=1e6",
     "poisson": lambda P: "lambda<10" if P[0] < 10 else "lambda>=10",
@@ -1820,6 +2008,16 @@ CITED_POINTS = [
     ("fisherf.isf", [0.0015205765296369873, 2057.918596622136], 0.44),
     ("fisherf.cdf", [534536453686.36383, 6.913288301642686], 0.00474263815705448),
     ("beta.log_density", [0.598598177922815, 760412215611.1234], 2.3840156456241725e-13),
+    # StudentizedRange (CITED_ONLY): df = ∞ against a large finite df, the mixing
+    # weight's branches at df/2 = 8 and ½, k → 1⁺, the k = 2 and k < 2 density
+    # near the range integrand's Hermite switch (w ≈ ½), k = 100's lower tail
+    # (cdf ~ q^{k−1}), tiny df (sf ~ q^{−df}), and the cdf near ½.
+    ("studentizedrange.cdf", [5.0, math.inf], 3.0), ("studentizedrange.sf", [5.0, 1e6], 3.0),
+    ("studentizedrange.sf", [3.0, 15.99], 4.0), ("studentizedrange.sf", [3.0, 16.0], 4.0),
+    ("studentizedrange.ln_sf", [2.0, 0.999], 30.0), ("studentizedrange.ln_cdf", [1.000001, 1.0], 1e-3),
+    ("studentizedrange.pdf", [2.0, 5.0], 0.5), ("studentizedrange.pdf", [1.5, 5.0], 0.4),
+    ("studentizedrange.ln_cdf", [100.0, 5.0], 0.5), ("studentizedrange.ln_sf", [5.0, 0.1], 1e6),
+    ("studentizedrange.cdf", [20.0, 30.0], 5.0),
 ]
 
 
@@ -2027,7 +2225,7 @@ def run_probe(reqs):
 K_VERSION = 2
 # Version of the truth code for timed-out points: one that timed out under an
 # earlier version is retried.
-TIMEOUT_VERSION = 3
+TIMEOUT_VERSION = 4
 
 
 def stale(e):
@@ -2572,6 +2770,7 @@ BEGIN, END = "//! <!-- accuracy:begin -->", "//! <!-- accuracy:end -->"
 TYPE_NAME = {"normal": "Normal", "studentt": "StudentT", "chisquared": "ChiSquared", "fisherf": "FisherF",
              "uniform": "Uniform", "exponential": "Exponential", "cauchy": "Cauchy", "weibull": "Weibull",
              "lognormal": "LogNormal", "gamma": "Gamma", "beta": "Beta", "inversegaussian": "InverseGaussian",
+             "studentizedrange": "StudentizedRange",
              "bernoulli": "Bernoulli", "binomial": "Binomial", "poisson": "Poisson", "geometric": "Geometric",
              "negbinomial": "NegBinomial", "negbinomial_ms": "NegBinomial (`from_mean_size`)",
              "hypergeometric": "Hypergeometric"}
@@ -2609,7 +2808,7 @@ def table_block(group, F):
         cols = ["cdf", "sf", "pdf", "log_density", "quantile", "isf"]
         rows.append("//! | Distribution | " + " | ".join(cols) + " |")
         rows.append("//! |---|" + "---|" * len(cols))
-        for ty in CONT:
+        for ty in list(CONT) + list(CITED_ONLY):
             rows.append(f"//! | {TYPE_NAME[ty]} | " + " | ".join(cell(F.get(f"{ty}.{c}")) for c in cols) + " |")
     elif group == "discrete":
         cols = ["mass", "log_mass", "cdf", "sf", "quantile"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import operator
 import secrets
 from dataclasses import dataclass, field
 
@@ -120,9 +121,9 @@ def _run_settings(params, tail, seed, n_perm, n_jobs, extend, engine: str):
     p = resolve_params(params)
     check_tail(tail)
     try:
-        n_perm, n_jobs = int(n_perm), int(n_jobs)
-        seed = None if seed is None else int(seed)
-    except (TypeError, OverflowError) as e:
+        n_perm, n_jobs = operator.index(n_perm), operator.index(n_jobs)
+        seed = None if seed is None else operator.index(seed)
+    except TypeError as e:
         raise ValueError(f"seed, n_perm and n_jobs must be integers: {e}") from e
     if not 1 <= n_perm <= _MAX_DRAWS:
         raise ValueError(f"n_perm must be in [1, {_MAX_DRAWS}], got {n_perm}")
@@ -204,11 +205,11 @@ def tfce_ols(data, space=None, *, tested, confounds=None, conn=None, params="exa
     1e-10, and ``p_fwe`` agrees within the 4-sigma Monte Carlo band of two
     runs (``tests/test_ols.py::test_matches_nilearn_permuted_ols``).
     nilearn's ``n_perm`` does not count the unpermuted data, so ``n_perm=B``
-    here corresponds to ``n_perm=B - 1`` there. The observed t is also
-    checked against one least-squares fit per node
-    (``::test_stat_obs_is_the_t_of_a_least_squares_fit``), and the
-    one-sample case against MNE-Python 1.12.1
-    (``::test_intercept_test_reproduces_the_mne_fixture``).
+    here corresponds to ``n_perm=B - 1`` there. The engine's t is checked
+    against one normal-equations fit per node and per draw
+    (``NeuroStats/tests/ols_oracle.rs::o3_draw_statistics_match_per_draw_fits``),
+    and the one-sample case against MNE-Python 1.12.1
+    (``NeuroStats/tests/perm_oracle.rs::g5_exact_enumeration_matches_mne``).
 
     ``data``, ``space`` and ``conn`` go through :func:`import_from`, which
     lists every accepted form. ``data``: an ``(n, V)`` array with one row per

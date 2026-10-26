@@ -6,8 +6,9 @@
 //!
 //! `allow(dead_code)`: each `*_oracle.rs` is a separate test binary that pulls in
 //! the whole harness but uses only its slice — the grid binaries (special/dist)
-//! use `check_grid` et al.; the bespoke binaries (transform/density) use only
-//! `assert_close`/`Tol`. Every item is live in some binary, dead in others.
+//! use `check_grid` et al.; the bespoke binaries (transform/density/htest/
+//! descriptives) use only `assert_close`/`Tol`. Every item is live in some
+//! binary, dead in others.
 #![allow(dead_code)]
 
 use serde::Deserialize;
@@ -31,7 +32,8 @@ pub struct Row {
     #[serde(default)]
     pub tier: Tier,
     /// Tail rows only: the reviewed accuracy band (our impl's measured rel error
-    /// vs truth). `None` until curated — such rows fall back to the graceful check.
+    /// vs truth, from `TAIL_BANDS` in `scripts/gen_oracle.py`). `check_grid`
+    /// fails on a tail row without one.
     #[serde(default)]
     pub band: Option<f64>,
 }
@@ -68,15 +70,15 @@ pub fn load(name: &str) -> Vec<Row> {
     serde_json::from_str(&txt).expect("fixture parse")
 }
 
-/// Always-on check (spec §3): result is finite, and its sign matches truth where
-/// truth is meaningfully non-zero. Catches NaN/Inf and wrong-branch even where the
-/// numeric band is loose or absent.
+/// Always-on check (spec §3): result is finite, and non-zero with the sign of
+/// truth where truth is meaningfully non-zero. Catches NaN/Inf, an underflow to
+/// ±0 and a wrong branch even where the numeric tolerance is loose.
 fn graceful(name: &str, args: &[f64], got: f64, want: f64) {
     assert!(got.is_finite(), "{name}{args:?}: non-finite result {got:e}");
     if want.abs() > SIGN_FLOOR {
         assert!(
-            got.signum() == want.signum(),
-            "{name}{args:?}: sign mismatch — got {got:e}, want {want:e}"
+            got != 0.0 && got.signum() == want.signum(),
+            "{name}{args:?}: zero or sign mismatch: got {got:e}, want {want:e}"
         );
     }
 }
@@ -94,7 +96,7 @@ pub fn rel_err(got: f64, want: f64) -> f64 {
 }
 
 /// Per fixture: null-skip → graceful check → bulk rows within `tol`; tail rows
-/// within `TAIL_SLACK × band` (or graceful-only while `band` is uncurated).
+/// within `TAIL_SLACK × band` (a tail row without a band fails).
 pub fn check_grid(name: &str, tol: Tol, eval: impl Fn(&[f64]) -> f64) {
     for r in load(name) {
         let Some(want) = r.expected else { continue }; // expected==null → skip
@@ -111,36 +113,22 @@ pub fn check_grid(name: &str, tol: Tol, eval: impl Fn(&[f64]) -> f64) {
                 );
             }
             Tier::Tail => {
-                if let Some(band) = r.band {
-                    let allowed = TAIL_SLACK * band;
-                    let rel = rel_err(got, want);
-                    assert!(
-                        rel <= allowed,
-                        "{name}{:?} tail: rel {rel:e} > slack·band {allowed:e} (band {band:e})",
+                let band = r.band.unwrap_or_else(|| {
+                    panic!(
+                        "{name}{:?}: tail row without a band; add it to TAIL_BANDS in \
+                         scripts/gen_oracle.py and regenerate",
                         r.args
-                    );
-                }
-                // Uncurated band → graceful-only; already asserted above.
+                    )
+                });
+                let allowed = TAIL_SLACK * band;
+                let rel = rel_err(got, want);
+                assert!(
+                    rel <= allowed,
+                    "{name}{:?} tail: rel {rel:e} > slack·band {allowed:e} (band {band:e})",
+                    r.args
+                );
             }
         }
-    }
-}
-
-/// Opt-in monotonicity check for cdf-like (↑ in x) and quantile (↑ in p) grids
-/// whose fixture rows are ordered by the varying argument. A small slack absorbs
-/// float noise at flat segments.
-pub fn assert_monotone(name: &str, eval: impl Fn(&[f64]) -> f64) {
-    let mut prev: Option<f64> = None;
-    for r in load(name) {
-        let y = eval(&r.args);
-        if let Some(p) = prev {
-            assert!(
-                y >= p - 1e-12,
-                "{name}{:?}: not monotone↑ — {y:e} < previous {p:e}",
-                r.args
-            );
-        }
-        prev = Some(y);
     }
 }
 

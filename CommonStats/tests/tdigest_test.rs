@@ -33,6 +33,11 @@ fn exact_quantile_sorted(sorted: &[f64], q: f64) -> f64 {
     sorted[lo] + (h - lo as f64) * (sorted[hi] - sorted[lo])
 }
 
+/// Fraction of the sorted sample ≤ `v`: the exact empirical CDF.
+fn exact_rank(sorted: &[f64], v: f64) -> f64 {
+    sorted.partition_point(|&x| x <= v) as f64 / sorted.len() as f64
+}
+
 fn digest_of(xs: &[f64]) -> TDigest {
     let mut d = TDigest::new(TDigest::default_delta()).unwrap();
     for &x in xs {
@@ -56,6 +61,11 @@ fn accuracy_rank_error_within_bound() {
             "q={q}: cdf={est_rank}, |err|={} > 0.0075",
             (est_rank - q).abs()
         );
+        let rank = exact_rank(&sorted, d.quantile(q).unwrap());
+        assert!(
+            (rank - q).abs() <= 0.0075,
+            "q={q}: exact rank of quantile = {rank}"
+        );
     }
 }
 
@@ -63,6 +73,8 @@ fn accuracy_rank_error_within_bound() {
 #[test]
 fn merge_associativity() {
     let xs = lcg_sample(9000, 7);
+    let mut sorted = xs.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let (a, b, c) = (&xs[0..3000], &xs[3000..6000], &xs[6000..9000]);
     let (da, db, dc) = (digest_of(a), digest_of(b), digest_of(c));
     let mut left = da.clone();
@@ -73,9 +85,15 @@ fn merge_associativity() {
     let mut right = da.clone();
     right.merge(&bc);
     for &q in &[0.05, 0.25, 0.5, 0.75, 0.95] {
-        let l = left.quantile(q).unwrap();
-        let r = right.quantile(q).unwrap();
-        assert!((left.cdf(l) - right.cdf(r)).abs() <= 0.0075, "q={q}");
+        for d in [&left, &right] {
+            let rank = exact_rank(&sorted, d.quantile(q).unwrap());
+            assert!((rank - q).abs() <= 0.0075, "q={q}: rank {rank}");
+        }
+        let cross = right.cdf(left.quantile(q).unwrap());
+        assert!(
+            (cross - q).abs() <= 0.0075,
+            "q={q}: right.cdf(left.quantile) = {cross}"
+        );
     }
     assert_eq!(left.count(), right.count());
 }
@@ -106,13 +124,19 @@ fn empty_identity() {
     assert_eq!(d.min(), f64::INFINITY);
     assert_eq!(d.max(), f64::NEG_INFINITY);
     assert!(d.cdf(0.0).is_nan());
-    assert!(d.quantile(0.5).is_err());
-    // empty is the merge identity
-    let full = digest_of(&lcg_sample(500, 3));
-    let mut e = TDigest::empty();
-    e.merge(&full);
-    assert_eq!(e.count(), full.count());
-    assert_eq!(e.quantile(0.5).unwrap(), full.quantile(0.5).unwrap());
+    assert_eq!(d.quantile(0.5), Err(commonstats::StatError::EmptyInput));
+    // empty is the merge identity on both sides
+    let full = digest_of(&lcg_sample(2000, 3));
+    let mut left = TDigest::empty();
+    left.merge(&full);
+    let mut right = full.clone();
+    right.merge(&TDigest::empty());
+    for q in [0.1, 0.5, 0.9] {
+        assert_eq!(left.quantile(q).unwrap(), full.quantile(q).unwrap());
+        assert_eq!(right.quantile(q).unwrap(), full.quantile(q).unwrap());
+    }
+    assert_eq!(left.count(), full.count());
+    assert_eq!(right.count(), full.count());
 }
 
 // (5) single value.
@@ -132,13 +156,22 @@ fn single_value() {
 // (6) duplicates.
 #[test]
 fn duplicates() {
-    let mut xs = vec![5.0; 1000];
-    xs.extend(vec![5.0; 1000]);
-    let d = digest_of(&xs);
+    // Constant sample through two flushes: equal-mean centroids.
+    let d = digest_of(&vec![5.0; 2000]);
     assert_eq!(d.count(), 2000);
+    assert_eq!((d.min(), d.max()), (5.0, 5.0));
     assert_eq!(d.quantile(0.5).unwrap(), 5.0);
-    assert_eq!(d.min(), 5.0);
-    assert_eq!(d.max(), 5.0);
+    assert_eq!(d.cdf(5.0), 1.0); // value-space span 0 at the end: t = 1
+    assert_eq!(d.cdf(4.999), 0.0);
+    // Two atoms: quantiles land on the atoms, cdf between them is the mass below.
+    // (At an atom the cdf may sit anywhere in its jump, so it is not asserted there.)
+    let mut xs = vec![5.0; 1000];
+    xs.extend(vec![7.0; 1000]);
+    let d = digest_of(&xs);
+    assert_eq!(d.quantile(0.25).unwrap(), 5.0);
+    assert_eq!(d.quantile(0.75).unwrap(), 7.0);
+    assert!((d.cdf(6.0) - 0.5).abs() <= 0.0075);
+    assert_eq!(d.cdf(7.0), 1.0);
 }
 
 // (7) NaN omitted.
@@ -168,15 +201,18 @@ fn cdf_monotone() {
     }
 }
 
-// quantile_edges integration (area-3 contract).
+// quantile_edges: k + 1 ascending edges spanning the exact sample min and max.
 #[test]
-fn quantile_edges_for_area3() {
-    let d = digest_of(&lcg_sample(5000, 55));
-    let edges = quantile_edges(&d, 10).unwrap();
-    assert_eq!(edges.len(), 11);
-    assert_eq!(edges[0], d.min());
-    assert_eq!(edges[10], d.max());
-    for w in edges.windows(2) {
-        assert!(w[1] >= w[0]);
+fn quantile_edges_span_sample_and_ascend() {
+    let xs = lcg_sample(5000, 55);
+    let mut sorted = xs.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let d = digest_of(&xs);
+    for k in [1usize, 10] {
+        let edges = quantile_edges(&d, k).unwrap();
+        assert_eq!(edges.len(), k + 1);
+        assert_eq!(edges[0], sorted[0]); // exact sample min
+        assert_eq!(edges[k], sorted[sorted.len() - 1]); // exact sample max
+        assert!(edges.windows(2).all(|w| w[1] >= w[0]));
     }
 }

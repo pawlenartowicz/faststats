@@ -4,29 +4,30 @@
 //! forward-compatible if added later). NaN inputs are omitted via `nan::clean`.
 
 use crate::error::StatError;
-use crate::nan::{NanPolicy, clean};
+use crate::nan::clean;
 use alloc::vec::Vec;
 
 /// Box–Cox (1964) power transform for positive data.
 ///
 /// **Convention:** `(x^λ − 1)/λ` for λ≠0; `ln(x)` for λ=0. Requires `x > 0`
-/// for every finite input element; the first `x ≤ 0` encountered aborts with
+/// for every non-NaN input element (−∞ included); any `x ≤ 0` aborts with
 /// `DomainError` — no partial output is returned.
 /// NaN values are omitted (Omit policy).
 ///
 /// **Matches** `scipy.stats.boxcox(v, lmbda=lambda)`.
 ///
 /// # Parameters
-/// - `v`: input slice; finite values must all be strictly positive.
+/// - `v`: input slice; non-NaN values must all be strictly positive (+∞ is
+///   transformed like any other value).
 /// - `lambda`: transform parameter (any finite `f64`).
 ///
 /// # Returns
-/// Transformed values in the order of the finite inputs.
+/// Transformed values in the order of the non-NaN inputs (±∞ included).
 ///
 /// # Errors
 /// - [`StatError::EmptyInput`] if `v` is empty.
 /// - [`StatError::AllNaN`] if all values are NaN.
-/// - [`StatError::DomainError`] if any finite value is `≤ 0`.
+/// - [`StatError::DomainError`] if any non-NaN value is `≤ 0`.
 ///
 /// # Examples
 /// ```
@@ -37,7 +38,7 @@ use alloc::vec::Vec;
 /// assert!((r[1] - 1.0).abs() < 1e-14);
 /// ```
 pub fn box_cox(v: &[f64], lambda: f64) -> Result<Vec<f64>, StatError> {
-    let data = clean(v, NanPolicy::Omit)?;
+    let data = clean(v)?;
     if data.iter().any(|&x| x <= 0.0) {
         return Err(StatError::DomainError(
             "box_cox requires x > 0 for all inputs",
@@ -70,11 +71,11 @@ pub fn box_cox(v: &[f64], lambda: f64) -> Result<Vec<f64>, StatError> {
 /// **Matches** `scipy.stats.yeojohnson(v, lmbda=lambda)`.
 ///
 /// # Parameters
-/// - `v`: input slice; may contain any finite `f64` and NaN.
+/// - `v`: input slice; any `f64` (NaN omitted, ±∞ transformed).
 /// - `lambda`: transform parameter.
 ///
 /// # Returns
-/// Transformed values in the order of the finite inputs.
+/// Transformed values in the order of the non-NaN inputs (±∞ included).
 ///
 /// # Errors
 /// - [`StatError::EmptyInput`] if `v` is empty.
@@ -88,7 +89,7 @@ pub fn box_cox(v: &[f64], lambda: f64) -> Result<Vec<f64>, StatError> {
 /// assert!((r[0] - (-f64::ln(2.0))).abs() < 1e-14);
 /// ```
 pub fn yeo_johnson(v: &[f64], lambda: f64) -> Result<Vec<f64>, StatError> {
-    let data = clean(v, NanPolicy::Omit)?;
+    let data = clean(v)?;
     Ok(data.iter().map(|&x| yj_scalar(x, lambda)).collect())
 }
 

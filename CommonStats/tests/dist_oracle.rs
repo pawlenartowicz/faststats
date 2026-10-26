@@ -17,6 +17,7 @@ use commonstats::dist::continuous::InverseGaussian;
 use commonstats::dist::continuous::LogNormal;
 use commonstats::dist::continuous::Normal;
 use commonstats::dist::continuous::StudentT;
+use commonstats::dist::continuous::StudentizedRange;
 use commonstats::dist::continuous::Uniform;
 use commonstats::dist::continuous::Weibull;
 use commonstats::dist::discrete::Bernoulli;
@@ -29,10 +30,13 @@ use commonstats::dist::{
     ContinuousCdf, ContinuousDensity, DiscreteCdf, DiscreteMass, Distribution,
 };
 
-// Bulk ladder (spec §3): pdf/cdf/sf/pmf value-kind vs ppf inverse-kind.
+// Bulk ladder (spec §3): pdf/cdf/sf/pmf value-kind vs ppf inverse-kind. Values
+// are relative only: an absolute floor would pass any row whose truth is below it
+// (an sf formed as `1 − cdf`, a density underflowed to 0). Quantiles keep a floor
+// for the rows whose true quantile is 0 (a symmetric median, Uniform's p = ¼).
 const VAL: Tol = Tol {
     rel: 1e-12,
-    abs: 1e-14,
+    abs: 0.0,
 };
 const INV: Tol = Tol {
     rel: 1e-10,
@@ -158,6 +162,27 @@ fn inversegaussian_oracle() {
     check_grid("dist_inversegaussian_isf", INV, |a| ig.isf(a[0]).unwrap());
 }
 
+/// A fixture row's `[k, df, x]` as the type; df `0.0` stands for ∞ (JSON has
+/// no ∞, and df = 0 is invalid). Mirrors `_sr_df_json` in
+/// `scripts/gen_oracle.py` — change together.
+fn sr(a: &[f64]) -> StudentizedRange {
+    let df = if a[1] == 0.0 { f64::INFINITY } else { a[1] };
+    StudentizedRange::new(a[0], df).unwrap()
+}
+
+#[test]
+fn studentizedrange_oracle() {
+    check_grid("dist_studentizedrange_pdf", VAL, |a| sr(a).density(a[2]));
+    check_grid("dist_studentizedrange_cdf", VAL, |a| sr(a).cdf(a[2]));
+    check_grid("dist_studentizedrange_sf", VAL, |a| sr(a).sf(a[2]));
+    check_grid("dist_studentizedrange_ppf", INV, |a| {
+        sr(a).quantile(a[2]).unwrap()
+    });
+    check_grid("dist_studentizedrange_isf", INV, |a| {
+        sr(a).isf(a[2]).unwrap()
+    });
+}
+
 #[test]
 fn beta_oracle() {
     let b = Beta::new(2.5, 4.0).unwrap();
@@ -172,23 +197,18 @@ fn beta_oracle() {
 fn small_shape_deep_lower_tail_quantile() {
     // Closed form for shape ½: P(½, y) = erf(√y), so χ²(1).quantile(p) =
     // 2·erf⁻¹(p)² = π p²/2 · (1 + O(p²)); the O(p²) term is below f64 resolution
-    // for p ≤ 1e-8. Gamma(½, rate ½) is the same distribution. Exercises the
-    // small-p seed of the Newton solvers, which the fixtures (k=5, shape=3.5)
-    // never reach.
+    // for p ≤ 1e-8. χ²(1) runs Gamma(½, rate ½)'s solver (`as_gamma`), so this
+    // also covers Gamma. Exercises the small-p seed of the Newton solvers, which
+    // the fixtures (k=5, shape=3.5) never reach.
     let c = ChiSquared::new(1.0).unwrap();
-    let g = Gamma::new(0.5, 0.5).unwrap();
     for p in [1e-8, 1e-12] {
         let truth = core::f64::consts::FRAC_PI_2 * p * p;
-        for (name, got) in [
-            ("chi2", c.quantile(p).unwrap()),
-            ("gamma", g.quantile(p).unwrap()),
-        ] {
-            let rel = ((got - truth) / truth).abs();
-            assert!(
-                rel < 1e-13,
-                "{name}.quantile({p:e}) = {got:e}, want {truth:e} (rel {rel:e})"
-            );
-        }
+        let got = c.quantile(p).unwrap();
+        let rel = ((got - truth) / truth).abs();
+        assert!(
+            rel < 1e-13,
+            "chi2.quantile({p:e}) = {got:e}, want {truth:e} (rel {rel:e})"
+        );
     }
     // Shape 0.1: no closed form; require cdf(quantile(p)) to round-trip.
     let c = ChiSquared::new(0.2).unwrap();
@@ -395,6 +415,11 @@ fn discrete_tails_and_quantile_edges() {
     let nb = NegBinomial::new(7_565_433.3, 0.999_999_999_999_372_3).unwrap();
     assert!(nb.quantile(0.5).is_err());
     assert!(Poisson::new(1e19).unwrap().quantile(0.5).is_err());
+    // A heavy tail past the moment-based starting bracket (418, where
+    // P(X > 418) ≈ 3.6e-4): the search must grow it for p above ~0.9996.
+    // scipy: nbinom(0.1, 0.01).ppf(1 − 1e-6) = 941 (scipy's p is 1 − ours).
+    let heavy = NegBinomial::new(0.1, 0.99).unwrap();
+    assert_eq!(heavy.quantile(1.0 - 1e-6).unwrap(), 941);
     // `quantile(1)` on an unbounded support is +∞, so an error.
     assert!(Poisson::new(3.0).unwrap().quantile(1.0).is_err());
     assert!(NegBinomial::new(3.0, 0.4).unwrap().quantile(1.0).is_err());
@@ -788,6 +813,13 @@ fn measure_tail_bands() {
             measure_band("dist_inversegaussian_ppf", |a| ig.quantile(a[0]).unwrap()),
             measure_band("dist_inversegaussian_isf", |a| ig.isf(a[0]).unwrap()),
         ),
+        (
+            "studentizedrange",
+            measure_band("dist_studentizedrange_ppf", |a| {
+                sr(a).quantile(a[2]).unwrap()
+            }),
+            measure_band("dist_studentizedrange_isf", |a| sr(a).isf(a[2]).unwrap()),
+        ),
     ];
     for (dist, ppf, isf) in bands {
         for (kind, val) in [("ppf", ppf), ("isf", isf)] {
@@ -799,109 +831,57 @@ fn measure_tail_bands() {
     }
 }
 
-// ---- non-grid sanity tests (kept verbatim) -----------------------------------
+// ---- non-grid regressions ---------------------------------------------------
+/// Closed-form `mean`/`variance`, `None` where undefined (never NaN; `dist`
+/// module docs), at parameters where each convention shows: `sd ≠ 1` (Normal
+/// takes the standard deviation), `rate ≠ 1` (Gamma takes a rate), `σ ≠ 1`
+/// (LogNormal), Weibull `k ≠ 1`. Truth: the closed forms; the Weibull (Γ)
+/// and LogNormal (exp) values from mpmath (40 dps).
 #[test]
-fn normal_basic() {
-    let n = Normal::new(0.0, 1.0).unwrap();
-    assert!((n.cdf(0.0) - 0.5).abs() < 1e-15);
-    assert!((n.density(0.0) - 0.398_942_280_401_432_7).abs() < 1e-15);
-    assert_eq!(n.quantile(0.0).unwrap(), f64::NEG_INFINITY);
-    assert_eq!(n.quantile(1.0).unwrap(), f64::INFINITY);
-    assert!((n.quantile(0.975).unwrap() - 1.959_963_984_540_054).abs() < 1e-9);
-    assert!(Normal::new(0.0, -1.0).is_err());
-    assert_eq!(n.mean(), Some(0.0));
-    assert_eq!(n.variance(), Some(1.0));
-    // sf evaluates the tail directly, avoiding 1-cdf cancellation in the far upper tail.
-    assert!(n.sf(10.0) > 0.0 && n.sf(10.0) < 1e-20);
+fn continuous_moments() {
+    type Row = (
+        &'static str,
+        Box<dyn Distribution>,
+        Option<f64>,
+        Option<f64>,
+    );
+    #[rustfmt::skip]
+    let rows: [Row; 16] = [
+        ("Normal(0.5, 2)", Box::new(Normal::new(0.5, 2.0).unwrap()), Some(0.5), Some(4.0)),
+        ("StudentT(5)", Box::new(StudentT::new(5.0).unwrap()), Some(0.0), Some(5.0 / 3.0)),
+        ("StudentT(2)", Box::new(StudentT::new(2.0).unwrap()), Some(0.0), None),
+        ("StudentT(1)", Box::new(StudentT::new(1.0).unwrap()), None, None),
+        ("ChiSquared(4)", Box::new(ChiSquared::new(4.0).unwrap()), Some(4.0), Some(8.0)),
+        ("FisherF(5, 10)", Box::new(FisherF::new(5.0, 10.0).unwrap()), Some(1.25), Some(1.354_166_666_666_666_7)),
+        ("FisherF(5, 4)", Box::new(FisherF::new(5.0, 4.0).unwrap()), Some(2.0), None),
+        ("FisherF(5, 2)", Box::new(FisherF::new(5.0, 2.0).unwrap()), None, None),
+        ("Uniform(2, 6)", Box::new(Uniform::new(2.0, 6.0).unwrap()), Some(4.0), Some(16.0 / 12.0)),
+        ("Exponential(2)", Box::new(Exponential::new(2.0).unwrap()), Some(0.5), Some(0.25)),
+        ("Cauchy(0, 1)", Box::new(Cauchy::new(0.0, 1.0).unwrap()), None, None),
+        ("Weibull(1.5, 2)", Box::new(Weibull::new(1.5, 2.0).unwrap()), Some(1.805_490_585_901_867_3), Some(1.502_761_139_255_728)),
+        ("LogNormal(0.5, 0.75)", Box::new(LogNormal::new(0.5, 0.75).unwrap()), Some(2.184_200_810_815_618), Some(3.602_164_306_159_661_8)),
+        ("Gamma(3.5, 2)", Box::new(Gamma::new(3.5, 2.0).unwrap()), Some(1.75), Some(0.875)),
+        ("Beta(2, 3)", Box::new(Beta::new(2.0, 3.0).unwrap()), Some(0.4), Some(0.04)),
+        ("InverseGaussian(1.5, 2)", Box::new(InverseGaussian::new(1.5, 2.0).unwrap()), Some(1.5), Some(1.6875)),
+    ];
+    let mut fails = Vec::new();
+    for (name, d, mean, var) in &rows {
+        for (what, got, want) in [("mean", d.mean(), *mean), ("variance", d.variance(), *var)] {
+            let ok = match (got, want) {
+                (Some(g), Some(w)) if w == 0.0 => g == w,
+                (Some(g), Some(w)) => rel_err(g, w) <= 4.0 * f64::EPSILON,
+                _ => got == want,
+            };
+            if !ok {
+                fails.push(format!("{name}.{what}() = {got:?}, want {want:?}"));
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
 }
 
 #[test]
-fn studentt_basic() {
-    let t = StudentT::new(5.0).unwrap();
-    assert!((t.cdf(0.0) - 0.5).abs() < 1e-12);
-    assert_eq!(t.quantile(0.5).unwrap(), 0.0);
-    // scipy: t.ppf(0.975, 5) = 2.5705818366147395
-    assert!((t.quantile(0.975).unwrap() - 2.570_581_836_614_74).abs() < 1e-9);
-    // Deep upper tail via the direct betai form (mpmath, df=7, x=50); naively
-    // taking `1 − cdf` would carry ~1e-6 relative error here.
-    let t7 = StudentT::new(7.0).unwrap();
-    let sf = t7.sf(50.0);
-    assert!(((sf - 1.675_626_297_775_02e-10) / 1.675_626_297_775_02e-10).abs() < 1e-12);
-    assert!((t7.sf(-50.0) - (1.0 - 1.675_626_297_775_02e-10)).abs() < 1e-15);
-    assert_eq!(t7.sf(f64::INFINITY), 0.0);
-    assert!(t7.cdf(f64::NAN).is_nan());
-    assert!(t7.sf(f64::NAN).is_nan());
-    assert_eq!(t.mean(), Some(0.0)); // df>1
-    assert_eq!(StudentT::new(1.0).unwrap().mean(), None); // df=1 undefined
-    assert_eq!(t.variance(), Some(5.0 / 3.0)); // df/(df-2)
-    assert!(StudentT::new(0.0).is_err());
-}
-
-#[test]
-fn chisquared_basic() {
-    let c = ChiSquared::new(4.0).unwrap();
-    assert_eq!(c.mean(), Some(4.0));
-    assert_eq!(c.variance(), Some(8.0)); // 2k
-    // scipy: chi2.ppf(0.95, 4) = 9.487729036781154
-    assert!((c.quantile(0.95).unwrap() - 9.487_729_036_781_154).abs() < 1e-7);
-    // scipy: chi2(k).pdf(0) = inf for k < 2 (singular at 0), 0.5 at k = 2
-    // (Exponential(rate ½)), 0 for k > 2.
-    let c1 = ChiSquared::new(1.0).unwrap();
-    assert_eq!(c1.density(0.0), f64::INFINITY);
-    assert_eq!(c1.log_density(0.0), f64::INFINITY);
-    assert_eq!(ChiSquared::new(2.0).unwrap().density(0.0), 0.5);
-    assert_eq!(c.density(0.0), 0.0);
-    assert_eq!(c.log_density(0.0), f64::NEG_INFINITY);
-    assert!(ChiSquared::new(0.0).is_err());
-}
-
-#[test]
-fn fisherf_basic() {
-    let f = FisherF::new(5.0, 10.0).unwrap();
-    // scipy: f.ppf(0.95, 5, 10) = 3.3258345179316175
-    assert!((f.quantile(0.95).unwrap() - 3.325_834_517_931_617).abs() < 1e-7);
-    assert_eq!(f.mean(), Some(10.0 / 8.0)); // dfd/(dfd-2), dfd>2
-    assert_eq!(FisherF::new(5.0, 2.0).unwrap().mean(), None); // dfd=2 undefined
-    assert_eq!(f.density(-1.0), 0.0);
-    assert!(f.cdf(f64::NAN).is_nan());
-    assert!(f.sf(f64::NAN).is_nan());
-    assert!(FisherF::new(0.0, 10.0).is_err());
-}
-
-#[test]
-fn uniform_dist_basic() {
-    let u = Uniform::new(2.0, 6.0).unwrap();
-    assert_eq!(u.mean(), Some(4.0));
-    assert_eq!(u.variance(), Some(16.0 / 12.0)); // (b-a)^2/12
-    assert!((u.density(3.0) - 0.25).abs() < 1e-15);
-    assert_eq!(u.density(1.0), 0.0);
-    assert!((u.cdf(4.0) - 0.5).abs() < 1e-15);
-    assert!((u.quantile(0.25).unwrap() - 3.0).abs() < 1e-15);
-    assert!(Uniform::new(6.0, 2.0).is_err());
-}
-
-#[test]
-fn exponential_basic() {
-    let e = Exponential::new(2.0).unwrap();
-    assert_eq!(e.mean(), Some(0.5)); // 1/λ
-    assert_eq!(e.variance(), Some(0.25)); // 1/λ²
-    assert_eq!(e.density(-1.0), 0.0);
-    // cdf(x)=1-e^{-2x}; quantile(0.5)=ln2/2
-    assert!((e.quantile(0.5).unwrap() - core::f64::consts::LN_2 / 2.0).abs() < 1e-15);
-    assert!(e.sf(10.0) > 0.0 && e.sf(10.0) < 1e-8);
-    assert!(Exponential::new(0.0).is_err());
-}
-
-#[test]
-fn cauchy_basic() {
-    let c = Cauchy::new(0.0, 1.0).unwrap();
-    assert_eq!(c.mean(), None);
-    assert_eq!(c.variance(), None);
-    assert!((c.cdf(0.0) - 0.5).abs() < 1e-15);
-    assert!((c.quantile(0.5).unwrap()).abs() < 1e-12);
-    // scipy: cauchy.ppf(0.75) = 1.0
-    assert!((c.quantile(0.75).unwrap() - 1.0).abs() < 1e-12);
-    assert!(Cauchy::new(0.0, 0.0).is_err());
+fn cauchy_density_offset_overflows() {
     // `x − loc` overflows (2e308): mpmath `scale/(π(scale² + (x − loc)²))`.
     let wide = Cauchy::new(-1e308, 1e308).unwrap();
     let pdf = wide.density(1e308);
@@ -910,26 +890,35 @@ fn cauchy_basic() {
 }
 
 #[test]
-fn weibull_basic() {
-    let w = Weibull::new(1.5, 2.0).unwrap();
-    assert_eq!(w.density(-1.0), 0.0);
-    // scipy: weibull_min(1.5, scale=2).ppf(0.5) = 1.5664395375493028
-    assert!((w.quantile(0.5).unwrap() - 1.566_439_537_5).abs() < 1e-6);
-    assert!(w.sf(10.0) > 0.0 && w.sf(10.0) < 1e-4);
-    assert!(Weibull::new(0.0, 2.0).is_err());
-    // k=1 reduces to Exponential(scale=λ): mean=λ.
-    let w1 = Weibull::new(1.0, 2.0).unwrap();
-    assert!((w1.mean().unwrap() - 2.0).abs() < 1e-12);
-    // scipy: weibull_min(c, scale=λ).logpdf(0) = −ln 2 at (1, 2), +∞ for c < 1, −∞ for c > 1.
-    assert_eq!(w1.log_density(0.0), -core::f64::consts::LN_2);
-    assert_eq!(
-        Weibull::new(0.5, 1.0).unwrap().log_density(0.0),
-        f64::INFINITY
-    );
-    assert_eq!(
-        Weibull::new(2.0, 1.0).unwrap().log_density(0.0),
-        f64::NEG_INFINITY
-    );
+fn uniform_width_overflows() {
+    // `b − a` overflows (2e308): mpmath (50 dps) `1/(b − a)` and its log at
+    // the exact f64 inputs; cdf and sf at the midpoint 0 are ½.
+    let wide = Uniform::new(-1e308, 1e308).unwrap();
+    assert_eq!(wide.cdf(0.0), 0.5);
+    assert_eq!(wide.sf(0.0), 0.5);
+    assert!(rel_err(wide.density(0.0), 5e-309) <= 4.0 * f64::EPSILON);
+    let ln_w = 709.889_355_822_726;
+    assert!((wide.log_density(0.0) + ln_w).abs() <= 4.0 * f64::EPSILON * ln_w);
+    assert!((wide.entropy().unwrap() - ln_w).abs() <= 4.0 * f64::EPSILON * ln_w);
+    // `a + b` and `(b − a)²` overflow while the mean and variance do not:
+    // mpmath `(a + b)/2` and `(b − a)²/12` at the exact f64 inputs.
+    let far = Uniform::new(1e308, 1.5e308).unwrap();
+    assert!(rel_err(far.mean().unwrap(), 1.25e308) <= 4.0 * f64::EPSILON);
+    let broad = Uniform::new(0.0, 2e154).unwrap();
+    assert!(rel_err(broad.variance().unwrap(), 3.333_333_333_333_333_6e307) <= 4.0 * f64::EPSILON);
+    #[cfg(feature = "rng")]
+    {
+        use commonstats::dist::Sampler;
+        let mut rng = commonstats::rng::CommonStatsRng::new(7, 0);
+        for _ in 0..100 {
+            let x = wide.sample(&mut rng);
+            assert!((-1e308..=1e308).contains(&x), "draw {x:e}");
+        }
+    }
+}
+
+#[test]
+fn weibull_range_edges() {
     // Range edges outside the accuracy sweep, truth from mpmath at the exact
     // f64 inputs: `(−ln q)^{1/k}` overflows for k < 1 while `scale·` it does
     // not, and `x/scale` leaves the normal range while `(x/scale)^k` does not.
@@ -945,47 +934,7 @@ fn weibull_basic() {
 }
 
 #[test]
-fn lognormal_basic() {
-    let l = LogNormal::new(0.0, 1.0).unwrap();
-    assert_eq!(l.density(-1.0), 0.0);
-    assert_eq!(l.density(0.0), 0.0);
-    // median = e^μ = 1
-    assert!((l.quantile(0.5).unwrap() - 1.0).abs() < 1e-9);
-    // mean = e^{μ+σ²/2} = e^{0.5}
-    assert!((l.mean().unwrap() - 0.5_f64.exp()).abs() < 1e-12);
-    assert!(LogNormal::new(0.0, -1.0).is_err());
-}
-
-#[test]
-fn gamma_basic() {
-    let g = Gamma::new(2.0, 1.0).unwrap(); // shape 2, rate 1
-    assert_eq!(g.mean(), Some(2.0)); // α/β
-    assert_eq!(g.variance(), Some(2.0)); // α/β²
-    assert_eq!(g.density(-1.0), 0.0);
-    // scipy: gamma(a=2, scale=1).ppf(0.5) = 1.6783469900166612
-    assert!((g.quantile(0.5).unwrap() - 1.678_346_990_016_661).abs() < 1e-8);
-    assert!(Gamma::new(0.0, 1.0).is_err());
-    // Gamma(1, λ) == Exponential(λ): cdf(x)=1-e^{-x} at rate 1.
-    let g1 = Gamma::new(1.0, 1.0).unwrap();
-    assert!((g1.cdf(1.0) - (1.0 - (-1.0_f64).exp())).abs() < 1e-12);
-    // scipy: gamma(a=1, scale=½).pdf(0) = 2, logpdf(0) = ln 2.
-    let g = Gamma::new(1.0, 2.0).unwrap();
-    assert_eq!(g.density(0.0), 2.0);
-    assert_eq!(g.log_density(0.0), core::f64::consts::LN_2);
-    // scipy: gamma(a=0.5).pdf(0) = inf.
-    assert_eq!(Gamma::new(0.5, 2.0).unwrap().density(0.0), f64::INFINITY);
-}
-
-#[test]
-fn beta_basic() {
-    let b = Beta::new(2.0, 3.0).unwrap();
-    assert_eq!(b.mean(), Some(2.0 / 5.0)); // α/(α+β)
-    assert_eq!(b.density(-0.1), 0.0);
-    assert_eq!(b.density(1.1), 0.0);
-    // scipy: beta(2,3).ppf(0.5) = 0.3857275681323895
-    assert!((b.quantile(0.5).unwrap() - 0.385_727_568_1).abs() < 1e-8);
-    assert!((b.cdf(1.0) - 1.0).abs() < 1e-15);
-    assert!(Beta::new(0.0, 3.0).is_err());
+fn beta_huge_equal_shapes_half_ulp() {
     // One ulp below ½ at huge equal shapes: x = ½ − 2⁻⁵⁴ lies ~50 standard
     // deviations (1/(2√(2a + 1))) below the mean at a = 1e35, so the sf is 1
     // to f64 resolution and the cdf below the f64 range (normal limit).
@@ -994,44 +943,64 @@ fn beta_basic() {
         assert_eq!(d.sf(0.499_999_999_999_999_94), 1.0);
         assert_eq!(d.cdf(0.499_999_999_999_999_94), 0.0);
     }
-    // Support ends next to a shape of exactly 1, where the density is the
-    // finite limit (scipy: beta(1, 1).pdf(0) = 1, beta(1, 3).pdf(0) = 3).
-    let near = |got: f64, want: f64| (got - want).abs() <= 4.0 * f64::EPSILON * want;
-    let flat = Beta::new(1.0, 1.0).unwrap();
-    assert!(near(flat.density(0.0), 1.0) && near(flat.density(1.0), 1.0));
-    assert!(near(Beta::new(1.0, 3.0).unwrap().density(0.0), 3.0));
-    assert!(near(Beta::new(3.0, 1.0).unwrap().density(1.0), 3.0));
-    assert!(Beta::new(3.0, 1.0).unwrap().log_density(0.0) == f64::NEG_INFINITY);
 }
 
 #[test]
-fn inversegaussian_basic() {
-    let ig = InverseGaussian::new(1.5, 2.0).unwrap();
-    assert_eq!(ig.mean(), Some(1.5));
-    assert_eq!(ig.variance(), Some(1.5 * 1.5 * 1.5 / 2.0)); // μ³/λ
-    assert_eq!(ig.density(0.0), 0.0);
-    assert_eq!(ig.log_density(-1.0), f64::NEG_INFINITY);
-    assert_eq!(ig.cdf(f64::INFINITY), 1.0);
-    assert_eq!(ig.sf(f64::INFINITY), 0.0);
-    assert_eq!(ig.quantile(0.0).unwrap(), 0.0);
-    assert_eq!(ig.isf(0.0).unwrap(), f64::INFINITY);
-    assert!(InverseGaussian::new(0.0, 2.0).is_err());
-    assert!(InverseGaussian::new(1.5, f64::NAN).is_err());
-    assert!(ig.cdf(f64::NAN).is_nan());
-    assert!(ig.sf(f64::NAN).is_nan());
-    // Far upper tail, where Newton on raw `sf` exhausts its iterations far
-    // from the root. mpmath (60 dps): root of ln sf(x) = ln q.
-    for (q, want) in [
-        (1e-50, 243.985_082_797_044_84),
-        (1e-100, 500.620_404_686_735_1),
-        (1e-200, 1_016.322_095_252_721_8),
+fn beta_and_fisherf_tiny_shape_log_density() {
+    // At a tiny first shape `−ln B ≈ ln a` and `(a − 1)·ln x` are each ~700
+    // and cancel to an O(1) log density; Beta's density falls back to `exp`
+    // of it there. mpmath (50 dps) at the exact f64 inputs:
+    // `(a−1)·ln x + (b−1)·ln(1−x) − ln B(a, b)` for Beta, and
+    // `a·ln(m/n) + (a−1)·ln x − (a+b)·ln(1 + m·x/n) − ln B(a, b)`,
+    // `a, b = m/2, n/2`, for F(m, n).
+    let tol = 4.0 * f64::EPSILON;
+    for (a, b, x, pdf, ln_pdf) in [
+        (
+            1e-310,
+            0.5,
+            1.979_999_999_999_98e-310,
+            0.505_050_505_050_509_9,
+            -0.683_096_844_706_434_4,
+        ),
+        (
+            1e-310,
+            0.5,
+            1e-315,
+            100_000.000_151_831_31,
+            11.512_925_466_488_541,
+        ),
+        (
+            1e-310,
+            0.5,
+            5e-324,
+            20_240_225_330_731.0,
+            30.638_693_093_227_097,
+        ),
+        (1e-300, 0.5, 3e-300, 1.0 / 3.0, -1.098_612_288_668_109_8),
+        (1e-310, 20.0, 2e-310, 0.5, -core::f64::consts::LN_2),
     ] {
-        let x = ig.isf(q).unwrap();
+        let d = Beta::new(a, b).unwrap();
+        let (got, ln_got) = (d.density(x), d.log_density(x));
         assert!(
-            ((x - want) / want).abs() < 1e-13,
-            "IG(1.5,2).isf({q:e}) = {x}, want {want}"
+            rel_err(got, pdf) <= tol && (ln_got - ln_pdf).abs() <= tol * ln_pdf.abs().max(1.0),
+            "Beta({a:e}, {b}) at {x:e}: density {got}, log {ln_got}; want {pdf}, {ln_pdf}"
         );
     }
+    for (m, n, x, ln_pdf) in [
+        (2e-310, 1.0, 3e-310, -1.098_612_288_668_109_8),
+        (2e-310, 1.0, 3e-300, -24.124_463_218_608_568),
+        (2e-300, 1.0, 3e-300, -1.098_612_288_668_109_8),
+    ] {
+        let got = FisherF::new(m, n).unwrap().log_density(x);
+        assert!(
+            (got - ln_pdf).abs() <= tol * ln_pdf.abs().max(1.0),
+            "F({m:e}, {n}).log_density({x:e}) = {got}, want {ln_pdf}"
+        );
+    }
+}
+
+#[test]
+fn inversegaussian_large_shape_ratio() {
     // λ/μ ≥ 355: e^{2λ/μ} overflows and Φ(−b) underflows on their own, while
     // their product is O(1) near x = μ. mpmath (60 dps):
     // ncdf(a) + exp(2λ/μ)·ncdf(−b), a,b = √(λ/x)(x/μ ∓ 1).
@@ -1113,14 +1082,6 @@ fn studentt_near_median() {
             rel < 1e-14,
             "t({df}).quantile({p:e}) = {x:e}, want {want:e} (rel {rel:e})"
         );
-        // isf(q) = −quantile(q).
-        let x = t.isf(p).unwrap();
-        let rel = rel_err(x, -want);
-        assert!(
-            rel < 1e-14,
-            "t({df}).isf({p:e}) = {x:e}, want {:e} (rel {rel:e})",
-            -want
-        );
     }
     // cdf(x) − ½ for tiny x keeps full relative precision: the central form
     // `½·I_{x²/(df+x²)}(½, df/2)` rather than `1 − ½·I_{df/(df+x²)}(df/2, ½)`.
@@ -1132,13 +1093,11 @@ fn studentt_near_median() {
     ] {
         let t = StudentT::new(df).unwrap();
         // `cdf − ½` is exact in f64 (Sterbenz), so this is cdf's own error.
-        let (c, s) = (t.cdf(x) - 0.5, t.sf(-x) - 0.5);
-        for (name, got) in [("cdf(x) − ½", c), ("sf(−x) − ½", s)] {
-            assert!(
-                (got - central).abs() < 1.2e-16,
-                "t({df}): {name} = {got:e}, want {central:e} at x = {x:e}"
-            );
-        }
+        let got = t.cdf(x) - 0.5;
+        assert!(
+            (got - central).abs() < 1.2e-16,
+            "t({df}): cdf(x) − ½ = {got:e}, want {central:e} at x = {x:e}"
+        );
     }
 }
 
@@ -1163,7 +1122,6 @@ fn studentt_deep_tail_isf() {
             rel < 1e-13,
             "t({df}).isf({q:e}) = {x:e}, want {want:e} (rel {rel:e})"
         );
-        assert_eq!(t.quantile(q).unwrap(), -x, "t({df}).quantile({q:e})");
     }
 }
 
@@ -1258,6 +1216,10 @@ fn inversegaussian_sf_far_tail() {
         (3.0, 1e-8, 1e-237, 9.280_027_622_870_783e11),
         (1.5, 2.0, 1e-296, 1_512.342_174_990_797_7),
         (1.0, 1e-4, 1e-100, 4_234_853.455_948_873),
+        // Newton on the raw sf exhausts its iterations far from the root.
+        (1.5, 2.0, 1e-50, 243.985_082_797_044_84),
+        (1.5, 2.0, 1e-100, 500.620_404_686_735_1),
+        (1.5, 2.0, 1e-200, 1_016.322_095_252_721_8),
     ] {
         let d = InverseGaussian::new(mu, lam).unwrap();
         let x = d.isf(q).unwrap();
@@ -1319,13 +1281,11 @@ fn studentt_far_tail_cdf() {
         (20.0, -40.0, 7.287_348_277_155_382e-21),
     ] {
         let t = StudentT::new(df).unwrap();
-        for (name, got) in [("cdf(x)", t.cdf(x)), ("sf(−x)", t.sf(-x))] {
-            let rel = rel_err(got, want);
-            assert!(
-                rel < 2e-15,
-                "t({df}): {name} = {got:e} at x = {x:e}, want {want:e} (rel {rel:e})"
-            );
-        }
+        let (got, rel) = (t.cdf(x), rel_err(t.cdf(x), want));
+        assert!(
+            rel < 2e-15,
+            "t({df}).cdf({x:e}) = {got:e}, want {want:e} (rel {rel:e})"
+        );
     }
 }
 
@@ -1552,89 +1512,17 @@ fn fisherf_tiny_df_far_tail() {
             f(1e-100, 16.0).ln_sf(3.56e-207),
             -224.392_319_475_815_24,
         ),
-    ] {
-        let rel = rel_err(got, want);
-        assert!(rel < 1e-14, "{name} = {got:e}, want {want:e} (rel {rel:e})");
-    }
-}
-
-#[test]
-fn fisherf_tiny_df_root_out_of_range() {
-    // At `dfn = 1e-300` the sf stays below 1e-297 down to the smallest
-    // subnormal `x` (above, its mirror at `dfd = 1e-300`), so a tail of 1e-20
-    // has its root below (above) the f64 range: `isf` is 0 and `quantile` ∞.
-    // A small tail read as `1 − I` (ε, not 1e-298) once put a finite root at
-    // 2.9e276 (3.5e-277).
-    let lo = FisherF::new(1e-300, 15.99).unwrap();
-    let hi = FisherF::new(15.99, 1e-300).unwrap();
-    for q in [1e-20, 1e-100, 1e-200] {
-        assert_eq!(lo.isf(q).unwrap(), 0.0, "F(1e-300, 15.99).isf({q:e})");
-        assert_eq!(
-            hi.quantile(q).unwrap(),
-            f64::INFINITY,
-            "F(15.99, 1e-300).quantile({q:e})"
-        );
-    }
-}
-
-#[test]
-fn fisherf_subnormal_y_density_and_tail_roots() {
-    // Each value is scored as the accuracy sweep scores it: error within 10·ε·K,
-    // K = Σ|θᵢ·∂f/∂θᵢ| over the real inputs (the limit class). Truth and K
-    // from mpmath (`scripts/accuracy_sweep.py`) at the exact f64 inputs.
-    //
-    // Densities where `y = dfn·x/(dfd + dfn·x)` is subnormal: from
-    // `exp(log_density)` they kept only `|ln f|·ε` (r 130 to 230).
-    // Quantiles in a far tail: Newton on `ln mass` resolves the root only to
-    // `|ln p|·ε/(2·slope)` relative (r 13 to 200).
-    let f = |dfn, dfd| FisherF::new(dfn, dfd).unwrap();
-    for (name, got, want, k) in [
-        (
-            "F(1e-5, 1e4).pdf(2.2250738585072009e-299)",
-            f(1e-5, 1e4).density(2.225_073_858_507_200_9e-299),
-            2.239_273_072_432_801e293,
-            4.47e293,
-        ),
-        (
-            "F(0.001, 0.001).pdf(2.225073858506957e-308)",
-            f(0.001, 0.001).density(2.225_073_858_506_957e-308),
-            7.884_414_136_448_698e303,
-            1.3e304,
-        ),
-        (
-            "F(0.0015205765296369873, 2057.918596622136).pdf(2.9812578158359306e-302)",
-            f(0.001_520_576_529_636_987_3, 2_057.918_596_622_136)
-                .density(2.981_257_815_835_930_6e-302),
-            1.496_756_815_902_752_5e298,
-            2.2e298,
-        ),
+        // `y = dfn·x/(dfd + dfn·x)` subnormal (2.2e-308): from `exp(log_density)`
+        // the density kept only `|ln f|·ε` (r 130 to 230). mpmath
+        // (`scripts/accuracy_sweep.py`).
         (
             "F(1e-20, 5).pdf(1.1014115599610647e-287)",
             f(1e-20, 5.0).density(1.101_411_559_961_064_7e-287),
             4.539_629_128_440_191_4e266,
-            9.08e266,
-        ),
-        (
-            "F(16, 1e-100).quantile(1e-100)",
-            f(16.0, 1e-100).quantile(1e-100).unwrap(),
-            5.664_002_515_041_799e-100,
-            1.95e-99,
-        ),
-        (
-            "F(15.99, 1e-300).quantile(1e-300)",
-            f(15.99, 1e-300).quantile(1e-300).unwrap(),
-            5.663_751_653_382_406e-300,
-            1.95e-299,
-        ),
-        (
-            "F(1e-300, 15.99).isf(1e-300)",
-            f(1e-300, 15.99).isf(1e-300).unwrap(),
-            1.765_614_139_177_161_2e299,
-            6.07e299,
         ),
     ] {
-        let r = (got - want).abs() / (f64::EPSILON * k);
-        assert!(r <= 10.0, "{name} = {got:e}, want {want:e} (r {r:.1})");
+        let rel = rel_err(got, want);
+        assert!(rel < 1e-14, "{name} = {got:e}, want {want:e} (rel {rel:e})");
     }
 }
 
@@ -1722,7 +1610,6 @@ fn quantile_polish_only_where_it_lowers_the_residual() {
             "IG(1, 5e-324).quantile(1 − 2⁻⁵³)",
             ig(1.0, 5e-324).quantile(1.0 - f64::EPSILON / 2.0),
         ),
-        ("IG(1, 5e-324).isf(1e-100)", ig(1.0, 5e-324).isf(1e-100)),
     ] {
         let x = got.unwrap();
         assert!(x.is_finite() && x > 0.0, "{name} = {x:e}");
@@ -1742,7 +1629,7 @@ fn quantile_polish_only_where_it_lowers_the_residual() {
 }
 
 #[test]
-fn steep_mass_and_bulk_f_roots() {
+fn steep_mass_roots() {
     // Truth and K from mpmath (`scripts/accuracy_sweep.py`).
     //
     // Inverse Gaussians of spread `√(μ/λ)` 1.7e-17 and 1.9e-16: neighbouring
@@ -1770,46 +1657,12 @@ fn steep_mass_and_bulk_f_roots() {
         let rel = ((got - want) / want).abs() / f64::EPSILON;
         assert!(rel <= 2.0, "{name} = {got:e}, want {want:e} ({rel:.1}ε)");
     }
-    // FisherF bulk roots, scored as the sweep scores them (r ≤ 10, the limit
-    // class): the solver's `ln` mass took the kernel's fast log form, which
-    // keeps the rounding of its `a·ln x` and `ln B` terms (~90 each here):
-    // r 36 and 13.
-    let f = |m, n| FisherF::new(m, n).unwrap();
-    for (name, got, want, k) in [
-        (
-            "F(5.3e11, 6.9).isf(0.5)",
-            f(534_536_453_686.363_83, 6.913_288_301_642_686)
-                .isf(0.5)
-                .unwrap(),
-            1.104_487_764_640_76,
-            0.888,
-        ),
-        (
-            "F(7.7, 8123).quantile(0.1)",
-            f(7.725_837_188_492_183, 8_122.958_972_031_949)
-                .quantile(0.1)
-                .unwrap(),
-            0.428_002_824_132_513_7,
-            0.396,
-        ),
-        (
-            "F(7.7, 8123).quantile(0.5)",
-            f(7.725_837_188_492_183, 8_122.958_972_031_949)
-                .quantile(0.5)
-                .unwrap(),
-            0.915_235_464_066_182_4,
-            0.689,
-        ),
-    ] {
-        let r = (got - want).abs() / (f64::EPSILON * k);
-        assert!(r <= 10.0, "{name} = {got:e}, want {want:e} (r {r:.1})");
-    }
 }
 
 #[test]
 fn narrow_distribution_roots() {
-    // Inverse Gaussians whose relative spread `√(μ/λ)` is 5e-26 and 9e-15:
-    // every quantile is the mean to within an ulp or a few. The solver's
+    // Inverse Gaussian whose relative spread `√(μ/λ)` is 5e-26: every
+    // quantile is the mean to within an ulp. The solver's
     // bisection stopped at a bracket 1e-14 wide, 26 to 32 ulp from the root.
     // Scored as the accuracy sweep scores them (error within 10·ε·K, the
     // limit class); truth and K from mpmath (`scripts/accuracy_sweep.py`).
@@ -1828,64 +1681,12 @@ fn narrow_distribution_roots() {
             7.548_406_235_343_999e-47,
             7.55e-47,
         ),
-        (
-            "IG(4.2e-30, 0.052).isf(5e-324)",
-            ig(4.199_058_466_732_769_6e-30, 0.052_042_981_137_670_85)
-                .isf(5e-324)
-                .unwrap(),
-            4.199_058_466_734_220_5e-30,
-            4.2e-30,
-        ),
     ] {
         let r = (got - want).abs() / (f64::EPSILON * k);
         assert!(r <= 10.0, "{name} = {got:e}, want {want:e} (r {r:.1})");
     }
 }
 
-#[test]
-fn tail_roots_beyond_ln_mass_resolution() {
-    // Roots scored as the accuracy sweep scores them: error within 10·ε·K,
-    // K = (p + Σ|θ·∂M/∂θ|)/pdf at the root (the limit class). Each solver
-    // compares `ln mass` with `ln p`, which keeps `|ln p|·ε/2` absolute, so
-    // the root was off by that over the slope `d ln mass/d ln x`: Beta for a
-    // subnormal target (r 87 and 23), the inverse Gaussian far upper tail
-    // (r 28 and 26). Truth and K from mpmath (`scripts/accuracy_sweep.py`).
-    for (name, got, want, k) in [
-        (
-            "Beta(1e-310, 0.5).isf(1e-310)",
-            Beta::new(1e-310, 0.5).unwrap().isf(1e-310).unwrap(),
-            0.786_447_732_965_927_4,
-            1.35,
-        ),
-        (
-            "Beta(3, 1e-315).quantile(5e-324)",
-            Beta::new(3.0, 1e-315).unwrap().quantile(5e-324).unwrap(),
-            2.454_907_620_600_710_5e-3,
-            0.0172,
-        ),
-        (
-            "InverseGaussian(5.138936575460468e35, 1.643176385987937e-35).isf(1e-50)",
-            InverseGaussian::new(5.138_936_575_460_468e35, 1.643_176_385_987_937e-35)
-                .unwrap()
-                .isf(1e-50)
-                .unwrap(),
-            1.046_078_576_807_425_4e65,
-            3.14e65,
-        ),
-        (
-            "InverseGaussian(1.9101205185345812e26, 6.500380669819678e-35).isf(1e-50)",
-            InverseGaussian::new(1.910_120_518_534_581_2e26, 6.500_380_669_819_678e-35)
-                .unwrap()
-                .isf(1e-50)
-                .unwrap(),
-            4.138_270_862_041_568e65,
-            1.24e66,
-        ),
-    ] {
-        let r = (got - want).abs() / (f64::EPSILON * k);
-        assert!(r <= 10.0, "{name} = {got:e}, want {want:e} (r {r:.1})");
-    }
-}
 #[test]
 fn fisherf_subnormal_beta_argument() {
     // `y = dfn·x/(dfd + dfn·x)` (or `z = dfd/(dfd + dfn·x)`) subnormal or
@@ -2179,15 +1980,6 @@ fn subnormal_target_quantile() {
             "{name}({target:e}) = {got:e}, want {want:e} (rel {rel:e})"
         );
     }
-    // t's quantile is its isf mirrored.
-    for q in [1e-300, 1e-320, 5e-324] {
-        let t = t(1000.0);
-        assert_eq!(
-            t.quantile(q).unwrap(),
-            -t.isf(q).unwrap(),
-            "t(1000).quantile({q:e})"
-        );
-    }
 }
 
 #[test]
@@ -2236,13 +2028,17 @@ fn log_density_far_tail() {
 }
 
 #[test]
-fn density_at_infinity_and_nan() {
+fn continuous_edges() {
     // Every density is 0 at ±∞ and its log −∞, including where the log
-    // density's terms would meet as ∞ − ∞ (χ², Gamma, F, Weibull).
+    // density's terms would meet as ∞ − ∞ (χ², Gamma, F, Weibull); likewise
+    // one finite point past each finite support end (the `ContinuousDensity`
+    // contract). cdf/sf are 0/1 at ±∞, `isf(0)`/`isf(1)` the support ends.
     // A NaN `x` must come out NaN, not get read by a range check as "out of
     // support" (`(0..=1).contains(&NaN)` and `x < a || x > b` are both false
     // for NaN) and returned as a fixed in-support or out-of-support constant.
-    let dists: [(&str, Box<dyn ContinuousDensity>); 14] = [
+    trait Cont: ContinuousDensity + ContinuousCdf {}
+    impl<T: ContinuousDensity + ContinuousCdf> Cont for T {}
+    let dists: [(&str, Box<dyn Cont>); 14] = [
         ("Normal", Box::new(Normal::new(0.5, 2.0).unwrap())),
         ("StudentT", Box::new(StudentT::new(7.0).unwrap())),
         ("ChiSquared", Box::new(ChiSquared::new(5.0).unwrap())),
@@ -2261,18 +2057,81 @@ fn density_at_infinity_and_nan() {
             Box::new(InverseGaussian::new(1.5, 2.0).unwrap()),
         ),
     ];
-    for (name, d) in &dists {
-        for x in [f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(d.density(x), 0.0, "{name}.density({x})");
-            assert_eq!(
-                d.log_density(x),
-                f64::NEG_INFINITY,
-                "{name}.log_density({x})"
-            );
+    let (inf, nan) = (f64::INFINITY, f64::NAN);
+    let mut fails = Vec::new();
+    let mut check = |ok: bool, what: String| {
+        if !ok {
+            fails.push(what);
         }
-        assert!(d.density(f64::NAN).is_nan(), "{name}.density(NaN)");
-        assert!(d.log_density(f64::NAN).is_nan(), "{name}.log_density(NaN)");
+    };
+    for (name, d) in &dists {
+        for x in [inf, -inf] {
+            check(d.density(x) == 0.0, format!("{name}.density({x})"));
+            check(d.log_density(x) == -inf, format!("{name}.log_density({x})"));
+        }
+        let (lo, hi) = (d.support_min().as_f64(), d.support_max().as_f64());
+        for x in [lo - 1.0, hi + 1.0].into_iter().filter(|x| x.is_finite()) {
+            check(d.density(x) == 0.0, format!("{name}.density({x})"));
+            check(d.log_density(x) == -inf, format!("{name}.log_density({x})"));
+        }
+        check(d.density(nan).is_nan(), format!("{name}.density(NaN)"));
+        check(
+            d.log_density(nan).is_nan(),
+            format!("{name}.log_density(NaN)"),
+        );
+        check(
+            d.cdf(-inf) == 0.0 && d.cdf(inf) == 1.0,
+            format!("{name}.cdf(±∞)"),
+        );
+        check(
+            d.sf(-inf) == 1.0 && d.sf(inf) == 0.0,
+            format!("{name}.sf(±∞)"),
+        );
+        check(
+            d.cdf(nan).is_nan() && d.sf(nan).is_nan(),
+            format!("{name}.cdf/sf(NaN)"),
+        );
+        check(d.isf(0.0).unwrap() == hi, format!("{name}.isf(0)"));
+        check(d.isf(1.0).unwrap() == lo, format!("{name}.isf(1)"));
     }
+    // Limits at a support end, as scipy (`chi2(k).pdf(0)`, `gamma(a, scale=1/β)`,
+    // `weibull_min(k, scale=λ).logpdf(0)`, `beta(α, β).pdf`), and as the
+    // ChiSquared rustdoc states; within 4ε where finite.
+    use core::f64::consts::LN_2;
+    #[rustfmt::skip]
+    let ends: [(&str, f64, f64); 20] = [
+        ("ChiSquared(1).density(0)", ChiSquared::new(1.0).unwrap().density(0.0), inf),
+        ("ChiSquared(1).log_density(0)", ChiSquared::new(1.0).unwrap().log_density(0.0), inf),
+        ("ChiSquared(2).density(0)", ChiSquared::new(2.0).unwrap().density(0.0), 0.5),
+        ("ChiSquared(4).density(0)", ChiSquared::new(4.0).unwrap().density(0.0), 0.0),
+        ("ChiSquared(4).log_density(0)", ChiSquared::new(4.0).unwrap().log_density(0.0), -inf),
+        ("Gamma(1, 2).density(0)", Gamma::new(1.0, 2.0).unwrap().density(0.0), 2.0),
+        ("Gamma(1, 2).log_density(0)", Gamma::new(1.0, 2.0).unwrap().log_density(0.0), LN_2),
+        ("Gamma(0.5, 2).density(0)", Gamma::new(0.5, 2.0).unwrap().density(0.0), inf),
+        ("Weibull(1, 2).log_density(0)", Weibull::new(1.0, 2.0).unwrap().log_density(0.0), -LN_2),
+        ("Weibull(0.5, 1).log_density(0)", Weibull::new(0.5, 1.0).unwrap().log_density(0.0), inf),
+        ("Weibull(2, 1).log_density(0)", Weibull::new(2.0, 1.0).unwrap().log_density(0.0), -inf),
+        ("LogNormal(0, 1).density(0)", LogNormal::new(0.0, 1.0).unwrap().density(0.0), 0.0),
+        ("InverseGaussian(1.5, 2).density(0)", InverseGaussian::new(1.5, 2.0).unwrap().density(0.0), 0.0),
+        ("Beta(1, 1).density(0)", Beta::new(1.0, 1.0).unwrap().density(0.0), 1.0),
+        ("Beta(1, 1).density(1)", Beta::new(1.0, 1.0).unwrap().density(1.0), 1.0),
+        ("Beta(1, 3).density(0)", Beta::new(1.0, 3.0).unwrap().density(0.0), 3.0),
+        ("Beta(3, 1).density(1)", Beta::new(3.0, 1.0).unwrap().density(1.0), 3.0),
+        ("Beta(3, 1).log_density(0)", Beta::new(3.0, 1.0).unwrap().log_density(0.0), -inf),
+        // b − a overflows: the endpoints must not come from `0 · ∞`.
+        ("Uniform(-1e308, 1e308).quantile(0)", Uniform::new(-1e308, 1e308).unwrap().quantile(0.0).unwrap(), -1e308),
+        ("Uniform(-1e308, 1e308).isf(0)", Uniform::new(-1e308, 1e308).unwrap().isf(0.0).unwrap(), 1e308),
+    ];
+    for (name, got, want) in ends {
+        // Zero and infinite limits are exact: `rel_err` against 0 is `|got|`.
+        let ok = if want == 0.0 || want.is_infinite() {
+            got == want
+        } else {
+            rel_err(got, want) <= 4.0 * f64::EPSILON
+        };
+        check(ok, format!("{name} = {got:e}, want {want:e}"));
+    }
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
 }
 
 #[test]
@@ -2293,7 +2152,6 @@ fn studentt_large_df_quantile() {
             rel < tol,
             "t({df:e}).isf({q:e}) = {x:e}, want {want:e} (rel {rel:e})"
         );
-        assert_eq!(t.quantile(q).unwrap(), -x, "t({df:e}).quantile({q:e})");
     }
 }
 
@@ -2304,70 +2162,41 @@ fn studentt_cdf_sf_large_df_grid() {
     // df, where `z` is within `x²/df` of 1, the tail is never recovered from
     // `1 − z`. At |x| = 30 and df ≥ 1e3 the tail's condition number in `y` is
     // `≈ (df/2)·y`, 240–450, so the rounding of `y` alone accounts for up to
-    // ~5e-14. mpmath (80 dps) at the f64 `x`: `sf(x) = ½·I_z(df/2, ½)` for
-    // x ≥ 0, `cdf(x) = 1 − sf(x)`, and `sf(x) = cdf(−x)`.
+    // ~5e-14. mpmath (80 dps) at the f64 `x`: `sf(x) = ½·I_z(df/2, ½)`, and
+    // `cdf(x) = 1 − sf(x)`. Negative `x` takes the same `halves(|x|)` with the
+    // sides swapped; the t(7) grid covers that branch.
     #[rustfmt::skip]
     let cases: &[(f64, f64, f64, f64, f64)] = &[
         (1.0, 0.01, 0.503_182_992_764_908_3, 0.496_817_007_235_091_76, 1e-14),
-        (1.0, -0.01, 0.496_817_007_235_091_76, 0.503_182_992_764_908_3, 1e-14),
         (1.0, 0.5, 0.647_583_617_650_433_3, 0.352_416_382_349_566_74, 1e-14),
-        (1.0, -0.5, 0.352_416_382_349_566_74, 0.647_583_617_650_433_3, 1e-14),
         (1.0, 2.0, 0.852_416_382_349_566_7, 0.147_583_617_650_433_26, 1e-14),
-        (1.0, -2.0, 0.147_583_617_650_433_26, 0.852_416_382_349_566_7, 1e-14),
         (1.0, 3.0, 0.897_583_617_650_433_3, 0.102_416_382_349_566_72, 1e-14),
-        (1.0, -3.0, 0.102_416_382_349_566_72, 0.897_583_617_650_433_3, 1e-14),
         (1.0, 30.0, 0.989_393_597_594_464_5, 0.010_606_402_405_535_424, 1e-14),
-        (1.0, -30.0, 0.010_606_402_405_535_424, 0.989_393_597_594_464_5, 1e-14),
         (2.5, 0.01, 0.503_618_002_821_045_9, 0.496_381_997_178_954_15, 1e-14),
-        (2.5, -0.01, 0.496_381_997_178_954_15, 0.503_618_002_821_045_9, 1e-14),
         (2.5, 0.5, 0.671_151_040_065_142_7, 0.328_848_959_934_857_35, 1e-14),
-        (2.5, -0.5, 0.328_848_959_934_857_35, 0.671_151_040_065_142_7, 1e-14),
         (2.5, 2.0, 0.921_304_252_121_017, 0.078_695_747_878_983, 1e-14),
-        (2.5, -2.0, 0.078_695_747_878_983, 0.921_304_252_121_017, 1e-14),
         (2.5, 3.0, 0.963_711_952_225_484_1, 0.036_288_047_774_515_92, 1e-14),
-        (2.5, -3.0, 0.036_288_047_774_515_92, 0.963_711_952_225_484_1, 1e-14),
         (2.5, 30.0, 0.999_854_467_645_421_3, 0.000_145_532_354_578_697_7, 1e-14),
-        (2.5, -30.0, 0.000_145_532_354_578_697_7, 0.999_854_467_645_421_3, 1e-14),
         (30.0, 0.01, 0.503_956_253_713_411_1, 0.496_043_746_286_588_87, 1e-14),
-        (30.0, -0.01, 0.496_043_746_286_588_87, 0.503_956_253_713_411_1, 1e-14),
         (30.0, 0.5, 0.689_638_497_557_436_3, 0.310_361_502_442_563_66, 1e-14),
-        (30.0, -0.5, 0.310_361_502_442_563_66, 0.689_638_497_557_436_3, 1e-14),
         (30.0, 2.0, 0.972_687_477_518_508_5, 0.027_312_522_481_491_55, 1e-14),
-        (30.0, -2.0, 0.027_312_522_481_491_55, 0.972_687_477_518_508_5, 1e-14),
         (30.0, 3.0, 0.997_305_017_967_174_1, 0.002_694_982_032_825_973, 1e-14),
-        (30.0, -3.0, 0.002_694_982_032_825_973, 0.997_305_017_967_174_1, 1e-14),
         (30.0, 30.0, 1.0, 3.125_895_815_304_444e-24, 1e-14),
-        (30.0, -30.0, 3.125_895_815_304_444e-24, 1.0, 1e-14),
         (1e3, 0.01, 0.503_988_359_033_906_4, 0.496_011_640_966_093_6, 1e-14),
-        (1e3, -0.01, 0.496_011_640_966_093_6, 0.503_988_359_033_906_4, 1e-14),
         (1e3, 0.5, 0.691_407_459_583_062_6, 0.308_592_540_416_937_4, 1e-14),
-        (1e3, -0.5, 0.308_592_540_416_937_4, 0.691_407_459_583_062_6, 1e-14),
         (1e3, 2.0, 0.977_114_826_753_374_1, 0.022_885_173_246_625_82, 1e-14),
-        (1e3, -2.0, 0.022_885_173_246_625_82, 0.977_114_826_753_374_1, 1e-14),
         (1e3, 3.0, 0.998_616_645_477_880_9, 0.001_383_354_522_119_096_3, 1e-14),
-        (1e3, -3.0, 0.001_383_354_522_119_096_3, 0.998_616_645_477_880_9, 1e-14),
         (1e3, 30.0, 1.0, 7.687_343_722_021_741e-142, 1e-13),
-        (1e3, -30.0, 7.687_343_722_021_741e-142, 1.0, 1e-13),
         (1e5, 0.01, 0.503_989_346_340_588_5, 0.496_010_653_659_411_6, 1e-14),
-        (1e5, -0.01, 0.496_010_653_659_411_6, 0.503_989_346_340_588_5, 1e-14),
         (1e5, 0.5, 0.691_461_911_172_791, 0.308_538_088_827_209, 1e-14),
-        (1e5, -0.5, 0.308_538_088_827_209, 0.691_461_911_172_791, 1e-14),
         (1e5, 2.0, 0.977_248_518_271_246_8, 0.022_751_481_728_753_232, 1e-14),
-        (1e5, -2.0, 0.022_751_481_728_753_232, 0.977_248_518_271_246_8, 1e-14),
         (1e5, 3.0, 0.998_649_769_557_967_7, 0.001_350_230_442_032_359_5, 1e-14),
-        (1e5, -3.0, 0.001_350_230_442_032_359_5, 0.998_649_769_557_967_7, 1e-14),
         (1e5, 30.0, 1.0, 3.689_268_436_111_116_6e-197, 1e-13),
-        (1e5, -30.0, 3.689_268_436_111_116_6e-197, 1.0, 1e-13),
         (1e8, 0.01, 0.503_989_356_304_657_6, 0.496_010_643_695_342_5, 1e-14),
-        (1e8, -0.01, 0.496_010_643_695_342_5, 0.503_989_356_304_657_6, 1e-14),
         (1e8, 0.5, 0.691_462_460_723_911, 0.308_537_539_276_088_96, 1e-14),
-        (1e8, -0.5, 0.308_537_539_276_088_96, 0.691_462_460_723_911, 1e-14),
         (1e8, 2.0, 0.977_249_866_702_046_6, 0.022_750_133_297_953_376, 1e-14),
-        (1e8, -2.0, 0.022_750_133_297_953_376, 0.977_249_866_702_046_6, 1e-14),
         (1e8, 3.0, 0.998_650_101_635_981_2, 0.001_349_898_364_018_747_2, 1e-14),
-        (1e8, -3.0, 0.001_349_898_364_018_747_2, 0.998_650_101_635_981_2, 1e-14),
         (1e8, 30.0, 1.0, 4.916_682_142_941_633e-198, 1e-13),
-        (1e8, -30.0, 4.916_682_142_941_633e-198, 1.0, 1e-13),
     ];
     for &(df, x, cdf_want, sf_want, tol) in cases {
         let t = StudentT::new(df).unwrap();
@@ -2439,82 +2268,16 @@ fn fisherf_quantile_seed_large_shapes() {
 }
 
 #[test]
-fn bernoulli_basic() {
-    let b = Bernoulli::new(0.3).unwrap();
-    assert!((b.mass(0) - 0.7).abs() < 1e-15);
-    assert!((b.mass(1) - 0.3).abs() < 1e-15);
-    assert_eq!(b.mass(2), 0.0);
-    assert!((b.cdf(0) - 0.7).abs() < 1e-15);
-    assert_eq!(b.cdf(1), 1.0);
-    assert_eq!(b.quantile(0.5).unwrap(), 0); // cdf(0)=0.7 ≥ 0.5
-    assert_eq!(b.quantile(0.8).unwrap(), 1);
-    assert!(b.quantile(1.5).is_err());
-    assert_eq!(b.mean(), Some(0.3));
+fn bernoulli_degenerate_p_and_quantile_domain() {
     // p ∈ {0,1}: 0·ln0 := 0, mass finite, no NaN.
     let b0 = Bernoulli::new(0.0).unwrap();
     assert_eq!(b0.mass(0), 1.0);
     assert_eq!(b0.log_mass(0), 0.0);
-    assert!(Bernoulli::new(-0.1).is_err());
+    assert!(Bernoulli::new(0.3).unwrap().quantile(1.5).is_err());
 }
 
 #[test]
-fn binomial_basic() {
-    let b = Binomial::new(10, 0.3).unwrap();
-    assert_eq!(b.mean(), Some(3.0)); // np
-    assert!((b.variance().unwrap() - 2.1).abs() < 1e-14); // np(1-p)
-    // scipy: binom.pmf(3, 10, 0.3) = 0.26682793200000005
-    assert!((b.mass(3) - 0.266_827_932_0).abs() < 1e-12);
-    assert_eq!(b.mass(-1), 0.0);
-    assert_eq!(b.mass(11), 0.0);
-    // scipy: binom.cdf(3,10,0.3) = 0.6496107184
-    assert!((b.cdf(3) - 0.649_610_718_4).abs() < 1e-10);
-    assert_eq!(b.quantile(0.0).unwrap(), 0);
-    assert_eq!(b.quantile(1.0).unwrap(), 10);
-    assert!(Binomial::new(0, 0.3).is_err());
-    assert!(Binomial::new(10, 1.5).is_err());
-}
-
-#[test]
-fn poisson_basic() {
-    let p = Poisson::new(3.0).unwrap();
-    assert_eq!(p.mean(), Some(3.0));
-    assert_eq!(p.variance(), Some(3.0));
-    // scipy: poisson.pmf(2, 3) = 0.22404180765538775
-    assert!((p.mass(2) - 0.224_041_807_655_387_7).abs() < 1e-12);
-    assert_eq!(p.mass(-1), 0.0);
-    // scipy: poisson.cdf(2,3) = 0.42319008112684353
-    assert!((p.cdf(2) - 0.423_190_081_126_843_5).abs() < 1e-10);
-    assert_eq!(p.quantile(0.0).unwrap(), 0);
-    assert!(Poisson::new(0.0).is_err());
-}
-
-#[test]
-fn geometric_basic() {
-    let g = Geometric::new(0.25).unwrap();
-    assert_eq!(g.mean(), Some(4.0)); // 1/p
-    assert_eq!(g.mass(0), 0.0); // 1-indexed: support starts at 1
-    // scipy: geom.pmf(1, 0.25) = 0.25; geom.pmf(3,0.25)=0.140625
-    assert!((g.mass(1) - 0.25).abs() < 1e-15);
-    assert!((g.mass(3) - 0.140_625).abs() < 1e-15);
-    // scipy: geom.cdf(2, 0.25) = 0.4375
-    assert!((g.cdf(2) - 0.4375).abs() < 1e-15);
-    assert_eq!(g.quantile(0.25).unwrap(), 1);
-    assert!(Geometric::new(0.0).is_err()); // p ∈ (0,1]
-    assert!(Geometric::new(1.0).is_ok());
-}
-
-#[test]
-fn negbinomial_basic() {
-    // r failures-target, p = success prob. Oracle: nbinom(n=r, p=1-p).
-    let nb = NegBinomial::new(5.0, 0.4).unwrap(); // p=success prob 0.4
-    // mean = r·p/(1-p) = 5·0.4/0.6 = 3.333...
-    assert!((nb.mean().unwrap() - 5.0 * 0.4 / 0.6).abs() < 1e-12);
-    assert_eq!(nb.mass(-1), 0.0);
-    // scipy: nbinom(5, 1-0.4=0.6).pmf(2) = 0.18662400000000004
-    assert!((nb.mass(2) - 0.186_624).abs() < 1e-10);
-    assert_eq!(nb.quantile(0.0).unwrap(), 0);
-    assert!(NegBinomial::new(0.0, 0.4).is_err());
-    assert!(NegBinomial::new(5.0, 0.0).is_err()); // p ∈ (0,1)
+fn negbinomial_mean_size_extremes() {
     // μ ≫ θ puts p next to 1; the mean must not go through a rounded 1 − p.
     let nb = NegBinomial::from_mean_size(1e9, 0.01).unwrap();
     assert!((nb.mean().unwrap() / 1e9 - 1.0).abs() < 1e-15);
@@ -2522,32 +2285,6 @@ fn negbinomial_basic() {
     // μ + θ overflows while p = μ/(μ + θ) = ½ does not.
     let nb = NegBinomial::from_mean_size(1e308, 1e308).unwrap();
     assert!((nb.mean().unwrap() / 1e308 - 1.0).abs() < 1e-15);
-}
-
-#[test]
-fn negbinomial_heavy_tail_quantile() {
-    // The moment-based starting bracket is 418 here, but P(X > 418) ≈ 3.6e-4, so
-    // the search must grow the bracket for any p above ~0.9996.
-    // scipy: nbinom(0.1, 0.01).ppf(1 - 1e-6) = 941.0 (scipy's p is 1 − our p).
-    let nb = NegBinomial::new(0.1, 0.99).unwrap();
-    assert_eq!(nb.quantile(1.0 - 1e-6).unwrap(), 941);
-    // p = 1 on an unbounded support is +∞, which no i64 holds.
-    assert!(nb.quantile(1.0).is_err());
-    assert!(Poisson::new(4.5).unwrap().quantile(1.0).is_err());
-}
-
-#[test]
-fn hypergeometric_basic() {
-    // N=20 population, K=7 successes, n=12 draws (scipy hypergeom(M=20,n=7,N=12)).
-    let h = Hypergeometric::new(20, 7, 12).unwrap();
-    assert_eq!(h.mean(), Some(12.0 * 7.0 / 20.0)); // n·K/N
-    // support is max(0, n+K-N)..min(n,K) = max(0,-1)..min(12,7) = 0..7
-    assert_eq!(h.mass(8), 0.0); // above min(n,K)
-    // scipy: hypergeom(M=20,n=7,N=12).pmf(4) = 0.3575851393188855
-    assert!((h.mass(4) - 0.357_585_139).abs() < 1e-6);
-    assert_eq!(h.quantile(0.0).unwrap(), 0);
-    assert!(Hypergeometric::new(20, 25, 12).is_err()); // K > N
-    assert!(Hypergeometric::new(20, 7, 25).is_err()); // n > N
 }
 
 /// Draws lie in the support, and the sample mean and variance sit within 5
@@ -2581,48 +2318,6 @@ fn check_draws(name: &str, d: &impl Distribution, draws: &[f64]) {
         "{name}: sample variance {s2} vs {var} (5·SE = {:e})",
         5.0 * se_var
     );
-}
-
-/// Pearson χ² goodness of fit of integer draws against `mass`. Cells run left
-/// to right from the support minimum and close once their expected count is
-/// ≥ 5; the upper tail past the last closed cell is one cell with expected
-/// `n·sf`, merged into its neighbour if still < 5. p-value from
-/// `ChiSquared::sf` on `cells − 1` df; asserts p > 0.001.
-#[cfg(all(feature = "dist", feature = "rng"))]
-fn check_chi2_fit(name: &str, d: &(impl DiscreteMass + DiscreteCdf), draws: &[i64]) {
-    let n = draws.len() as f64;
-    let lo = d.support_min().as_f64() as i64;
-    let hi = *draws.iter().max().unwrap();
-    let mut counts = vec![0.0; (hi - lo + 1) as usize];
-    for &k in draws {
-        counts[(k - lo) as usize] += 1.0;
-    }
-    let mut cells: Vec<(f64, f64)> = Vec::new();
-    let (mut o, mut e, mut k) = (0.0, 0.0, lo);
-    loop {
-        o += counts.get((k - lo) as usize).copied().unwrap_or(0.0);
-        e += n * d.mass(k);
-        let rest = n * d.sf(k);
-        if rest < 5.0 {
-            o += counts.iter().skip((k + 1 - lo) as usize).sum::<f64>();
-            e += rest;
-            match cells.last_mut() {
-                Some(last) if e < 5.0 => *last = (last.0 + o, last.1 + e),
-                _ => cells.push((o, e)),
-            }
-            break;
-        }
-        if e >= 5.0 {
-            cells.push((o, e));
-            (o, e) = (0.0, 0.0);
-        }
-        k += 1;
-    }
-    let stat: f64 = cells.iter().map(|&(o, e)| (o - e) * (o - e) / e).sum();
-    let df = (cells.len() - 1) as f64;
-    let p = ChiSquared::new(df).unwrap().sf(stat);
-    println!("{name}: chi2 = {stat:.3}, df = {df}, p = {p:.4}");
-    assert!(p > 0.001, "{name}: chi2 = {stat}, df = {df}, p = {p:e}");
 }
 
 /// One-sample Kolmogorov–Smirnov test of draws against `cdf`. p-value from the
@@ -2995,6 +2690,35 @@ fn sampler_huge_parameter_moments() {
     }
 }
 
+/// Binomial inversion at `n` so large that `pow(1 − p, n)` would carry the
+/// rounding of `1 − p` (≈ n·ε in `qⁿ`): every draw terminates, `Binom(10¹⁶,
+/// 3·10⁻¹⁶)` has mean `n·p`, and `P(X = 0)` of `Binom(10¹⁷, 10⁻¹⁷)` is `e⁻¹`.
+#[cfg(all(feature = "dist", feature = "rng"))]
+#[test]
+fn binomial_inversion_huge_n_tiny_p() {
+    use commonstats::dist::DiscreteSampler;
+    use commonstats::rng::CommonStatsRng;
+    let b = Binomial::new(10_000_000_000_000_000, 3e-16).unwrap();
+    let mut sum = 0.0;
+    for seed in 0..40 {
+        let mut rng = CommonStatsRng::new(seed, 0);
+        sum += (0..250).map(|_| b.sample(&mut rng) as f64).sum::<f64>();
+    }
+    let (m, draws) = (3.0, 40.0 * 250.0);
+    assert!(
+        (sum / draws - m).abs() < 5.0 * (m / draws).sqrt(),
+        "mean {}",
+        sum / draws
+    );
+    let b = Binomial::new(100_000_000_000_000_000, 1e-17).unwrap();
+    let mut rng = CommonStatsRng::new(1, 0);
+    let n = 100_000;
+    let zeros = (0..n).filter(|_| b.sample(&mut rng) == 0).count() as f64;
+    let p0 = (-1.0f64).exp();
+    let se = (n as f64 * p0 * (1.0 - p0)).sqrt();
+    assert!((zeros - n as f64 * p0).abs() < 5.0 * se, "{zeros} zeros");
+}
+
 #[cfg(all(feature = "dist", feature = "rng"))]
 #[test]
 fn poisson_sampler_saturates_above_i64() {
@@ -3012,13 +2736,13 @@ fn poisson_sampler_saturates_above_i64() {
     }
 }
 
-/// Pearson χ² goodness of fit like `check_chi2_fit`, for supports too wide to
-/// walk with `cdf` (the hypergeometric `cdf` is an O(support) sum): expected
+/// Pearson χ² goodness of fit of integer draws against `mass`, without
+/// `cdf` (the hypergeometric `cdf` is an O(support) sum): expected
 /// counts from `mass` over the observed range, the two tails beyond it summed
 /// from `mass` outward until a term no longer changes the sum (the pmf is
 /// unimodal, so the terms only shrink). Asserts p > 0.001.
 #[cfg(all(feature = "dist", feature = "rng"))]
-fn check_chi2_fit_by_mass(name: &str, d: &impl DiscreteMass, draws: &[i64]) {
+fn check_chi2_fit(name: &str, d: &impl DiscreteMass, draws: &[i64]) {
     let n = draws.len() as f64;
     let (s_lo, s_hi) = (
         d.support_min().as_f64() as i64,
@@ -3088,10 +2812,274 @@ fn hypergeometric_sampler_fit() {
         let name = format!("hypergeometric({big_n}, {k}, {n})");
         let xs: Vec<f64> = draws.iter().map(|&x| x as f64).collect();
         check_draws(&name, &h, &xs);
-        check_chi2_fit_by_mass(&name, &h, &draws);
+        check_chi2_fit(&name, &h, &draws);
     }
     for (big_n, k, n, want) in [(5, 5, 3, 3), (10, 0, 4, 0), (7, 3, 7, 3), (0, 0, 0, 0)] {
         let h = Hypergeometric::new(big_n, k, n).unwrap();
         assert!((0..100).all(|_| h.sample(&mut rng) == want));
+    }
+}
+
+// ---- studentized range -------------------------------------------------------
+
+#[test]
+fn studentizedrange_basic() {
+    for k in [
+        1.0,
+        0.5,
+        1e6 * (1.0 + f64::EPSILON),
+        f64::NAN,
+        f64::INFINITY,
+    ] {
+        assert!(StudentizedRange::new(k, 10.0).is_err(), "k = {k}");
+    }
+    for df in [0.0, -1.0, f64::NAN] {
+        assert!(StudentizedRange::new(3.0, df).is_err(), "df = {df}");
+    }
+    let sr = StudentizedRange::new(3.0, f64::INFINITY).unwrap();
+    assert_eq!(sr.mean(), None);
+    assert_eq!(sr.variance(), None);
+}
+
+/// k = 2: `W = √2·|T_ν|`, so `sf(q) = 2·t_ν.sf(q/√2)` and `density(q) =
+/// √2·t_ν.density(q/√2)`; at ν = ∞, `erfc(q/2)` and `e^{−q²/4}/√π`. Covers
+/// the small-ν and deep-tail regions the mpmath grid samples sparsely.
+#[test]
+fn studentizedrange_k2_closed_form() {
+    use commonstats::special::erfc;
+    let r2 = core::f64::consts::SQRT_2;
+    let levels = [0.5, 1e-3, 1e-10, 1e-30, 1e-100, 1e-300];
+    let nus = [
+        0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8,
+    ];
+    let check = |what: &str, nu: f64, q: f64, got: f64, want: f64| {
+        let rel = rel_err(got, want);
+        assert!(
+            rel <= 1e-12,
+            "k = 2, ν = {nu:e}, q = {q:e}: {what} = {got:e}, want {want:e} (rel {rel:e})"
+        );
+    };
+    for nu in nus {
+        let t = StudentT::new(nu).unwrap();
+        let sr = StudentizedRange::new(2.0, nu).unwrap();
+        let mut qs: Vec<f64> = levels
+            .iter()
+            .map(|&p| r2 * t.isf(p / 2.0).unwrap())
+            .filter(|q| q.is_finite())
+            .collect();
+        qs.push(f64::MAX);
+        for q in qs {
+            check("sf", nu, q, sr.sf(q), 2.0 * t.sf(q / r2));
+            check("density", nu, q, sr.density(q), r2 * t.density(q / r2));
+        }
+    }
+    let n = Normal::new(0.0, 1.0).unwrap();
+    let sr = StudentizedRange::new(2.0, f64::INFINITY).unwrap();
+    for p in levels {
+        let q = r2 * n.isf(p / 2.0).unwrap();
+        check("sf", f64::INFINITY, q, sr.sf(q), erfc(q / 2.0));
+        let pdf = (-q * q / 4.0).exp() / core::f64::consts::PI.sqrt();
+        check("density", f64::INFINITY, q, sr.density(q), pdf);
+    }
+}
+
+/// k = 2 at df far outside the fixture grid, where the mixing integrand's
+/// knee lies far from the Gamma mode (about 2·ln q away at a small ν) or the
+/// Gamma weight is far narrower than the range part (a large ν at a huge q):
+/// there the quadrature needs more halvings than the bulk does. Truth as in
+/// `studentizedrange_k2_closed_form`, and `ln sf_W(q) = ln P(F(1, ν) > q²/2)`.
+#[test]
+fn studentizedrange_extreme_df_converges() {
+    let r2 = core::f64::consts::SQRT_2;
+    let check = |what: &str, nu: f64, q: f64, got: f64, want: f64| {
+        let rel = rel_err(got, want);
+        assert!(
+            rel <= 1e-12,
+            "k = 2, ν = {nu:e}, q = {q:e}: {what} = {got:e}, want {want:e} (rel {rel:e})"
+        );
+    };
+    for (nu, q) in [(1e-4, 1e25), (1e-4, 1e30), (0.01, 1e28)] {
+        let t = StudentT::new(nu).unwrap();
+        let sr = StudentizedRange::new(2.0, nu).unwrap();
+        check("cdf", nu, q, sr.cdf(q), 1.0 - 2.0 * t.sf(q / r2));
+        check("sf", nu, q, sr.sf(q), 2.0 * t.sf(q / r2));
+    }
+    for (nu, q) in [(1e5, 1778.0), (1e6, 1e5), (1e7, 1e6)] {
+        let t = StudentT::new(nu).unwrap();
+        let f = FisherF::new(1.0, nu).unwrap();
+        let sr = StudentizedRange::new(2.0, nu).unwrap();
+        let want = r2.ln() + t.log_density(q / r2);
+        check("log_density", nu, q, sr.log_density(q), want);
+        check("ln_sf", nu, q, sr.ln_sf(q), f.ln_sf(q * q / 2.0));
+    }
+}
+
+/// Large ν: the Gamma weight's exponent `−a·(eˣ − 1 − x)` near its mode,
+/// where `x ~ 1/√a`, loses `√a·ε` if `eˣ − 1` is recovered from a rounded
+/// `a·eˣ` (1e-13 at ν = 3e7, found by the property suite).
+#[test]
+fn studentizedrange_large_df_closed_form() {
+    let r2 = core::f64::consts::SQRT_2;
+    for nu in [3.06e7, 1e8, 1e12] {
+        let t = StudentT::new(nu).unwrap();
+        let sr = StudentizedRange::new(2.0, nu).unwrap();
+        for q in [0.5, 2.368, 5.0] {
+            let (sf, want) = (sr.sf(q), 2.0 * t.sf(q / r2));
+            let (cdf, want_c) = (sr.cdf(q), 1.0 - want);
+            assert!(
+                rel_err(sf, want) <= 1e-14,
+                "ν = {nu:e}, q = {q}: sf {sf:e} vs {want:e}"
+            );
+            assert!(
+                rel_err(cdf, want_c) <= 1e-14,
+                "ν = {nu:e}, q = {q}: cdf {cdf:e} vs {want_c:e}"
+            );
+        }
+    }
+}
+
+/// ν = 0.0625 at q = 1.8e31: the cdf integrand (≈ 1) has the Gamma mode near
+/// `x = 0` and the knee where `F_R(q·e^{x/2})` turns ~144 away, which one
+/// quadrature cannot resolve to f64 (found by the property suite at
+/// `quantile(0.99)`, 1e-12 off); the cdf there is `1 − sf`.
+#[test]
+fn studentizedrange_small_df_far_knee() {
+    let sr = StudentizedRange::new(2.0, 0.0625).unwrap();
+    let t = StudentT::new(0.0625).unwrap();
+    let q = 1.811_762_877_867_347_4e31;
+    let sf = 2.0 * t.sf(q / core::f64::consts::SQRT_2);
+    assert!(
+        rel_err(sr.sf(q), sf) <= 1e-14,
+        "sf {:e} vs {sf:e}",
+        sr.sf(q)
+    );
+    assert!(
+        rel_err(sr.cdf(q), 1.0 - sf) <= 1e-15,
+        "cdf {:e} vs {:e}",
+        sr.cdf(q),
+        1.0 - sf
+    );
+}
+
+#[test]
+fn studentizedrange_edges() {
+    let inv_sqrt_pi = 1.0 / core::f64::consts::PI.sqrt();
+    for df in [5.0, f64::INFINITY] {
+        for k in [1.5, 2.0, 3.0] {
+            let sr = StudentizedRange::new(k, df).unwrap();
+            assert_eq!(sr.cdf(0.0), 0.0);
+            assert_eq!(sr.sf(0.0), 1.0);
+            assert_eq!(sr.cdf(-1.0), 0.0);
+            assert_eq!(sr.sf(-1.0), 1.0);
+            assert_eq!(sr.cdf(f64::INFINITY), 1.0);
+            assert_eq!(sr.sf(f64::INFINITY), 0.0);
+            assert!(sr.cdf(f64::NAN).is_nan());
+            assert!(sr.sf(f64::NAN).is_nan());
+            assert!(sr.density(f64::NAN).is_nan());
+            assert_eq!(sr.density(-1.0), 0.0);
+        }
+        assert_eq!(
+            StudentizedRange::new(1.5, df).unwrap().density(0.0),
+            f64::INFINITY
+        );
+        assert_eq!(StudentizedRange::new(3.0, df).unwrap().density(0.0), 0.0);
+        let want = if df == f64::INFINITY {
+            inv_sqrt_pi
+        } else {
+            core::f64::consts::SQRT_2 * StudentT::new(df).unwrap().density(0.0)
+        };
+        let got = StudentizedRange::new(2.0, df).unwrap().density(0.0);
+        assert!(
+            rel_err(got, want) <= 1e-12,
+            "k = 2, df = {df}: {got:e} vs {want:e}"
+        );
+    }
+}
+
+/// `F_R(w) ~ w^{k−1}` spreads the mass over many decades of q as k → 1⁺.
+#[test]
+fn studentizedrange_k_near_one_is_finite_and_monotone() {
+    for df in [1.0, f64::INFINITY] {
+        let sr = StudentizedRange::new(1.0 + 1e-6, df).unwrap();
+        let mut prev = 0.0;
+        for q in [1e-300, 1e-10, 1e-3, 1.0, 10.0] {
+            let (c, s) = (sr.cdf(q), sr.sf(q));
+            assert!(
+                c.is_finite() && (0.0..=1.0).contains(&c) && c >= prev,
+                "df = {df}, q = {q:e}: cdf {c:e} (previous {prev:e})"
+            );
+            assert!(
+                (c + s - 1.0).abs() <= 1e-15,
+                "df = {df}, q = {q:e}: cdf + sf − 1 = {:e}",
+                c + s - 1.0
+            );
+            prev = c;
+        }
+    }
+}
+
+/// No finite-df switch to the df = ∞ formula: the gap to it must still shrink
+/// as 1/df at df = 1e8 → 1e9 (a switch makes it 0), and tiny df must stay finite.
+#[test]
+fn studentizedrange_large_and_tiny_df() {
+    // q at sf 1e-3 for df = ∞ (scipy `studentized_range(k, inf).isf(1e-3)`).
+    for (k, q) in [
+        (2.0, 4.653_507_531_026_965),
+        (5.0, 5.483_753_686_172_636),
+        (100.0, 7.314_093_840_195_487),
+    ] {
+        let inf = StudentizedRange::new(k, f64::INFINITY).unwrap();
+        let rel = |df: f64| rel_err(StudentizedRange::new(k, df).unwrap().sf(q), inf.sf(q));
+        let (r8, r9) = (rel(1e8), rel(1e9));
+        assert!(
+            r9 > 0.0 && (r8 / r9 - 10.0).abs() <= 0.1,
+            "k = {k}: sf vs df = ∞, rel {r8:e} at df = 1e8, {r9:e} at 1e9"
+        );
+    }
+    let sr = StudentizedRange::new(5.0, 1e-3).unwrap();
+    for q in [1.0, 1e10, 1e300] {
+        let s = sr.sf(q);
+        assert!(s > 0.0 && s <= 1.0, "df = 1e-3, q = {q:e}: sf {s:e}");
+    }
+}
+
+/// `sf(isf(p)) = p` and `cdf(quantile(p)) = p` to 1e-12 times the slope
+/// `|d ln mass/d ln q|`, which sets how far a root accurate to ε moves the
+/// mass. A root past the f64 range (`p = 1e-300` with a heavy tail) must come
+/// back as 0 or ∞, with the mass at the last representable q still beyond p.
+/// A lower-tail target has no Bonferroni seed, so Newton starts from 1
+/// (k = 100, df = 5, p = 1e-300 is the far case).
+#[test]
+fn studentizedrange_round_trip() {
+    for k in [1.5, 2.0, 5.0, 100.0] {
+        for df in [0.5, 5.0, f64::INFINITY] {
+            let sr = StudentizedRange::new(k, df).unwrap();
+            for p in [1e-300, 1e-10, 0.05, 0.5] {
+                for upper in [false, true] {
+                    let (q, mass) = if upper {
+                        let q = sr.isf(p).unwrap();
+                        (q, sr.sf(q))
+                    } else {
+                        let q = sr.quantile(p).unwrap();
+                        (q, sr.cdf(q))
+                    };
+                    let at = format!("k = {k}, df = {df}, p = {p:e}, upper = {upper}: q = {q:e}");
+                    if q == 0.0 {
+                        assert!(!upper && sr.cdf(5e-324) >= p, "{at}");
+                        continue;
+                    }
+                    if q == f64::INFINITY {
+                        assert!(upper && sr.sf(f64::MAX) >= p, "{at}");
+                        continue;
+                    }
+                    let slope = q * sr.density(q) / p;
+                    let rel = rel_err(mass, p);
+                    assert!(
+                        rel <= 1e-12 * slope.max(1.0),
+                        "{at}: mass {mass:e} (rel {rel:e}, slope {slope:e})"
+                    );
+                }
+            }
+        }
     }
 }

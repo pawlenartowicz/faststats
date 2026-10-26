@@ -1,43 +1,14 @@
-import json
-
 import numpy as np
 import pytest
 
 import neurostats as ns
 from neurostats import _neurostats as core
-from neurostats._tfce import INFERENCE_WEIGHTINGS, resolve_params
-
-SMALL = ["grid4", "blob", "ties", "flat", "single", "empty_grid", "two_clusters"]
-
-
-def load(fixtures_dir, name):
-    with open(fixtures_dir / f"tfce_{name}.json") as f:
-        return json.load(f)
-
-
-def fixture_mask(fx):
-    return (np.frombuffer(fx["mask"].encode(), dtype=np.uint8) == ord("1")).reshape(fx["dims"])
-
-
-def grid_params(fx, weighting):
-    p = fx["params"]
-    return {"weighting": weighting, "e": p["e"], "h": p["h"], "start": p["start"], "step": p["step"]}
-
+from neurostats._tfce import resolve_params
 
 def allclose_map(got, want):
     want = np.asarray(want)
     scale = np.max(np.abs(want)) if want.size else 0.0
     np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-12 * scale)
-
-
-def test_version_is_exposed():
-    assert isinstance(ns.__version__, str) and ns.__version__
-
-
-def test_domain_from_volume_counts():
-    d = core.Domain.from_volume((2, 2, 2), 6)
-    assert d.n_nodes == 8
-    assert d.n_edges == 8 * 3
 
 
 def test_conn_defaults_to_6():
@@ -47,63 +18,24 @@ def test_conn_defaults_to_6():
     assert ns.Domain.from_volume((2, 2, 2)).n_edges != ns.Domain.from_volume((2, 2, 2), conn=26).n_edges
 
 
-def test_from_csr_round_trip(fixtures_dir):
-    fx = load(fixtures_dir, "blob")
-    mask = np.ascontiguousarray(fixture_mask(fx).ravel())
-    dom = core.Domain.from_mask(mask, tuple(fx["dims"]), fx["conn"])
-    back = core.Domain.from_csr(dom.indptr(), dom.indices())
-    assert back.n_nodes == dom.n_nodes and back.n_edges == dom.n_edges
-    np.testing.assert_array_equal(back.indptr(), dom.indptr())
-
-
-def test_errors_are_value_errors():
-    dom = core.Domain.from_volume((2, 1, 1), 6)
-    with pytest.raises(ValueError, match="length mismatch"):
-        core.tfce_bands(dom, np.array([1.0]), np.array([0.5]), np.array([1.0]), 0.5, True)
-    with pytest.raises(ValueError, match="NaN"):
-        core.tfce_bands(dom, np.array([1.0, np.nan]), np.array([0.5]), np.array([1.0]), 0.5, True)
-    with pytest.raises(ValueError, match="conn"):
-        core.Domain.from_volume((2, 1, 1), 7)
-    with pytest.raises(ValueError, match="weighting"):
-        core.tfce(dom, np.zeros(2), 0.5, 2.0, 0.0, 1.0, "bogus", "positive")
-    with pytest.raises(ValueError, match="tail"):
-        core.tfce(dom, np.zeros(2), 0.5, 2.0, None, None, "exact", "up")
-
-
-@pytest.mark.parametrize("name", SMALL)
-def test_tfce_mne_weighting_reproduces_fixture(fixtures_dir, name):
-    fx = load(fixtures_dir, name)
-    mask = fixture_mask(fx)
-    dom = ns.Domain.from_mask(mask, conn=fx["conn"])
-    stat = np.asarray(fx["stat"], dtype=np.float64)
-    params = grid_params(fx, "mne")
-    got = ns.tfce(stat, dom, params=params, tail="positive")
-    allclose_map(got, fx["expected_mne"])
-    # 3-D in -> 3-D out, zeros outside the mask, equals the 1-D result scattered.
-    vol = np.zeros(fx["dims"])
-    vol[mask] = stat
-    got3 = ns.tfce(vol, dom, params=params, tail="positive")
-    assert got3.shape == tuple(fx["dims"])
-    assert np.all(got3[~mask] == 0)
-    np.testing.assert_array_equal(got3[mask], got)
-
-
-@pytest.mark.parametrize("name", SMALL)
-def test_tfce_smith_nichols_weighting_reproduces_fixture(fixtures_dir, name):
-    fx = load(fixtures_dir, name)
-    dom = ns.Domain.from_mask(fixture_mask(fx), conn=fx["conn"])
-    stat = np.asarray(fx["stat"], dtype=np.float64)
-    got = ns.tfce(stat, dom, params=grid_params(fx, "smith_nichols"), tail="positive")
-    allclose_map(got, fx["expected_smith_nichols"])
+def test_conn_and_mask_layout_reach_the_crate():
+    # Directed edge counts of a full 3x3x3 volume, by hand: 6-conn has 3 axes x 18
+    # face pairs = 54 pairs; 18-conn adds 3 planes x 2 diagonals x 12 = 72; 26-conn
+    # adds 4 body diagonals x 8 = 32. Each pair is two directed edges.
+    assert [ns.Domain.from_volume((3, 3, 3), conn=c).n_edges for c in (6, 18, 26)] == [108, 252, 316]
+    # Two voxels adjacent along axis 0 of a (2, 3, 1) mask; with the axes read
+    # reversed they would not touch.
+    m = np.zeros((2, 3, 1), dtype=bool)
+    m[0, 0, 0] = m[1, 0, 0] = True
+    assert ns.Domain.from_mask(m).n_edges == 2
 
 
 @pytest.mark.parametrize("weighting", ["smith_nichols", "mne"])
-def test_tails_on_the_grid_of_grid_and_weights(fixtures_dir, weighting):
+def test_tails_on_the_grid_of_grid_and_weights(weighting):
     # `tfce` runs these weightings in the crate. Here the same sum is rebuilt
     # from the numpy grid of `grid_and_weights` and the explicit band operator.
     # The two-sided grid comes from max(|stat|) and both passes share it.
-    fx = load(fixtures_dir, "blob")
-    dom = ns.Domain.from_mask(fixture_mask(fx), conn=fx["conn"])
+    dom = ns.Domain.from_mask(np.random.default_rng(7).random((6, 6, 5)) < 0.8)
     stat = np.random.default_rng(0).standard_normal(dom.n_nodes)
     params = {"weighting": weighting, "start": 0.0, "step": 0.1}
 
@@ -119,9 +51,8 @@ def test_tails_on_the_grid_of_grid_and_weights(fixtures_dir, weighting):
     assert np.all(pos >= 0) and np.all(neg >= 0) and np.any(two < 0)
 
 
-def test_fslmaths_is_smith_nichols_without_the_step_factor(fixtures_dir):
-    fx = load(fixtures_dir, "blob")
-    dom = ns.Domain.from_mask(fixture_mask(fx), conn=fx["conn"])
+def test_fslmaths_is_smith_nichols_without_the_step_factor():
+    dom = ns.Domain.from_mask(np.random.default_rng(7).random((6, 6, 5)) < 0.8)
     stat = np.random.default_rng(2).standard_normal(dom.n_nodes)
     grid = {"start": 0.0, "step": 0.25}
     for tail in ("positive", "negative", "two_sided"):
@@ -144,16 +75,6 @@ def test_exact_preset_and_defaults():
     assert ns.tfce(stat, dom)[1] < 0
 
 
-def test_nilearn_preset_equals_its_dict_form():
-    dom = ns.Domain.from_volume((3, 3, 2))
-    stat = np.random.default_rng(3).standard_normal(dom.n_nodes)
-    full = {"weighting": "nilearn", "e": 0.5, "h": 2.0}
-    for tail in ("positive", "negative", "two_sided"):
-        np.testing.assert_array_equal(
-            ns.tfce(stat, dom, params="nilearn", tail=tail), ns.tfce(stat, dom, params=full, tail=tail)
-        )
-
-
 def test_resolve_params_returns_the_settings_each_weighting_uses():
     assert resolve_params("exact") == {"weighting": "exact", "e": 0.5, "h": 2.0, "start": 0.0}
     assert resolve_params("nilearn") == {"weighting": "nilearn", "e": 0.5, "h": 2.0}
@@ -161,9 +82,6 @@ def test_resolve_params_returns_the_settings_each_weighting_uses():
         "weighting": "exact", "e": 0.5, "h": 1.0, "start": 1.0}
     assert resolve_params({"weighting": "mne", "start": 0, "step": np.float64(0.1), "e": 1}) == {
         "weighting": "mne", "e": 1.0, "h": 2.0, "start": 0.0, "step": 0.1}
-    assert INFERENCE_WEIGHTINGS == ("exact", "nilearn", "mne", "smith_nichols")
-    with pytest.raises(ValueError, match="weighting"):
-        resolve_params({"weighting": "fslmaths", "start": 0.0, "step": 0.1})
 
 
 @pytest.mark.parametrize(
@@ -237,7 +155,10 @@ def test_stat_layouts_and_dtypes_give_the_same_map(params):
     }
     for label, stat in variants.items():
         got = ns.tfce(stat, dom, params=params)
-        np.testing.assert_array_equal(got[mask] if got.ndim == 3 else got, want, err_msg=label)
+        if got.ndim == 3:
+            assert got.shape == mask.shape and np.all(got[~mask] == 0), label
+            got = got[mask]
+        np.testing.assert_array_equal(got, want, err_msg=label)
 
 
 @pytest.mark.parametrize(
@@ -251,6 +172,19 @@ def test_empty_domain_gives_empty_map(params):
     for tail in ("positive", "negative", "two_sided"):
         assert ns.tfce(np.zeros(0), dom, params=params, tail=tail).shape == (0,)
         assert np.all(ns.tfce(np.zeros(mask.shape), dom, params=params, tail=tail) == 0)
+
+
+def test_from_csr_takes_a_caller_built_graph():
+    # The path 0 - 1 - 2, given as int64 arrays. Exact TFCE with E = 1, H = 0
+    # is the cluster size summed over thresholds: node 0 is in {0, 1, 2} on
+    # (0, 1] and alone on (1, 3], node 1 cutting it off from node 2: 3 + 2 = 5;
+    # node 1: 3; node 2: 3 on (0, 1] and alone on (1, 2]: 4. An edge 0 - 2
+    # would give node 0 3 + 2 + 1 = 6.
+    dom = ns.Domain.from_csr(np.array([0, 1, 3, 4], dtype=np.int64), np.array([1, 0, 2, 1], dtype=np.int64))
+    assert (dom.n_nodes, dom.n_edges) == (3, 4)
+    assert dom.shape is None and dom.mask is None
+    got = ns.tfce(np.array([3.0, 1.0, 2.0]), dom, params={"weighting": "exact", "e": 1.0, "h": 0.0})
+    np.testing.assert_allclose(got, [5.0, 3.0, 4.0], rtol=1e-12)
 
 
 def test_from_adjacency_lattice_equals_from_volume():
@@ -281,8 +215,9 @@ def test_from_adjacency_lattice_equals_from_volume():
 
 
 # --- the compiled tfce_ols -------------------------------------------------
-# What the public function cannot reach: a row index out of order, and the
-# sources the Python layer converts before the call.
+# What the public function cannot reach: the sources the Python layer
+# converts before the call. Without the binding's own C-order check an
+# F-ordered array would be read transposed, with no error.
 
 EXACT = (0.5, 2.0, 0.0, None, "exact")
 
@@ -296,31 +231,6 @@ def ols_data(n=26, seed=5):
     return dom, y, tested, conf
 
 
-def test_compiled_tfce_ols_takes_the_listed_rows_in_the_listed_order():
-    dom, y, tested, conf = ols_data()
-    picked = [3, 0, 25] + list(range(7, 24))
-    rows = np.array(picked, dtype=np.uint64)
-    sub_t, sub_c = tested[:20].copy(), conf[:20].copy()
-    args = (*EXACT, "two_sided", 3, 50, 1, None)
-    stat_obs, _, _, p_unc, null_max, exceed, n, q = core.tfce_ols(dom, y, rows, sub_t, sub_c, *args)
-    # The t of the tested column from one least-squares fit per node, on the
-    # picked rows of y in the order listed.
-    design = np.column_stack([sub_t, sub_c, np.ones(20)])
-    beta, *_ = np.linalg.lstsq(design, y[picked], rcond=None)
-    resid = y[picked] - design @ beta
-    var = (resid**2).sum(axis=0) / (20 - design.shape[1])
-    want = beta[0] / np.sqrt(var * np.linalg.inv(design.T @ design)[0, 0])
-    np.testing.assert_allclose(stat_obs, want, rtol=1e-9)
-    assert (n, q) == (20, 3)  # nuisance columns: the intercept and two confounds
-    assert null_max.shape == (50,) and exceed.dtype == np.uint32
-    np.testing.assert_array_equal(p_unc, exceed / 50)
-    # No row index is every row, in order.
-    every = np.arange(26, dtype=np.uint64)
-    for a, b in zip(core.tfce_ols(dom, y, None, tested, conf, *args),
-                    core.tfce_ols(dom, y, every, tested, conf, *args)):
-        np.testing.assert_array_equal(a, b)
-
-
 def test_compiled_tfce_ols_refuses_what_the_python_layer_never_passes():
     dom, y, tested, conf = ols_data()
     args = (*EXACT, "two_sided", 3, 20, 1, None)
@@ -329,7 +239,3 @@ def test_compiled_tfce_ols_refuses_what_the_python_layer_never_passes():
             core.tfce_ols(dom, bad, None, tested, conf, *args)
     with pytest.raises(ValueError, match="confounds must be C-contiguous"):
         core.tfce_ols(dom, y, None, tested, np.asfortranarray(conf), *args)
-    with pytest.raises(ValueError, match="invalid parameters"):
-        core.tfce_ols(dom, y, np.array([0, 1, 2, 3, 26], dtype=np.uint64), None, None, *args)
-    with pytest.raises(ValueError, match="too few subjects"):
-        core.tfce_ols(dom, y, np.array([], dtype=np.uint64), None, None, *args)

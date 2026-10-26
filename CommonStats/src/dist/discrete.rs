@@ -264,6 +264,7 @@ impl Binomial {
     /// let b = Binomial::new(10, 0.3).unwrap();
     /// assert!((b.mass(3) - 0.26682793200000005).abs() < 1e-12);
     /// assert!(Binomial::new(0, 0.3).is_err());
+    /// assert!(Binomial::new(10, 1.5).is_err());
     /// ```
     pub fn new(n: i64, p: f64) -> Result<Self, StatError> {
         if n < 1 {
@@ -509,19 +510,18 @@ fn binomial_draw(n: i64, p: f64, rng: &mut CommonStatsRng) -> i64 {
     if nf * p < 10.0 {
         // pmf recurrence f(k) = f(k−1)·(p/q)·(n−k+1)/k from f(0) = qⁿ, which is
         // > e^{−14} here: `n·ln q ≥ −2 ln 2·n·p` for `p ≤ ½`, and `n·p < 10`.
-        // Below `n·p = FINE_U_BELOW_P`, `P(X ≥ 1) ≈ n·p` needs the 2⁵² grid,
-        // and `f(0)` is `exp(n·log1p(−p))`: `pow(1 − p, n)` carries the
-        // rounding of `1 − p`, ≈ ε/p relative in `1 − f(0)`.
+        // `f(0)` is `exp(n·log1p(−p))` throughout: `pow(1 − p, n)` carries the
+        // rounding of `1 − p` (relative ε in `q`, ≈ n·ε in `qⁿ`), which at
+        // `n ≳ 10¹⁵` shifts the walked mass by O(1). The walk also stops once
+        // the pmf underflows to 0, in case rounding keeps the partial sum
+        // below `u`. Below `n·p = FINE_U_BELOW_P`, `P(X ≥ 1) ≈ n·p` needs the
+        // 2⁵² grid.
         let fine = p > 0.0 && nf * p < FINE_U_BELOW_P;
         let u = if fine { rng.uniform52() } else { rng.uniform() };
         let r = p / q;
-        let mut f = if fine {
-            libm::exp(nf * libm::log1p(-p))
-        } else {
-            libm::pow(q, nf)
-        };
+        let mut f = libm::exp(nf * libm::log1p(-p));
         let (mut s, mut k) = (f, 0);
-        while u > s && k < n {
+        while u > s && k < n && f > 0.0 {
             k += 1;
             f *= r * (nf - k as f64 + 1.0) / k as f64;
             s += f;
@@ -1031,6 +1031,7 @@ impl NegBinomial {
     /// let nb = NegBinomial::new(5.0, 0.4).unwrap();
     /// assert!((nb.mass(2) - 0.186624).abs() < 1e-10);
     /// assert!(NegBinomial::new(0.0, 0.4).is_err());
+    /// assert!(NegBinomial::new(5.0, 0.0).is_err());
     /// ```
     pub fn new(r: f64, p: f64) -> Result<Self, StatError> {
         if !r.is_finite() || r <= 0.0 {
@@ -1204,6 +1205,9 @@ impl DiscreteCdf for NegBinomial {
 /// (Marsaglia–Tsang), which keeps the rate finite for `p` near 0; the Poisson
 /// draw is the `Poisson` sampler's, including its saturation at `i64::MAX`. A
 /// `λ` that underflows to 0 returns 0.
+///
+/// Validated by `tests/dist_oracle.rs`: χ² fit and moments in
+/// `sampler_moments_and_fit`, pinned draws in `sampler_known_answers`.
 #[cfg(all(feature = "dist", feature = "rng"))]
 impl DiscreteSampler for NegBinomial {
     fn sample(&self, rng: &mut CommonStatsRng) -> i64 {
@@ -1252,6 +1256,7 @@ impl Hypergeometric {
     /// let h = Hypergeometric::new(20, 7, 12).unwrap();
     /// assert_eq!(h.mean(), Some(12.0 * 7.0 / 20.0));
     /// assert!(Hypergeometric::new(20, 25, 12).is_err());
+    /// assert!(Hypergeometric::new(20, 7, 25).is_err());
     /// ```
     pub fn new(big_n: i64, k: i64, n: i64) -> Result<Self, StatError> {
         if big_n < 0 || k < 0 || n < 0 || k > big_n || n > big_n {
@@ -1277,6 +1282,9 @@ impl Distribution for Hypergeometric {
         Bound::Finite(self.k_hi() as f64)
     }
     fn mean(&self) -> Option<f64> {
+        if self.big_n == 0 {
+            return Some(0.0);
+        }
         Some(self.n as f64 * self.k as f64 / self.big_n as f64)
     }
     fn variance(&self) -> Option<f64> {

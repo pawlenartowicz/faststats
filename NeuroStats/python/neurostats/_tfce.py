@@ -203,8 +203,10 @@ def tfce(stat, domain: Domain, *, params="exact", tail: str = "two_sided") -> Ar
 
     Checked against nilearn 0.14.1 ``calculate_tfce`` for ``"nilearn"``
     (``tests/test_tfce_parity.py::test_tfce_nilearn_matches_calculate_tfce``)
-    and against MNE 1.12.1 fixtures for ``"mne"``
-    (``tests/test_core.py::test_tfce_mne_weighting_reproduces_fixture``).
+    and against MNE 1.12.1 fixtures for ``"mne"`` in the Rust crate
+    (``NeuroStats/tests/tfce_oracle.rs::g3_union_find_matches_mne``);
+    ``tests/test_core.py::test_tails_on_the_grid_of_grid_and_weights`` checks
+    that the binding reaches that weighting.
 
     A bad ``params`` or ``tail`` raises ``ValueError`` before ``stat`` is read.
     """

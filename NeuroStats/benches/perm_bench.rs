@@ -1,53 +1,27 @@
 //! Permutation timing on the realistic bench fixture: `B = 200` Monte Carlo
 //! draws of the one-sample test (`tfce_ols` with no tested regressor and no
 //! confounds) over `n = 30` synthetic subjects (fixture map + unit noise,
-//! fixed LCG), reporting ms/draw and the `tfce_into` share.
+//! fixed LCG), reporting ms/draw and the share of TFCE on the null maps of
+//! the same draws.
 //!
 //! Run: `cargo bench --bench perm_bench` (pin and lock the machine first; the
 //! first pass is discarded, the min of the rest is reported).
 
 use std::time::Instant;
 
-use neurostats::{
-    Conn, Domain, PermOpts, PermProblem, PermWorkspace, Store, Tail, TfceParams, TfceWorkspace,
-    Weighting, run_range, tfce_into,
-};
 #[cfg(feature = "parallel")]
-use neurostats::{tfce_ols, tfce_ols_threads};
-use serde::Deserialize;
+use neurostats::{Conn, Domain, tfce_ols, tfce_ols_threads};
+use neurostats::{
+    PermOpts, PermProblem, PermWorkspace, Store, Tail, TfceParams, TfceWorkspace, Weighting,
+    run_range, stat_batch, tfce_tail_into,
+};
 
-#[derive(Deserialize)]
-struct Fixture {
-    dims: [usize; 3],
-    conn: u32,
-    mask: String,
-    stat: Vec<f64>,
-    params: Params,
-}
-
-#[derive(Deserialize)]
-struct Params {
-    e: f64,
-    h: f64,
-    start: f64,
-    step: f64,
-}
+#[path = "../tests/common/mod.rs"]
+mod common;
 
 fn main() {
-    let path = format!(
-        "{}/tests/fixtures/tfce_bench.json",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture"))
-        .expect("fixture parse");
-    let mask: Vec<bool> = fx.mask.bytes().map(|b| b == b'1').collect();
-    let conn = match fx.conn {
-        6 => Conn::Face,
-        18 => Conn::Edge,
-        26 => Conn::Vertex,
-        c => panic!("bad conn {c}"),
-    };
-    let dom = Domain::from_mask(&mask, fx.dims, conn).unwrap();
+    let fx = common::load("bench");
+    let dom = fx.domain();
     let (n, v, b) = (30usize, dom.n_nodes(), 200u64);
     let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
     let mut next = || {
@@ -83,23 +57,33 @@ fn main() {
                 best = best.min(dt);
             }
         }
-        // tfce_into alone on the observed t-map, same B, same workspace reuse.
+        // TFCE alone on the null maps of the same B draws (the method of
+        // cell_bench `split`): the statistic maps come from `stat_batch`
+        // outside the timer, then `tfce_tail_into` runs on each under it.
         let mut tws = TfceWorkspace::new(v);
         let mut out = vec![0.0; v];
+        let batch = problem.batch() as u64;
         let mut best_tfce = f64::INFINITY;
         for r in 0..=runs {
-            let t = Instant::now();
-            for _ in 0..b {
-                tfce_into(&dom, problem.stat_obs(), &p, &mut tws, &mut out).unwrap();
+            let mut dt = 0.0;
+            let mut start = 0;
+            while start < b {
+                let end = b.min(start + batch);
+                let maps = stat_batch(&problem, start..end, &mut ws);
+                let t = Instant::now();
+                for map in maps.chunks_exact(v) {
+                    tfce_tail_into(&dom, map, &p, Tail::Positive, &mut tws, &mut out).unwrap();
+                }
+                dt += t.elapsed().as_secs_f64();
+                std::hint::black_box(&out);
+                start = end;
             }
-            let dt = t.elapsed().as_secs_f64();
-            std::hint::black_box(&out);
             if r > 0 {
                 best_tfce = best_tfce.min(dt);
             }
         }
         println!(
-            "{weighting:?}: nodes {v}  n {n}  B {b}  min {:.3} s = {:.2} ms/draw  |  tfce_into {:.2} ms/draw ({:.0}%)",
+            "{weighting:?}: nodes {v}  n {n}  B {b}  min {:.3} s = {:.2} ms/draw  |  tfce on null maps {:.2} ms/draw ({:.0}%)",
             best,
             1e3 * best / b as f64,
             1e3 * best_tfce / b as f64,

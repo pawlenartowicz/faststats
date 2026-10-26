@@ -471,8 +471,8 @@ checked against `tfce_naive` here. The three tails are checked against
 plain `dx, dy, dz` triple loop
 (`src/domain.rs::lattice_rows_match_transcribed_dxdydz_scan`), and the CSR
 round trip is checked over every masked-volume fixture in
-`tests/fixtures/tfce_*.json`
-(`tests/tfce_oracle.rs::from_csr_round_trips_every_fixture`).
+`tests/fixtures/tfce_*.json`, dense and thinned, by sweeping both domains
+(`tests/tfce_oracle.rs::lattice_matches_csr_on_fixtures`).
 
 ## Features, `no_std`, WASM
 
@@ -497,8 +497,9 @@ library, for threads.
 
 ## Benchmarks
 
-Both use `std::time::Instant`, run the first pass and discard it, then report
-the min of the following passes. No timing numbers are given here — run them
+All three use `std::time::Instant`. `tfce_bench`, `perm_bench` and `cell_bench split`
+run the first pass and discard it, then report the min of the following passes;
+`cell_bench run` prints every pass. No timing numbers are given here — run them
 locally and pin/lock the machine first.
 
 - `benches/tfce_bench.rs` — single-map `tfce` on the fixture
@@ -507,8 +508,11 @@ locally and pin/lock the machine first.
   `cargo bench --bench tfce_bench`.
 - `benches/perm_bench.rs` — `run_range` over `B = 200` Monte Carlo draws of
   the one-sample test for `n = 30` synthetic subjects built from the same
-  bench fixture's map plus fixed-LCG noise; reports ms/draw and the
-  `tfce_into` share of that time. Run with `cargo bench --bench perm_bench`.
+  bench fixture's map plus fixed-LCG noise; reports ms/draw and the time of
+  TFCE on the null maps of the same draws (as `cell_bench split` measures
+  it); with `parallel`, also `tfce_ols_threads` at 1, 2, 4 and 6 threads
+  against serial `tfce_ols` on a ~251k-node ellipsoid mask. Run with
+  `cargo bench --bench perm_bench`.
 - `benches/cell_bench.rs` — the OLS permutation loop on a data cell read
   from disk (a mask, an `f32` source with a row index, a tested regressor
   and confounds). `split` times the statistic maps and TFCE apart on one

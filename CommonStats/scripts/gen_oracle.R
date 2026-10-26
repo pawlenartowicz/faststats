@@ -64,6 +64,10 @@ dispatch <- function(func, a) {
     # Inverse Gaussian has no base-R d/p; statmod's (mean, shape) is the match.
     "dinvgauss" = statmod::dinvgauss(a[1], mean = a[2], shape = a[3]),
     "pinvgauss" = statmod::pinvgauss(a[1], mean = a[2], shape = a[3]),
+    # Studentized range, args [q, k, df]; df = ∞ arrives as 1e300 (mirrors
+    # `_sr_df_r` in gen_oracle.py — change together).
+    "ptukey"       = ptukey(a[1], nmeans = a[2], df = a[3]),
+    "ptukey_upper" = ptukey(a[1], nmeans = a[2], df = a[3], lower.tail = FALSE),
     "dbinom"   = dbinom(a[1], size = a[2], prob = a[3]),
     "pbinom"   = pbinom(a[1], size = a[2], prob = a[3]),
     "dpois"    = dpois(a[1], lambda = a[2]),
@@ -106,8 +110,7 @@ dispatch <- function(func, a) {
 
     # --- htest area (Phase 5 three-source migration). Vector payloads are
     # length-tagged because _run_r returns one scalar per job; one job per
-    # component. Two-sample layout: [na, nb, x..., y...]. The welch conf.int
-    # cross-check is what surfaces the known pooled-vs-Welch CI inconsistency.
+    # component. Two-sample layout: [na, nb, x..., y...].
     "ttest_one_t"      = { mu<-a[1]; x<-a[-1]; unname(t.test(x, mu=mu)$statistic) },
     "ttest_one_p"      = { mu<-a[1]; x<-a[-1]; t.test(x, mu=mu)$p.value },
     "ttest_student_t"  = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; unname(t.test(x,y,var.equal=TRUE)$statistic) },
@@ -117,10 +120,17 @@ dispatch <- function(func, a) {
     "ttest_welch_df"   = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; unname(t.test(x,y,var.equal=FALSE)$parameter) },
     "ttest_welch_cilo" = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; t.test(x,y,var.equal=FALSE)$conf.int[1] },
     "ttest_welch_cihi" = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; t.test(x,y,var.equal=FALSE)$conf.int[2] },
+    "ttest_one_cilo"   = { mu<-a[1]; x<-a[-1]; t.test(x, mu=mu)$conf.int[1] },
+    "ttest_one_cihi"   = { mu<-a[1]; x<-a[-1]; t.test(x, mu=mu)$conf.int[2] },
+    "ttest_student_cilo" = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; t.test(x,y,var.equal=TRUE)$conf.int[1] },
+    "ttest_student_cihi" = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; t.test(x,y,var.equal=TRUE)$conf.int[2] },
+    "ttest_paired_cilo"  = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; t.test(x,y,paired=TRUE)$conf.int[1] },
+    "ttest_paired_cihi"  = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; t.test(x,y,paired=TRUE)$conf.int[2] },
     "ttest_paired_t"   = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; unname(t.test(x,y,paired=TRUE)$statistic) },
     "ttest_paired_p"   = { na<-a[1]; nb<-a[2]; x<-a[3:(2+na)]; y<-a[(3+na):(2+na+nb)]; t.test(x,y,paired=TRUE)$p.value },
     "anova_f"          = { ng<-a[1]; sizes<-a[2:(1+ng)]; vals<-a[(2+ng):length(a)]; g<-factor(rep(seq_len(ng), sizes)); unname(oneway.test(vals~g, var.equal=TRUE)$statistic) },
     "anova_p"          = { ng<-a[1]; sizes<-a[2:(1+ng)]; vals<-a[(2+ng):length(a)]; g<-factor(rep(seq_len(ng), sizes)); oneway.test(vals~g, var.equal=TRUE)$p.value },
+    "anova_eta2"       = { ng<-a[1]; sizes<-a[2:(1+ng)]; vals<-a[(2+ng):length(a)]; g<-factor(rep(seq_len(ng), sizes)); ss<-summary(aov(vals~g))[[1]][["Sum Sq"]]; ss[1]/sum(ss) },
     "chisq_gof_chi2"   = { k<-a[1]; obs<-a[2:(1+k)]; exp<-a[(2+k):(1+2*k)]; unname(chisq.test(obs, p=exp/sum(exp))$statistic) },
     "chisq_gof_p"      = { k<-a[1]; obs<-a[2:(1+k)]; exp<-a[(2+k):(1+2*k)]; chisq.test(obs, p=exp/sum(exp))$p.value },
     "chisq_ind_chi2"   = { nr<-a[1]; nc<-a[2]; m<-matrix(a[3:length(a)], nrow=nr, byrow=TRUE); unname(chisq.test(m, correct=FALSE)$statistic) },

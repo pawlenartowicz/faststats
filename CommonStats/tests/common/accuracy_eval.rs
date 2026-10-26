@@ -16,7 +16,7 @@
 use commonstats::dist::{
     Bernoulli, Beta, Binomial, Cauchy, ChiSquared, ContinuousCdf, ContinuousDensity, DiscreteCdf,
     DiscreteMass, Exponential, FisherF, Gamma, Geometric, Hypergeometric, InverseGaussian,
-    LogNormal, NegBinomial, Normal, Poisson, StudentT, Uniform, Weibull,
+    LogNormal, NegBinomial, Normal, Poisson, StudentT, StudentizedRange, Uniform, Weibull,
 };
 use commonstats::special;
 
@@ -116,6 +116,18 @@ fn eval_dist(name: &str, params: &[Arg], x: Arg) -> Result<Val, String> {
                 InverseGaussian::new(p(0)?, p(1)?).map_err(e)?.ln_sf(x.f()),
             ));
         }
+        ("studentizedrange", "ln_cdf") => {
+            return Ok(Val::F(
+                StudentizedRange::new(p(0)?, p(1)?)
+                    .map_err(e)?
+                    .ln_cdf(x.f()),
+            ));
+        }
+        ("studentizedrange", "ln_sf") => {
+            return Ok(Val::F(
+                StudentizedRange::new(p(0)?, p(1)?).map_err(e)?.ln_sf(x.f()),
+            ));
+        }
         _ => {}
     }
     match ty {
@@ -131,6 +143,7 @@ fn eval_dist(name: &str, params: &[Arg], x: Arg) -> Result<Val, String> {
         "gamma" => cont(Gamma::new(p(0)?, p(1)?).map_err(e)?, method, x),
         "beta" => cont(Beta::new(p(0)?, p(1)?).map_err(e)?, method, x),
         "inversegaussian" => cont(InverseGaussian::new(p(0)?, p(1)?).map_err(e)?, method, x),
+        "studentizedrange" => cont(StudentizedRange::new(p(0)?, p(1)?).map_err(e)?, method, x),
         "bernoulli" => disc(Bernoulli::new(p(0)?).map_err(e)?, method, x),
         "binomial" => disc(
             Binomial::new(param(params, 0)?.i()?, p(1)?).map_err(e)?,

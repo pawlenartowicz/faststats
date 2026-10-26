@@ -1,7 +1,7 @@
 //! Competitive ranking of a slice without its NaNs, configurable tie-breaking.
 
 use crate::error::StatError;
-use crate::nan::{NanPolicy, clean};
+use crate::nan::clean;
 use alloc::{vec, vec::Vec};
 
 /// Tie-breaking rule for [`rank`].
@@ -50,7 +50,7 @@ pub enum Ties {
 /// assert_eq!(r, vec![3.0, 1.0, 2.0]);
 /// ```
 pub fn rank(v: &[f64], ties: Ties) -> Result<Vec<f64>, StatError> {
-    let data = clean(v, NanPolicy::Omit)?;
+    let data = clean(v)?;
     let n = data.len();
 
     // Stable argsort: indices sorted by data[i] ascending, stable (so Ordinal

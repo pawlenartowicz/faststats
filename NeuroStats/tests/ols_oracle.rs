@@ -1,3 +1,4 @@
+#![cfg(feature = "std")]
 //! OLS engine gates. The oracle throughout is the textbook path: one
 //! least-squares fit per node from the normal equations on the raw columns.
 //!   O1 — `nuisance_basis`: orthonormal, same span, dependent columns dropped
@@ -101,8 +102,9 @@ fn column(y: &[f64], n: usize, n_nodes: usize, v: usize) -> Vec<f64> {
 fn basis_is_orthonormal_and_spans_the_columns() {
     let (n, c) = (12usize, 3usize);
     let mut rng = Lcg(0x5EED_0001);
-    // A large offset makes the confounds far from centred.
-    let confounds: Vec<f64> = rng.vec(n * c).iter().map(|x| 5.0 + x).collect();
+    // A large offset makes the confounds far from centred: one Gram–Schmidt
+    // pass loses orthogonality to ~1e-12 here, two keep it at ~1e-16.
+    let confounds: Vec<f64> = rng.vec(n * c).iter().map(|x| 1e3 + x).collect();
     for intercept in [false, true] {
         let basis = nuisance_basis(&confounds, n, intercept).unwrap();
         let q = c + usize::from(intercept);
@@ -741,11 +743,40 @@ fn o4_exhaustive_sign_enumeration_matches_a_naive_loop() {
             design
         })
         .collect();
+    // Draw k of the enumerated run is pattern k (bit i of k flips subject i;
+    // draw 0 is the identity), map by map through the public `stat_batch`.
+    let v = dom.n_nodes();
+    let store = m.store();
+    let problem = PermProblem::ols(
+        &dom,
+        &store,
+        None,
+        &PermOpts::new(EXACT, Tail::Positive, 9, 100),
+    )
+    .unwrap();
+    assert_eq!(problem.draws(), 0..32);
+    let mut ws = PermWorkspace::new(&problem);
+    let residualised = m.residualised();
+    let k = problem.batch() as u64;
+    for first in (0..32u64).step_by(k as usize) {
+        let last = 32.min(first + k);
+        let maps = stat_batch(&problem, first..last, &mut ws).to_vec();
+        for draw in first..last {
+            assert_close(
+                &format!("exhaustive draw {draw}"),
+                &maps[(draw - first) as usize * v..][..v],
+                &direct_t(&designs[draw as usize], p, &residualised, m.n, v),
+                1e-9,
+            );
+        }
+    }
     assert_matches_naive_loop("exhaustive", &dom, &m, &designs, 9, 100);
 }
 
-/// The public row permutation: draw 0 is the identity, every draw is a
-/// permutation of `0..n`, and a draw depends on `(seed, draw)` only.
+/// The public row permutation: draw 0 is the identity, and draw `b ≥ 1` is
+/// `commonstats::gen_resample_indices(Scheme::Permutation, n, b, seed)` for
+/// the caller's seed (the permutation properties of that stream are
+/// commonstats' own tests).
 #[test]
 fn draw_permutation_is_a_pure_function_of_seed_and_draw() {
     let n = 30usize;
@@ -753,20 +784,20 @@ fn draw_permutation_is_a_pure_function_of_seed_and_draw() {
     let mut b = vec![0u32; n];
     draw_permutation(n, 0, 9, &mut a).unwrap();
     assert_eq!(a, (0..n as u32).collect::<Vec<u32>>());
-    let mut seen = Vec::new();
-    for draw in 1..40u64 {
-        draw_permutation(n, draw, 9, &mut a).unwrap();
-        let mut sorted = a.clone();
-        sorted.sort_unstable();
-        assert_eq!(sorted, (0..n as u32).collect::<Vec<u32>>(), "draw {draw}");
-        commonstats::gen_resample_indices(commonstats::Scheme::Permutation, n, draw, 9, &mut b)
+    for seed in [9u64, 10] {
+        for draw in 1..40u64 {
+            draw_permutation(n, draw, seed, &mut a).unwrap();
+            commonstats::gen_resample_indices(
+                commonstats::Scheme::Permutation,
+                n,
+                draw,
+                seed,
+                &mut b,
+            )
             .unwrap();
-        assert_eq!(a, b, "draw {draw}");
-        assert!(!seen.contains(&a), "draw {draw} repeats an earlier draw");
-        seen.push(a.clone());
+            assert_eq!(a, b, "seed {seed} draw {draw}");
+        }
     }
-    draw_permutation(n, 5, 10, &mut b).unwrap();
-    assert_ne!(seen[4], b, "another seed gives another draw");
     assert_eq!(
         draw_permutation(n, 1, 9, &mut a[..n - 1]),
         Err(NeuroError::MismatchedLengths {
@@ -899,6 +930,21 @@ fn o5_bad_inputs_are_errors() {
         assert_eq!(
             run(&m.y, Some(&tested), &z, &opts),
             Err(NeuroError::NonFiniteStat)
+        );
+    }
+    // A draw budget of 0 or above u32::MAX, a batch of 0 (which would never
+    // advance the draw loop).
+    for bad in [
+        PermOpts { n_perm: 0, ..opts },
+        PermOpts { batch: 0, ..opts },
+        PermOpts {
+            n_perm: u64::from(u32::MAX) + 1,
+            ..opts
+        },
+    ] {
+        assert_eq!(
+            run(&m.y, Some(&tested), &m.confounds, &bad),
+            Err(NeuroError::InvalidParams)
         );
     }
     let bad_params = TfceParams { h: -2.0, ..EXACT };

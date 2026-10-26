@@ -74,7 +74,6 @@ pub mod special;
 pub mod transform;
 
 pub use error::StatError;
-pub use nan::NanPolicy;
 
 pub use accum::{HistResult, Histogram};
 #[cfg(feature = "resample")]

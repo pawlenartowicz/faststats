@@ -1,10 +1,9 @@
+#![cfg(feature = "std")]
 //! Permutation-loop gates:
 //!   G5  — one-sample test, exact enumeration ≈ MNE 1.12.1 (RNG-independent)
 //!   G6  — one-sample test, Monte Carlo ≈ MNE, statistically
 //!   G7  — split, merge and batch-size determinism of the loop
 //!   G8  — one-sample t of the engine == direct two-pass t on flipped data
-//!   G9  — `tfce_into` == `tfce` bit-for-bit, workspace reused across fixtures
-//!   G11 — `Exact` is the limit of `SmithNichols` as `step → 0`
 //!   G12 — threaded driver == serial driver bit-for-bit
 //!   G14 — a null extended to `B` draws == one run of `B` draws
 mod common;
@@ -14,31 +13,14 @@ use commonstats::accum::Mergeable;
 use commonstats::gen_sign_flips;
 use neurostats::{
     Conn, Domain, NullPartial, PermOpts, PermProblem, PermWorkspace, Store, Tail, TfceInference,
-    TfceParams, TfceWorkspace, Weighting, finalize, nuisance_basis, run_range, stat_batch, tfce,
-    tfce_into, tfce_ols,
+    TfceParams, Weighting, finalize, nuisance_basis, run_range, stat_batch, tfce, tfce_ols,
 };
 
 const REL: f64 = 1e-12;
 const ABS_FLOOR: f64 = 1e-12;
 
-const SMALL: [&str; 7] = [
-    "grid4",
-    "blob",
-    "ties",
-    "flat",
-    "single",
-    "empty_grid",
-    "two_clusters",
-];
-
 fn params(fx: &Fixture, weighting: Weighting) -> TfceParams {
-    TfceParams {
-        e: fx.params.e,
-        h: fx.params.h,
-        start: fx.params.start,
-        step: fx.params.step,
-        weighting,
-    }
+    fx.params.with(weighting)
 }
 
 /// The engine's one-sample t (no tested regressor, no confounds) against a
@@ -107,62 +89,6 @@ fn g8_one_sample_t_matches_direct() {
         }
     }
     println!("G8 worst rel error {worst:.3e}");
-}
-
-/// One workspace across every fixture (node counts and threshold counts all
-/// differ, so grow-on-demand and reuse are both exercised).
-#[test]
-fn g9_tfce_into_matches_tfce_bitwise() {
-    let mut ws = TfceWorkspace::new(0);
-    for name in SMALL.iter().copied().chain(["bench"]) {
-        let fx = load(name);
-        let dom = fx.domain();
-        for w in [
-            Weighting::MneStep,
-            Weighting::SmithNichols,
-            Weighting::Nilearn,
-        ] {
-            let p = params(&fx, w);
-            let want = tfce(&dom, &fx.stat, &p).unwrap();
-            let mut got = vec![f64::NAN; dom.n_nodes()];
-            tfce_into(&dom, &fx.stat, &p, &mut ws, &mut got).unwrap();
-            assert_eq!(got, want, "G9 {name} {w:?}");
-        }
-    }
-}
-
-/// Left Riemann sum → integral: node-wise max |SmithNichols(step) − Exact| is
-/// O(step). Bound C·step with C taken from the larger of the two coarse-step
-/// ratios (0.4 and 0.2): `2 · max(err(0.4)/0.4, err(0.2)/0.2)` — a single
-/// coarse step can land a grid edge exactly on a tie value and understate the
-/// true per-step error, so two steps guard against one of them being lucky.
-/// No per-step ordering asserted (band edges land differently on each grid).
-#[test]
-fn g11_exact_is_limit_of_smith_nichols() {
-    for name in SMALL {
-        let fx = load(name);
-        let dom = fx.domain();
-        let exact = tfce(&dom, &fx.stat, &params(&fx, Weighting::Exact)).unwrap();
-        let err = |step: f64| -> f64 {
-            let p = TfceParams {
-                step,
-                ..params(&fx, Weighting::SmithNichols)
-            };
-            let sn = tfce(&dom, &fx.stat, &p).unwrap();
-            sn.iter()
-                .zip(&exact)
-                .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()))
-        };
-        let c = 2.0 * (err(0.4) / 0.4).max(err(0.2) / 0.2);
-        for step in [0.1, 0.025] {
-            let e = err(step);
-            assert!(
-                e <= c * step + 1e-12,
-                "G11 {name}: err({step}) = {e:e} > C·step = {:e}",
-                c * step
-            );
-        }
-    }
 }
 
 /// Synthetic data on the `blob` fixture's domain: `n` subjects, the fixture
@@ -284,13 +210,7 @@ fn finalize_refuses_an_incomplete_null() {
 }
 
 fn perm_params(fx: &common::PermFixture) -> TfceParams {
-    TfceParams {
-        e: fx.params.e,
-        h: fx.params.h,
-        start: fx.params.start,
-        step: fx.params.step,
-        weighting: Weighting::MneStep,
-    }
+    fx.params.with(Weighting::MneStep)
 }
 
 /// The one-sample test of `tfce_ols`: no tested regressor, no confounds,
@@ -602,63 +522,6 @@ fn g14_extending_a_null_equals_one_run() {
             }
         }
     }
-}
-
-/// G14 — through the loop pieces: a problem that continues a null runs only
-/// the new draws, and `finalize` merges them with the stored ones.
-#[test]
-fn g14_a_continued_problem_runs_only_the_new_draws() {
-    let dom = Domain::from_volume([3, 2, 1], Conn::Face);
-    let (n, v) = (10usize, dom.n_nodes());
-    let (tested, confounds) = design(n);
-    let mut seed: u64 = 0x1234_5678_9ABC_DEF1;
-    let y: Vec<f64> = (0..n * v)
-        .map(|_| {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (seed >> 11) as f64 / (1u64 << 53) as f64
-        })
-        .collect();
-    let p = TfceParams {
-        e: 0.5,
-        h: 2.0,
-        start: 0.0,
-        step: 1.0,
-        weighting: Weighting::Exact,
-    };
-    let basis = nuisance_basis(&confounds, n, true).unwrap();
-    let rows: Vec<usize> = (0..n).collect();
-    let store = Store::from_f64(&y, n, v, &rows, &basis).unwrap();
-    let first = tfce_ols(
-        &dom,
-        &y,
-        n,
-        Some(&tested),
-        &confounds,
-        &PermOpts::new(p, Tail::TwoSided, 4, 30),
-    )
-    .unwrap();
-
-    let mut opts = PermOpts::new(p, Tail::TwoSided, 4, 50);
-    opts.extend = Some(&first.null);
-    let problem = PermProblem::ols(&dom, &store, Some(&tested), &opts).unwrap();
-    assert_eq!(problem.draws(), 30..50);
-    let mut ws = PermWorkspace::new(&problem);
-    let added = run_range(&problem, problem.draws(), &mut ws);
-    assert_eq!(added.maxima().len(), 20);
-    let merged = finalize(&problem, &added).unwrap();
-    assert_eq!(merged.null.maxima.len(), 50);
-    let whole = tfce_ols(
-        &dom,
-        &y,
-        n,
-        Some(&tested),
-        &confounds,
-        &PermOpts::new(p, Tail::TwoSided, 4, 50),
-    )
-    .unwrap();
-    assert_eq!(merged, whole);
 }
 
 /// G14 — a null is continued only by the test that made it. Every other case

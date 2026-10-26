@@ -17,7 +17,7 @@ crate README: [`../../../CommonStats/README.md`](../../../CommonStats/README.md)
 | `transform`    | (base)       | distribution-free transforms (rank, normal-scores, Box–Cox, Yeo–Johnson, quantile-normalize) |
 | `htest`        | (base)       | hypothesis tests, effect sizes, confidence intervals               |
 | `error`        | (base)       | `StatError`                                                       |
-| `nan`          | (base)       | `NanPolicy`                                                        |
+| `nan`          | (base)       | `clean`                                                            |
 | `dist`         | `dist`       | continuous + discrete distribution objects (CDF/SF/PDF/quantile), PIT, and samplers (with `rng`) |
 | `rng`          | `rng`        | counter-based Philox RNG (`CommonStatsRng`)                        |
 | `resample`     | `resample`   | permutation/bootstrap index generation, `NullDist`/`BootDist` (implies `rng`) |
